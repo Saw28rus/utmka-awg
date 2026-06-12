@@ -331,8 +331,13 @@ input:focus, textarea:focus { border-color: var(--accent); }
   display: flex;
   gap: 9px;
   align-items: flex-end;
-  padding: 8px calc(10px + env(safe-area-inset-right)) max(8px, calc(var(--safe-bottom) - 10px)) calc(10px + env(safe-area-inset-left));
+  padding: 7px calc(10px + env(safe-area-inset-right)) max(6px, calc(var(--safe-bottom) - 16px)) calc(10px + env(safe-area-inset-left));
   background: var(--bg2);
+}
+/* при открытой клавиатуре системного safe-area нет — прижимаем поле вплотную */
+.kbd .compose {
+  padding-top: 4px;
+  padding-bottom: 4px;
 }
 .compose textarea {
   flex: 1;
@@ -343,7 +348,6 @@ input:focus, textarea:focus { border-color: var(--accent); }
   line-height: 1.35;
   background: var(--panel);
   border: 1px solid var(--border);
-  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.14);
 }
 .compose .send {
   width: 44px;
@@ -355,7 +359,6 @@ input:focus, textarea:focus { border-color: var(--accent); }
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.18);
   transition: transform 0.12s ease;
 }
 .compose .send:active { transform: scale(0.92); }

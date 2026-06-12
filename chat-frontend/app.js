@@ -80,6 +80,9 @@
     var s = document.documentElement.style;
     s.setProperty('--app-height', Math.round(h) + 'px');
     s.setProperty('--vv-top', Math.round(top) + 'px');
+    // эвристика «клавиатура открыта»: видимая высота заметно меньше окна
+    var kbOpen = (window.innerHeight - h) > 120;
+    document.body.classList.toggle('kbd', kbOpen);
   }
   syncAppHeight();
   if (window.visualViewport) {
@@ -934,7 +937,7 @@
 
   function initServiceWorker() {
     if (!('serviceWorker' in navigator)) return;
-    navigator.serviceWorker.register('/sw.js?v=12').catch(function () {});
+    navigator.serviceWorker.register('/sw.js?v=13').catch(function () {});
     navigator.serviceWorker.addEventListener('message', function (e) {
       if (!e.data) return;
       if (e.data.type === 'open-chat') {

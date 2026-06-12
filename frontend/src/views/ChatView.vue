@@ -203,55 +203,82 @@
     <!-- Аккаунты чата -->
     <n-modal v-model:show="showAccounts">
       <div class="panel modal-card chat-accounts">
-        <h3>Аккаунты чата</h3>
-        <p class="hint">
-          Аккаунт чата — отдельный логин/пароль для клиента (не VPN-ключ и не пользователь панели).
-          Передайте клиенту: адрес <span class="mono">{{ status?.public_url || '—' }}</span>, логин и пароль.
-        </p>
-
-        <div class="chat-acc-create">
-          <n-input v-model:value="newUsername" placeholder="логин: латиница, цифры, _" :disabled="creating" />
-          <n-input v-model:value="newDisplayName" placeholder="Имя (необязательно)" :disabled="creating" />
-          <n-button type="primary" :loading="creating" @click="createAccount">Создать</n-button>
+        <div class="acc-head">
+          <h3>Аккаунты чата</h3>
+          <div class="acc-head-actions">
+            <n-button size="small" tertiary :disabled="!accounts.length" @click="exportAccounts">Экспорт</n-button>
+            <n-button size="small" type="primary" @click="showCreateForm = !showCreateForm">
+              {{ showCreateForm ? 'Свернуть' : 'Создать' }}
+            </n-button>
+          </div>
         </div>
 
+        <p class="hint">
+          Отдельный логин/пароль для клиента (не VPN-ключ и не пользователь панели).
+          Адрес для входа: <span class="mono">{{ status?.public_url || '—' }}</span>.
+        </p>
+
+        <transition name="acc-fold">
+          <div v-if="showCreateForm" class="acc-create">
+            <n-input v-model:value="newUsername" placeholder="логин: латиница, цифры, _" :disabled="creating" @keyup.enter="createAccount" />
+            <n-input v-model:value="newDisplayName" placeholder="Имя (необязательно)" :disabled="creating" @keyup.enter="createAccount" />
+            <n-button type="primary" :loading="creating" @click="createAccount">Создать</n-button>
+          </div>
+        </transition>
+
         <n-input
-          v-if="accounts.length > 6"
+          v-if="accounts.length > 5"
           v-model:value="accountSearch"
-          placeholder="Поиск по имени, логину или VPN-клиенту"
+          placeholder="Поиск по имени, логину или VPN"
           clearable
         >
           <template #prefix><Search :size="15" /></template>
         </n-input>
 
-        <div class="chat-acc-list">
-          <div v-for="u in filteredAccounts" :key="u.id" class="chat-acc-row" :class="{ blocked: !u.is_active }">
-            <span class="entity-avatar entity-avatar--md chat-acc-avatar">
-              {{ (u.display_name || u.username).slice(0, 1).toUpperCase() }}
-            </span>
-            <div class="chat-acc-info">
-              <div class="chat-acc-name">
-                <strong>{{ u.display_name || u.username }}</strong>
-                <span v-if="!u.is_active" class="chat-acc-badge">заблокирован</span>
-              </div>
-              <div class="chat-acc-sub">
-                <span class="muted mono">@{{ u.username }}</span>
-                <span v-if="u.client_name" class="chat-link-chip">VPN: {{ u.client_name }}</span>
-              </div>
-            </div>
-            <n-dropdown trigger="click" :options="accountMenuOptions(u)" @select="(k: string) => onAccountMenu(k, u)">
-              <n-button size="small" tertiary circle title="Действия">
-                <template #icon><MoreHorizontal :size="16" /></template>
-              </n-button>
-            </n-dropdown>
+        <div class="acc-table">
+          <div class="acc-tr acc-thead">
+            <span>Клиент</span>
+            <span>Логин</span>
+            <span>VPN</span>
+            <span class="acc-th-act">Действия</span>
           </div>
-          <p v-if="!accounts.length" class="muted chat-acc-empty">Аккаунтов пока нет.</p>
-          <p v-else-if="!filteredAccounts.length" class="muted chat-acc-empty">Ничего не найдено.</p>
+          <div class="acc-scroll">
+            <div v-for="u in filteredAccounts" :key="u.id" class="acc-tr acc-row" :class="{ blocked: !u.is_active }">
+              <div class="acc-client">
+                <span class="entity-avatar entity-avatar--md">
+                  {{ (u.display_name || u.username).slice(0, 1).toUpperCase() }}
+                </span>
+                <span class="acc-name">
+                  <strong>{{ u.display_name || u.username }}</strong>
+                  <span v-if="!u.is_active" class="chat-acc-badge">блок</span>
+                </span>
+              </div>
+              <span class="acc-login mono">@{{ u.username }}</span>
+              <span class="acc-vpn">
+                <span v-if="u.client_name" class="chat-link-chip">{{ u.client_name }}</span>
+                <span v-else class="dim">—</span>
+              </span>
+              <span class="acc-act">
+                <n-dropdown
+                  trigger="click"
+                  placement="bottom-end"
+                  :options="accountMenuOptions(u)"
+                  @select="(k: string) => onAccountMenu(k, u)"
+                >
+                  <n-button size="small" tertiary circle title="Действия">
+                    <template #icon><MoreHorizontal :size="16" /></template>
+                  </n-button>
+                </n-dropdown>
+              </span>
+            </div>
+            <p v-if="!accounts.length" class="muted acc-empty">Аккаунтов пока нет — нажмите «Создать».</p>
+            <p v-else-if="!filteredAccounts.length" class="muted acc-empty">Ничего не найдено.</p>
+          </div>
         </div>
 
-        <div class="modal-actions">
-          <span class="muted chat-acc-count">{{ accounts.length }} {{ plural(accounts.length, 'аккаунт', 'аккаунта', 'аккаунтов') }}</span>
-          <n-button @click="showAccounts = false">Закрыть</n-button>
+        <div class="acc-foot">
+          <span class="muted">{{ accounts.length }} {{ plural(accounts.length, 'аккаунт', 'аккаунта', 'аккаунтов') }}</span>
+          <n-button size="small" @click="showAccounts = false">Закрыть</n-button>
         </div>
       </div>
     </n-modal>
@@ -523,6 +550,7 @@ const filteredAccounts = computed(() => {
 })
 const newUsername = ref('')
 const newDisplayName = ref('')
+const showCreateForm = ref(false)
 const creating = ref(false)
 const showPassword = ref(false)
 const issuedLogin = ref('')
@@ -881,6 +909,31 @@ async function loadAccounts() {
   }
 }
 
+function exportAccounts() {
+  if (!accounts.value.length) return
+  const url = status.value?.public_url || ''
+  const rows = [['Имя', 'Логин', 'VPN-клиент', 'Статус', 'Адрес']]
+  for (const u of accounts.value) {
+    rows.push([
+      u.display_name || u.username,
+      u.username,
+      u.client_name || '',
+      u.is_active ? 'активен' : 'заблокирован',
+      url
+    ])
+  }
+  const csv = rows
+    .map((r) => r.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(','))
+    .join('\r\n')
+  const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8' })
+  const a = document.createElement('a')
+  a.href = URL.createObjectURL(blob)
+  a.download = `chat-accounts-${new Date().toISOString().slice(0, 10)}.csv`
+  a.click()
+  URL.revokeObjectURL(a.href)
+  message.success('Список выгружен (без паролей — они не хранятся).')
+}
+
 async function createAccount() {
   const username = newUsername.value.trim().toLowerCase()
   if (!username) {
@@ -898,6 +951,7 @@ async function createAccount() {
     showPassword.value = true
     newUsername.value = ''
     newDisplayName.value = ''
+    showCreateForm.value = false
     await loadAccounts()
   } catch (error: any) {
     message.error(error?.response?.data?.detail || 'Не удалось создать аккаунт.')
@@ -1348,105 +1402,178 @@ async function copyCredentials() {
   color: var(--color-muted);
 }
 
+/* окно «Аккаунты чата» — фиксированная карточка, прокручивается только список,
+   само окно без полос прокрутки; меню действий (n-dropdown) всплывает поверх. */
 .chat-accounts {
-  width: min(560px, 94vw);
+  width: min(600px, 94vw);
+  max-height: min(86dvh, 640px);
+  overflow: hidden;
+  gap: 12px;
 }
 
-.chat-acc-create {
-  display: grid;
-  grid-template-columns: 1fr 1fr auto;
-  gap: 8px;
-}
-
-.chat-acc-list {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  max-height: min(48vh, 400px);
-  overflow-y: auto;
-  margin: 0 -4px;
-  padding: 0 4px;
-}
-
-.chat-acc-row {
+.acc-head {
   display: flex;
   align-items: center;
-  gap: 10px;
-  border: 1px solid var(--color-border);
-  border-radius: 12px;
-  padding: 8px 10px 8px 8px;
-  transition: border-color 0.15s ease, background 0.15s ease;
+  justify-content: space-between;
+  gap: 12px;
 }
 
-.chat-acc-row:hover {
-  border-color: var(--color-accent);
-  background: var(--color-accent-soft);
+.acc-head h3 {
+  margin: 0;
 }
 
-.chat-acc-row.blocked {
-  opacity: 0.62;
-}
-
-.chat-acc-avatar {
+.acc-head-actions {
+  display: flex;
+  gap: 8px;
   flex-shrink: 0;
 }
 
-.chat-acc-info {
+.acc-create {
+  display: grid;
+  grid-template-columns: 1fr 1fr auto;
+  gap: 8px;
+  overflow: hidden;
+}
+
+.acc-fold-enter-active,
+.acc-fold-leave-active {
+  transition: opacity 0.18s ease, transform 0.18s ease;
+}
+
+.acc-fold-enter-from,
+.acc-fold-leave-to {
+  opacity: 0;
+  transform: translateY(-6px);
+}
+
+.acc-table {
   display: flex;
   flex-direction: column;
-  gap: 2px;
-  min-width: 0;
+  min-height: 0;
   flex: 1;
-}
-
-.chat-acc-name {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 13.5px;
-}
-
-.chat-acc-name strong {
+  border: 1px solid var(--color-border);
+  border-radius: 12px;
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
-.chat-acc-sub {
+.acc-tr {
+  display: grid;
+  grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr) minmax(0, 1fr) 52px;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+}
+
+.acc-thead {
+  font-size: 11.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--color-muted);
+  background: var(--color-surface-2);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.acc-th-act {
+  text-align: right;
+}
+
+.acc-scroll {
+  overflow-y: auto;
+  min-height: 0;
+  scrollbar-width: thin;
+}
+
+.acc-row {
+  border-top: 1px solid var(--color-border);
+  transition: background 0.12s ease;
+}
+
+.acc-scroll .acc-row:first-child {
+  border-top: 0;
+}
+
+.acc-row:hover {
+  background: var(--color-accent-soft);
+}
+
+.acc-row.blocked {
+  opacity: 0.6;
+}
+
+.acc-client {
   display: flex;
   align-items: center;
-  gap: 8px;
-  font-size: 12px;
+  gap: 9px;
   min-width: 0;
 }
 
-.chat-acc-sub .chat-link-chip {
+.acc-client .entity-avatar {
+  flex-shrink: 0;
+}
+
+.acc-name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.acc-name strong {
+  font-size: 13.5px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  max-width: 220px;
+}
+
+.acc-login {
+  font-size: 12.5px;
+  color: var(--color-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.acc-vpn {
+  min-width: 0;
+  font-size: 12.5px;
+}
+
+.acc-vpn .chat-link-chip {
+  display: inline-block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: bottom;
+}
+
+.acc-act {
+  display: flex;
+  justify-content: flex-end;
 }
 
 .chat-acc-badge {
   flex-shrink: 0;
-  font-size: 10.5px;
-  font-weight: 600;
-  padding: 1px 7px;
+  font-size: 10px;
+  font-weight: 700;
+  padding: 1px 6px;
   border-radius: 999px;
   color: #e0a04a;
   background: rgba(224, 160, 74, 0.14);
   border: 1px solid rgba(224, 160, 74, 0.3);
 }
 
-.chat-acc-empty {
+.acc-empty {
   text-align: center;
-  padding: 20px 0;
+  padding: 26px 12px;
 }
 
-.chat-acc-count {
-  margin-right: auto;
+.acc-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
   font-size: 12px;
-  align-self: center;
 }
 
 .chat-cred {
@@ -1478,8 +1605,34 @@ async function copyCredentials() {
 }
 
 @media (max-width: 560px) {
-  .chat-acc-create {
+  .acc-create {
     grid-template-columns: 1fr;
+  }
+  .acc-thead {
+    display: none;
+  }
+  .acc-tr {
+    grid-template-columns: 1fr auto;
+    grid-template-areas:
+      "client act"
+      "login  act"
+      "vpn    act";
+    row-gap: 3px;
+  }
+  .acc-client {
+    grid-area: client;
+  }
+  .acc-login {
+    grid-area: login;
+    padding-left: 39px;
+  }
+  .acc-vpn {
+    grid-area: vpn;
+    padding-left: 39px;
+  }
+  .acc-act {
+    grid-area: act;
+    align-self: center;
   }
 }
 </style>
