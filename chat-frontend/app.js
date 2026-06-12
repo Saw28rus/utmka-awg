@@ -29,7 +29,11 @@
     draft: document.getElementById('draft'),
     sendBtn: document.getElementById('send-btn'),
     iosHelp: document.getElementById('ios-help'),
-    iosHelpClose: document.getElementById('ios-help-close')
+    iosHelpClose: document.getElementById('ios-help-close'),
+    vpnBtn: document.getElementById('vpn-btn'),
+    vpnSheet: document.getElementById('vpn-sheet'),
+    vpnClose: document.getElementById('vpn-close'),
+    vpnBody: document.getElementById('vpn-body')
   };
 
   var state = {
@@ -142,6 +146,119 @@
     doLogout();
   });
 
+  // --- кабинет «Мой VPN» ------------------------------------------------------
+
+  els.vpnBtn.addEventListener('click', openVpnSheet);
+  els.vpnClose.addEventListener('click', closeVpnSheet);
+  els.vpnSheet.addEventListener('click', function (e) {
+    if (e.target === els.vpnSheet) closeVpnSheet();
+  });
+
+  function closeVpnSheet() { els.vpnSheet.hidden = true; }
+
+  function openVpnSheet() {
+    els.vpnSheet.hidden = false;
+    els.vpnBody.innerHTML = '<div class="vpn-loading"><span class="muted">Загрузка…</span></div>';
+    req('GET', '/me/vpn', null, true).then(renderVpn).catch(function () {
+      els.vpnBody.innerHTML = '<p class="muted">Не удалось загрузить данные. Попробуйте позже.</p>';
+    });
+  }
+
+  function fmtBytes(n) {
+    n = Number(n || 0);
+    if (n < 1024) return n + ' Б';
+    var u = ['КБ', 'МБ', 'ГБ', 'ТБ'], i = -1;
+    do { n /= 1024; i++; } while (n >= 1024 && i < u.length - 1);
+    return (n >= 100 ? Math.round(n) : n.toFixed(1)) + ' ' + u[i];
+  }
+
+  function fmtDate(iso) {
+    if (!iso) return null;
+    try {
+      return new Date(iso).toLocaleDateString('ru-RU', { day: 'numeric', month: 'long', year: 'numeric' });
+    } catch (e) { return null; }
+  }
+
+  function fmtRub(kop) {
+    if (!kop) return '';
+    var r = kop / 100;
+    return (kop % 100 === 0 ? String(r) : r.toFixed(2)) + ' ₽';
+  }
+
+  function renderVpn(d) {
+    if (!d || !d.linked) {
+      els.vpnBody.innerHTML =
+        '<p class="muted">VPN-доступ ещё не привязан к вашему аккаунту. Обратитесь в поддержку — напишите сообщение в чат.</p>';
+      return;
+    }
+    var rows = [];
+    var expDate = fmtDate(d.expires_at);
+    if (expDate) {
+      var left = (d.days_left != null)
+        ? (d.days_left === 0 ? 'срок истёк' : 'осталось ' + d.days_left + ' ' + plural(d.days_left, 'день', 'дня', 'дней'))
+        : '';
+      rows.push(vpnRow('Срок действия', expDate + (left ? ' · ' + left : '')));
+    } else {
+      rows.push(vpnRow('Срок действия', 'бессрочно'));
+    }
+
+    var trafficLine, bar = '';
+    if (d.traffic_limit_bytes) {
+      var pct = Math.min(100, Math.round((d.traffic_used_bytes / d.traffic_limit_bytes) * 100));
+      trafficLine = fmtBytes(d.traffic_used_bytes) + ' из ' + fmtBytes(d.traffic_limit_bytes) + ' · ' + pct + '%';
+      bar = '<div class="vpn-bar"><span style="width:' + pct + '%"></span></div>';
+    } else {
+      trafficLine = fmtBytes(d.traffic_used_bytes) + ' (без лимита)';
+    }
+    rows.push(vpnRow('Трафик', trafficLine) + bar);
+
+    var html = '<div class="vpn-rows">' + rows.join('') + '</div>';
+
+    if (d.billing_mode === 'paid' && d.billing_amount_kopecks) {
+      var per = d.billing_period_months === 1 ? 'мес.' : (d.billing_period_months + ' мес.');
+      html += '<div class="vpn-tariff">';
+      html += '<div class="vpn-tariff-row"><span>Тариф</span><strong>' + fmtRub(d.billing_amount_kopecks) + ' / ' + per + '</strong></div>';
+      if (d.yookassa_available && d.can_self_pay) {
+        html += '<button id="vpn-pay" type="button" class="vpn-pay-btn">Продлить за ' + fmtRub(d.billing_amount_kopecks) + '</button>';
+        html += '<p class="vpn-note muted">Самостоятельных оплат в этом месяце: ' + (3 - d.self_pay_remaining) + ' из 3</p>';
+      } else if (d.yookassa_available && d.self_pay_remaining <= 0) {
+        html += '<p class="vpn-note muted">Лимит самостоятельных оплат на этот месяц исчерпан. Обратитесь в поддержку.</p>';
+      } else if (!d.yookassa_available) {
+        html += '<p class="vpn-note muted">Для продления напишите в поддержку.</p>';
+      }
+      html += '</div>';
+    }
+
+    els.vpnBody.innerHTML = html;
+    var payBtn = document.getElementById('vpn-pay');
+    if (payBtn) payBtn.addEventListener('click', function () { requestPayment(payBtn); });
+  }
+
+  function vpnRow(label, value) {
+    return '<div class="vpn-row"><span class="vpn-label">' + label + '</span><span class="vpn-val">' + value + '</span></div>';
+  }
+
+  function plural(n, one, few, many) {
+    var m10 = n % 10, m100 = n % 100;
+    if (m10 === 1 && m100 !== 11) return one;
+    if (m10 >= 2 && m10 <= 4 && (m100 < 10 || m100 >= 20)) return few;
+    return many;
+  }
+
+  function requestPayment(btn) {
+    btn.disabled = true;
+    btn.textContent = 'Создаю счёт…';
+    req('POST', '/me/request-payment', {}, true).then(function (res) {
+      closeVpnSheet();
+      poll(false);
+      if (res && res.pay_url) window.open(res.pay_url, '_blank', 'noopener');
+    }).catch(function (err) {
+      btn.disabled = false;
+      btn.textContent = 'Продлить';
+      alert(err && err.message ? err.message : 'Не удалось создать счёт.');
+    });
+  }
+
   function doLogout() {
     localStorage.removeItem('chat_access');
     localStorage.removeItem('chat_refresh');
@@ -154,6 +271,7 @@
     clearBadge();
     els.messages.querySelectorAll('.msg, .day').forEach(function (n) { n.remove(); });
     els.banner.hidden = true;
+    els.vpnSheet.hidden = true;
     els.chatScreen.hidden = true;
     els.loginScreen.hidden = false;
   }
@@ -239,7 +357,7 @@
     div.className = 'msg ' + (m.sender === 'client' ? 'client' : m.sender);
     var text = document.createElement('div');
     text.className = 'msg-text';
-    text.textContent = m.body;
+    linkify(text, m.body);
     div.appendChild(text);
     if (m.attachment) div.appendChild(buildAttachment(m.attachment));
     var time = document.createElement('span');
@@ -249,6 +367,31 @@
     } catch (e2) { time.textContent = ''; }
     div.appendChild(time);
     els.messages.appendChild(div);
+  }
+
+  // Безопасно вставляет текст и делает http(s)-ссылки кликабельными.
+  function linkify(node, body) {
+    var str = String(body == null ? '' : body);
+    var re = /(https?:\/\/[^\s<>"']+)/g;
+    var last = 0, match;
+    while ((match = re.exec(str)) !== null) {
+      if (match.index > last) {
+        node.appendChild(document.createTextNode(str.slice(last, match.index)));
+      }
+      var url = match[0];
+      var tail = '';
+      // не «съедаем» завершающую пунктуацию ссылки
+      while (/[.,!?)\]}»]$/.test(url)) { tail = url.slice(-1) + tail; url = url.slice(0, -1); }
+      var a = document.createElement('a');
+      a.href = url;
+      a.textContent = url;
+      a.target = '_blank';
+      a.rel = 'noopener noreferrer';
+      node.appendChild(a);
+      if (tail) node.appendChild(document.createTextNode(tail));
+      last = match.index + match[0].length;
+    }
+    if (last < str.length) node.appendChild(document.createTextNode(str.slice(last)));
   }
 
   function updateEmpty() {
@@ -705,8 +848,9 @@
     var notifPossible = state.pushSupported && !!state.vapidKey;
     // На iOS push доступен только в установленном PWA
     if (isIos && !standalone) notifPossible = false;
-    els.notifBtn.hidden = !notifPossible;
-    els.notifBtn.classList.toggle('on', perm === 'granted');
+    // Колокольчик нужен только чтобы ВКЛЮЧИТЬ уведомления.
+    // Если уже разрешены — прячем (клиенту больше нечего нажимать).
+    els.notifBtn.hidden = !notifPossible || perm === 'granted';
 
     // Контекстный баннер: сначала установка, затем уведомления
     if (canInstall && !dismissed('install')) {
@@ -728,7 +872,7 @@
 
   function initServiceWorker() {
     if (!('serviceWorker' in navigator)) return;
-    navigator.serviceWorker.register('/sw.js?v=9').catch(function () {});
+    navigator.serviceWorker.register('/sw.js?v=10').catch(function () {});
     navigator.serviceWorker.addEventListener('message', function (e) {
       if (e.data && e.data.type === 'open-chat') {
         clearBadge();

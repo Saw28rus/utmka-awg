@@ -67,6 +67,30 @@ class ChatClientConfig(BaseModel):
     vapid_public_key: Optional[str] = None
 
 
+class ChatVpnInfo(BaseModel):
+    linked: bool = False
+    name: Optional[str] = None
+    status: Optional[str] = None
+    expires_at: Optional[str] = None
+    days_left: Optional[int] = None
+    traffic_used_bytes: int = 0
+    traffic_limit_bytes: Optional[int] = None
+    billing_mode: str = "free"
+    billing_amount_kopecks: Optional[int] = None
+    billing_period_months: int = 1
+    yookassa_available: bool = False
+    can_self_pay: bool = False
+    self_pay_remaining: int = 0
+
+
+class ChatSelfPaymentResponse(BaseModel):
+    pay_url: str
+    invoice_id: str
+    expires_at: Optional[str] = None
+    amount_kopecks: Optional[int] = None
+    reused: bool = False
+
+
 class ChatPushSubscribeRequest(BaseModel):
     endpoint: str = Field(min_length=10, max_length=2000)
     p256dh: str = Field(min_length=10, max_length=255)
@@ -105,14 +129,43 @@ class ChatUserCreate(BaseModel):
     display_name: Optional[str] = Field(default=None, max_length=120)
 
 
+class ChatResetPasswordRequest(BaseModel):
+    # Пусто → сгенерируется случайный пароль; иначе — заданный админом.
+    password: Optional[str] = Field(default=None, max_length=128)
+
+
 class ChatUserWithPassword(BaseModel):
     user: ChatUserRead
     password: str  # показывается один раз
 
 
+class ChatFolderRead(BaseModel):
+    id: str
+    name: str
+    color: Optional[str] = None
+    sort_order: int = 0
+    count: int = 0
+
+
+class ChatFolderCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=64)
+    color: Optional[str] = Field(default=None, max_length=7)
+
+
+class ChatFolderUpdate(BaseModel):
+    name: Optional[str] = Field(default=None, max_length=64)
+    color: Optional[str] = Field(default=None, max_length=7)
+    sort_order: Optional[int] = None
+
+
+class ChatMoveThreadRequest(BaseModel):
+    folder_id: Optional[str] = None
+
+
 class ChatThreadRead(BaseModel):
     id: str
     status: str
+    folder_id: Optional[str] = None
     last_message_at: Optional[str] = None
     username: str
     display_name: Optional[str] = None

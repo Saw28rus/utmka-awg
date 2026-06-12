@@ -228,6 +228,14 @@ input:focus, textarea:focus { border-color: var(--accent); }
   box-shadow: 0 1px 1px rgba(0, 0, 0, 0.08);
 }
 .msg-text { white-space: pre-wrap; word-break: break-word; }
+.msg-text a {
+  color: inherit;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  font-weight: 600;
+  word-break: break-all;
+}
+.msg.admin .msg-text a, .msg.system .msg-text a { color: var(--accent); }
 
 .msg.client {
   align-self: flex-end;
@@ -263,7 +271,7 @@ input:focus, textarea:focus { border-color: var(--accent); }
 .scroll-down {
   position: fixed;
   right: calc(14px + env(safe-area-inset-right));
-  bottom: calc(86px + var(--safe-bottom));
+  bottom: calc(82px + max(8px, var(--safe-bottom)));
   width: 42px;
   height: 42px;
   border-radius: 50%;
@@ -276,14 +284,13 @@ input:focus, textarea:focus { border-color: var(--accent); }
   z-index: 4;
 }
 
-/* поле ввода */
+/* поле ввода — «парящее», как в Telegram: текстовое поле отдельно от кнопки */
 .compose {
   display: flex;
-  gap: 8px;
+  gap: 9px;
   align-items: flex-end;
-  padding: 10px 14px calc(10px + var(--safe-bottom));
-  background: var(--panel);
-  border-top: 1px solid var(--border);
+  padding: 8px calc(10px + env(safe-area-inset-right)) max(10px, var(--safe-bottom)) calc(10px + env(safe-area-inset-left));
+  background: transparent;
   position: sticky;
   bottom: 0;
 }
@@ -291,12 +298,15 @@ input:focus, textarea:focus { border-color: var(--accent); }
   flex: 1;
   resize: none;
   max-height: 130px;
-  border-radius: 20px;
-  padding: 11px 15px;
+  border-radius: 22px;
+  padding: 12px 16px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.18);
 }
 .compose .send {
-  width: 44px;
-  height: 44px;
+  width: 46px;
+  height: 46px;
   border-radius: 50%;
   flex: none;
   background: var(--accent);
@@ -304,6 +314,19 @@ input:focus, textarea:focus { border-color: var(--accent); }
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.22);
+  transition: transform 0.12s ease;
+}
+.compose .send:active { transform: scale(0.92); }
+
+/* мягкая подложка под «парящим» полем, чтобы лента не просвечивала резко */
+.chat .compose::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(180deg, transparent, var(--bg2) 55%);
+  z-index: -1;
+  pointer-events: none;
 }
 
 /* ============ ВЛОЖЕНИЕ-КЛЮЧ ============ */
@@ -331,6 +354,50 @@ input:focus, textarea:focus { border-color: var(--accent); }
   font-weight: 600;
 }
 .att-btn.primary { background: var(--accent); color: var(--accent-ink); }
+
+/* ============ КАБИНЕТ «МОЙ VPN» ============ */
+
+.vpn-card { max-width: min(420px, 92vw); gap: 16px; }
+.vpn-head { display: flex; align-items: center; justify-content: space-between; }
+.vpn-head strong { font-size: 17px; }
+.vpn-body { display: flex; flex-direction: column; gap: 14px; }
+.vpn-loading { text-align: center; padding: 16px; }
+
+.vpn-rows { display: flex; flex-direction: column; gap: 10px; }
+.vpn-row { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.vpn-label { color: var(--muted); font-size: 13px; flex: none; }
+.vpn-val { text-align: right; font-size: 14px; font-weight: 600; }
+
+.vpn-bar {
+  height: 8px;
+  border-radius: 999px;
+  background: var(--panel2);
+  overflow: hidden;
+  margin-top: -4px;
+}
+.vpn-bar span { display: block; height: 100%; background: var(--accent); border-radius: 999px; }
+
+.vpn-tariff {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
+.vpn-tariff-row { display: flex; align-items: center; justify-content: space-between; }
+.vpn-tariff-row span { color: var(--muted); font-size: 13px; }
+.vpn-tariff-row strong { font-size: 15px; }
+
+.vpn-pay-btn {
+  background: var(--accent);
+  color: var(--accent-ink);
+  padding: 13px 16px;
+  font-weight: 700;
+  font-size: 15px;
+  border-radius: 12px;
+}
+.vpn-pay-btn:disabled { opacity: 0.6; }
+.vpn-note { margin: 0; font-size: 12.5px; text-align: center; }
 
 /* ============ OVERLAY (QR / текст / iOS) ============ */
 

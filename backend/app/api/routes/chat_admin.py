@@ -15,11 +15,16 @@ from app.models.chat import ChatMessage, ChatUser
 from app.models.invoice import Invoice
 from app.schemas.auth import CurrentUser
 from app.schemas.chat import (
+    ChatFolderCreate,
+    ChatFolderRead,
+    ChatFolderUpdate,
     ChatInsertInvoiceRequest,
     ChatInvoiceItem,
     ChatLinkRequest,
     ChatMessageRead,
     ChatMessagesPage,
+    ChatMoveThreadRequest,
+    ChatResetPasswordRequest,
     ChatSendRequest,
     ChatStatusRead,
     ChatThreadRead,
@@ -145,12 +150,14 @@ async def chat_user_create(
 async def chat_user_reset_password(
     user_id: str,
     request: Request,
+    payload: Optional[ChatResetPasswordRequest] = None,
     admin: CurrentUser = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ) -> ChatUserWithPassword:
     svc = ChatService(db)
+    custom = (payload.password if payload else None) or None
     try:
-        user, password = await svc.reset_password(_parse_uuid(user_id))
+        user, password = await svc.reset_password(_parse_uuid(user_id), custom_password=custom)
     except ChatServiceError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     await AuditService(db).log(
@@ -159,10 +166,34 @@ async def chat_user_reset_password(
         user_email=admin.email,
         target_type="chat_user",
         target_id=str(user.id),
-        detail={"username": user.username},
+        detail={"username": user.username, "custom": bool(custom)},
         ip=client_ip(request),
     )
     return ChatUserWithPassword(user=_user_read(user), password=password)
+
+
+@router.delete("/users/{user_id}")
+async def chat_user_delete(
+    user_id: str,
+    request: Request,
+    admin: CurrentUser = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    svc = ChatService(db)
+    try:
+        username = await svc.delete_user(_parse_uuid(user_id))
+    except ChatServiceError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    await AuditService(db).log(
+        "chat_user_deleted",
+        user_id=uuid.UUID(admin.id),
+        user_email=admin.email,
+        target_type="chat_user",
+        target_id=user_id,
+        detail={"username": username},
+        ip=client_ip(request),
+    )
+    return {"status": "ok", "username": username}
 
 
 @router.post("/users/{user_id}/toggle-active", response_model=ChatUserRead)
@@ -213,6 +244,106 @@ async def chat_threads(
     _: CurrentUser = Depends(require_chat_access), db: AsyncSession = Depends(get_db)
 ) -> list[ChatThreadRead]:
     return [ChatThreadRead(**t) for t in await ChatService(db).admin_threads()]
+
+
+# --- папки диалогов (CH7) ----------------------------------------------------
+
+
+@router.get("/folders", response_model=list[ChatFolderRead])
+async def chat_folders(
+    _: CurrentUser = Depends(require_chat_access), db: AsyncSession = Depends(get_db)
+) -> list[ChatFolderRead]:
+    svc = ChatService(db)
+    folders = await svc.list_folders()
+    counts = await svc.folder_counts()
+    return [
+        ChatFolderRead(
+            id=str(f.id),
+            name=f.name,
+            color=f.color,
+            sort_order=f.sort_order,
+            count=counts.get(str(f.id), 0),
+        )
+        for f in folders
+    ]
+
+
+@router.post("/folders", response_model=ChatFolderRead)
+async def chat_folder_create(
+    payload: ChatFolderCreate,
+    request: Request,
+    admin: CurrentUser = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+) -> ChatFolderRead:
+    svc = ChatService(db)
+    try:
+        folder = await svc.create_folder(payload.name, payload.color)
+    except ChatServiceError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    await AuditService(db).log(
+        "chat_folder_created",
+        user_id=uuid.UUID(admin.id),
+        user_email=admin.email,
+        target_type="chat_folder",
+        target_id=str(folder.id),
+        detail={"name": folder.name},
+        ip=client_ip(request),
+    )
+    return ChatFolderRead(id=str(folder.id), name=folder.name, color=folder.color, sort_order=folder.sort_order)
+
+
+@router.patch("/folders/{folder_id}", response_model=ChatFolderRead)
+async def chat_folder_update(
+    folder_id: str,
+    payload: ChatFolderUpdate,
+    _: CurrentUser = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+) -> ChatFolderRead:
+    svc = ChatService(db)
+    try:
+        folder = await svc.update_folder(
+            _parse_uuid(folder_id),
+            name=payload.name,
+            color=payload.color,
+            sort_order=payload.sort_order,
+        )
+    except ChatServiceError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return ChatFolderRead(id=str(folder.id), name=folder.name, color=folder.color, sort_order=folder.sort_order)
+
+
+@router.delete("/folders/{folder_id}")
+async def chat_folder_delete(
+    folder_id: str,
+    _: CurrentUser = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    svc = ChatService(db)
+    try:
+        await svc.delete_folder(_parse_uuid(folder_id))
+    except ChatServiceError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    return {"status": "ok"}
+
+
+@router.post("/threads/{thread_id}/move", response_model=ChatThreadRead)
+async def chat_thread_move(
+    thread_id: str,
+    payload: ChatMoveThreadRequest,
+    _: CurrentUser = Depends(require_chat_access),
+    db: AsyncSession = Depends(get_db),
+) -> ChatThreadRead:
+    svc = ChatService(db)
+    folder_uuid = _parse_uuid(payload.folder_id) if payload.folder_id else None
+    try:
+        await svc.move_thread(_parse_uuid(thread_id), folder_uuid)
+    except ChatServiceError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    threads = await svc.admin_threads()
+    for t in threads:
+        if t["id"] == thread_id:
+            return ChatThreadRead(**t)
+    raise HTTPException(status_code=404, detail="Диалог не найден.")
 
 
 @router.get("/threads/{thread_id}/messages", response_model=ChatMessagesPage)

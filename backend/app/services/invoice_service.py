@@ -8,7 +8,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.invoice import Invoice, InvoiceTemplate
@@ -25,6 +25,17 @@ DEFAULT_TEMPLATE_BODY = (
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
+
+
+class SelfPaymentError(Exception):
+    """Ошибка самооплаты клиентом с конкретным HTTP-кодом."""
+
+    def __init__(self, message: str, status_code: int = 400):
+        super().__init__(message)
+        self.status_code = status_code
+
+
+SELF_PAY_MONTHLY_LIMIT = 3
 
 
 def _add_months(dt: datetime, months: int) -> datetime:
@@ -105,6 +116,8 @@ class InvoiceService:
         expires_days: int,
         extend_months: int,
         created_by_user_id: Optional[uuid.UUID],
+        source: str = "admin",
+        metadata_extra: Optional[dict] = None,
     ) -> list[dict]:
         creds = await self._yookassa_creds()
         if not creds:
@@ -141,6 +154,14 @@ class InvoiceService:
             description = f"Оплата: {service}".strip() if service else f"Оплата: {detail.name}"
             cart_description = service or "Доступ"
 
+            metadata = {
+                "client_id": str(client_id),
+                "client_name": detail.name,
+                "cms_name": "utmka_awg",
+            }
+            if metadata_extra:
+                metadata.update({k: str(v) for k, v in metadata_extra.items()})
+
             yk = await create_invoice(
                 shop_id=shop_id,
                 secret_key=secret,
@@ -148,11 +169,7 @@ class InvoiceService:
                 description=description,
                 expires_at=expires_at,
                 cart_description=cart_description,
-                metadata={
-                    "client_id": str(client_id),
-                    "client_name": detail.name,
-                    "cms_name": "utmka_awg",
-                },
+                metadata=metadata,
             )
 
             if not yk.ok or not yk.pay_url:
@@ -190,6 +207,7 @@ class InvoiceService:
                 expires_at=_parse_iso(yk.expires_at) or expires_at,
                 extend_months=extend_months,
                 created_by_user_id=created_by_user_id,
+                source=source,
             )
             self.session.add(invoice)
             await self.session.flush()
@@ -201,11 +219,106 @@ class InvoiceService:
                     "invoice_id": str(invoice.id),
                     "pay_url": yk.pay_url,
                     "message_text": message_text,
+                    "expires_at": (invoice.expires_at.isoformat() if invoice.expires_at else None),
+                    "amount_kopecks": amount_kopecks,
                 }
             )
 
         await self.session.commit()
         return results
+
+    # -- self-service payment (CH10) --------------------------------------
+
+    async def yookassa_available(self) -> bool:
+        return await self._yookassa_creds() is not None
+
+    async def self_pay_count_this_month(self, client_id: str) -> int:
+        month_start = _utcnow().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        result = await self.session.execute(
+            select(func.count())
+            .select_from(Invoice)
+            .where(
+                Invoice.client_id == client_id,
+                Invoice.source == "client_self",
+                Invoice.deleted_at.is_(None),
+                Invoice.created_at >= month_start,
+            )
+        )
+        return int(result.scalar() or 0)
+
+    async def _active_self_pending(self, client_id: str) -> Optional[Invoice]:
+        result = await self.session.execute(
+            select(Invoice)
+            .where(
+                Invoice.client_id == client_id,
+                Invoice.source == "client_self",
+                Invoice.status == "pending",
+                Invoice.deleted_at.is_(None),
+                Invoice.expires_at > _utcnow(),
+            )
+            .order_by(Invoice.created_at.desc())
+            .limit(1)
+        )
+        return result.scalar_one_or_none()
+
+    async def create_self_payment(self, *, chat_user) -> dict:
+        """Самооплата клиентом: счёт по тарифу VPN-клиента, ссылка на 1 день,
+        не чаще 3 раз в месяц. client_id берётся ТОЛЬКО из chat_user."""
+        client_id = chat_user.client_id
+        if not client_id:
+            raise SelfPaymentError("VPN-клиент не привязан. Обратитесь в поддержку.", 400)
+        detail = client_store.get_detail(client_id)
+        if not detail:
+            raise SelfPaymentError("VPN-клиент не найден. Обратитесь в поддержку.", 404)
+        if detail.billing_mode != "paid" or not detail.billing_amount_kopecks:
+            raise SelfPaymentError("Для этого доступа самостоятельная оплата недоступна.", 400)
+        if not await self.yookassa_available():
+            raise SelfPaymentError("Оплата временно недоступна.", 400)
+
+        existing = await self._active_self_pending(client_id)
+        if existing and existing.pay_url:
+            return {
+                "invoice_id": str(existing.id),
+                "pay_url": existing.pay_url,
+                "expires_at": existing.expires_at.isoformat() if existing.expires_at else None,
+                "amount_kopecks": existing.amount_kopecks,
+                "reused": True,
+                "message_text": existing.message_text,
+            }
+
+        if await self.self_pay_count_this_month(client_id) >= SELF_PAY_MONTHLY_LIMIT:
+            raise SelfPaymentError(
+                f"Лимит самостоятельных оплат на этот месяц исчерпан "
+                f"({SELF_PAY_MONTHLY_LIMIT}). Обратитесь в поддержку.",
+                429,
+            )
+
+        months = detail.billing_period_months or 1
+        period_label = "1 месяц" if months == 1 else f"{months} мес."
+        results = await self.create_for_clients(
+            client_ids=[client_id],
+            amount=detail.billing_amount_kopecks / 100,
+            service="Продление VPN",
+            template_id=None,
+            message_override=None,
+            period_label=period_label,
+            expires_days=1,
+            extend_months=months,
+            created_by_user_id=None,
+            source="client_self",
+            metadata_extra={"chat_user_id": str(chat_user.id), "source": "client_self"},
+        )
+        res = results[0] if results else {}
+        if not res.get("ok"):
+            raise SelfPaymentError(res.get("error") or "Не удалось создать счёт.", 400)
+        return {
+            "invoice_id": res["invoice_id"],
+            "pay_url": res["pay_url"],
+            "expires_at": res.get("expires_at"),
+            "amount_kopecks": res.get("amount_kopecks"),
+            "reused": False,
+            "message_text": res.get("message_text"),
+        }
 
     # -- listing -----------------------------------------------------------
 

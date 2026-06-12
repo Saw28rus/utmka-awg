@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.chat_deps import get_current_chat_user, require_chat_host
@@ -28,12 +28,16 @@ from app.schemas.chat import (
     ChatPushSubscribeRequest,
     ChatPushUnsubscribeRequest,
     ChatRefreshRequest,
+    ChatSelfPaymentResponse,
     ChatSendRequest,
     ChatTokenResponse,
+    ChatVpnInfo,
 )
 from app.services import push_service
 from app.services.audit_service import AuditService
 from app.services.chat_service import ChatService, ChatServiceError
+from app.services.client_store import client_store
+from app.services.invoice_service import InvoiceService, SelfPaymentError
 from app.services.panel_settings_service import PanelSettingsService
 from app.services.qr import build_qr_data_url
 
@@ -151,6 +155,104 @@ async def chat_logout(payload: ChatRefreshRequest, db: AsyncSession = Depends(ge
 @router.get("/me", response_model=ChatProfile)
 async def chat_me(user: ChatUser = Depends(get_current_chat_user)) -> ChatProfile:
     return _profile(user)
+
+
+def _days_left(expires_at: Optional[str]) -> Optional[int]:
+    if not expires_at:
+        return None
+    try:
+        parsed = datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    secs = (parsed - datetime.now(timezone.utc)).total_seconds()
+    if secs <= 0:
+        return 0
+    return int(secs // 86400) + (1 if secs % 86400 else 0)
+
+
+@router.get("/me/vpn", response_model=ChatVpnInfo)
+async def chat_me_vpn(
+    user: ChatUser = Depends(get_current_chat_user),
+    db: AsyncSession = Depends(get_db),
+) -> ChatVpnInfo:
+    if not user.client_id:
+        return ChatVpnInfo(linked=False)
+    detail = client_store.get_detail(user.client_id)
+    if not detail:
+        return ChatVpnInfo(linked=False)
+
+    invoice_svc = InvoiceService(db)
+    yk_available = await invoice_svc.yookassa_available()
+    is_paid = detail.billing_mode == "paid" and bool(detail.billing_amount_kopecks)
+    used_this_month = (
+        await invoice_svc.self_pay_count_this_month(user.client_id) if is_paid else 0
+    )
+    remaining = max(0, 3 - used_this_month) if is_paid else 0
+    can_self_pay = is_paid and yk_available and remaining > 0
+
+    return ChatVpnInfo(
+        linked=True,
+        name=detail.name,
+        status=detail.status,
+        expires_at=detail.expires_at,
+        days_left=_days_left(detail.expires_at),
+        traffic_used_bytes=detail.traffic_used_bytes or 0,
+        traffic_limit_bytes=detail.traffic_limit_bytes,
+        billing_mode=detail.billing_mode,
+        billing_amount_kopecks=detail.billing_amount_kopecks,
+        billing_period_months=detail.billing_period_months,
+        yookassa_available=yk_available,
+        can_self_pay=can_self_pay,
+        self_pay_remaining=remaining,
+    )
+
+
+@router.post("/me/request-payment", response_model=ChatSelfPaymentResponse)
+async def chat_me_request_payment(
+    request: Request,
+    background: BackgroundTasks,
+    user: ChatUser = Depends(get_current_chat_user),
+    db: AsyncSession = Depends(get_db),
+) -> ChatSelfPaymentResponse:
+    invoice_svc = InvoiceService(db)
+    try:
+        result = await invoice_svc.create_self_payment(chat_user=user)
+    except SelfPaymentError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc))
+
+    # Дублируем ссылку в переписку, чтобы она была под рукой и у клиента, и у админа.
+    svc = ChatService(db)
+    thread = await svc.get_or_create_thread(user.id)
+    body = result.get("message_text") or (
+        "Счёт на продление доступа создан. "
+        f"Оплатите по ссылке: {result['pay_url']}"
+    )
+    try:
+        await svc.send_message(thread, "admin", body, sender_user_id=None)
+    except ChatServiceError:
+        pass
+    background.add_task(push_service.notify, user.id, "invoice")
+
+    await AuditService(db).log(
+        "chat_self_payment",
+        target_type="chat_user",
+        target_id=str(user.id),
+        detail={
+            "client_id": user.client_id,
+            "invoice_id": result["invoice_id"],
+            "reused": result.get("reused", False),
+        },
+        ip=client_ip(request),
+    )
+    return ChatSelfPaymentResponse(
+        pay_url=result["pay_url"],
+        invoice_id=result["invoice_id"],
+        expires_at=result.get("expires_at"),
+        amount_kopecks=result.get("amount_kopecks"),
+        reused=result.get("reused", False),
+    )
 
 
 @router.get("/messages", response_model=ChatMessagesPage)

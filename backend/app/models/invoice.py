@@ -38,6 +38,10 @@ class Invoice(Base):
     status: Mapped[str] = mapped_column(String(32), default="pending", index=True)
     cancellation_reason: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
 
+    # Кто создал счёт: admin (через панель) | client_self (самооплата в чате).
+    # Нужно для лимита «3 самостоятельных оплаты в месяц».
+    source: Mapped[str] = mapped_column(String(16), default="admin", index=True)
+
     expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     paid_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 

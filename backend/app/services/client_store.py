@@ -162,6 +162,14 @@ class ClientStore:
             record["expires_at"] = changes["expires_at"]
         if "status" in changes and changes["status"] in {"active", "disabled"}:
             record["status"] = changes["status"]
+        if "billing_mode" in changes and changes["billing_mode"] in {"free", "paid"}:
+            record["billing_mode"] = changes["billing_mode"]
+            if changes["billing_mode"] == "free":
+                record["billing_amount_kopecks"] = None
+        if "billing_amount_kopecks" in changes:
+            record["billing_amount_kopecks"] = changes["billing_amount_kopecks"]
+        if "billing_period_months" in changes and changes["billing_period_months"]:
+            record["billing_period_months"] = int(changes["billing_period_months"])
         self._persist()
         return self.get_detail(client_id)
 
@@ -342,6 +350,9 @@ class ClientStore:
             "blocked": record.get("blocked_on_server", False),
             "created_at": record.get("created_at"),
             "keepalive": int(record.get("keepalive", 25) or 25),
+            "billing_mode": record.get("billing_mode", "free"),
+            "billing_amount_kopecks": record.get("billing_amount_kopecks"),
+            "billing_period_months": int(record.get("billing_period_months", 1) or 1),
         }
 
     def _to_list_item(self, record: dict) -> ClientListItem:

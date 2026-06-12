@@ -11,6 +11,10 @@ class ClientCreate(BaseModel):
     traffic_limit_bytes: Optional[int] = Field(default=None, ge=0)
     expires_at: Optional[str] = None
     keepalive: int = Field(default=25, ge=0, le=120)
+    # Тариф (CH9): основа для самооплаты клиентом в чате
+    billing_mode: str = Field(default="free", pattern="^(free|paid)$")
+    billing_amount_kopecks: Optional[int] = Field(default=None, ge=100, le=100_000_00)
+    billing_period_months: int = Field(default=1, ge=1, le=12)
 
 
 class KeepaliveUpdate(BaseModel):
@@ -32,6 +36,9 @@ class ClientUpdate(BaseModel):
     traffic_limit_bytes: Optional[int] = Field(default=None, ge=0)
     expires_at: Optional[str] = None
     status: Optional[str] = None
+    billing_mode: Optional[str] = Field(default=None, pattern="^(free|paid)$")
+    billing_amount_kopecks: Optional[int] = Field(default=None, ge=100, le=100_000_00)
+    billing_period_months: Optional[int] = Field(default=None, ge=1, le=12)
 
 
 class ClientTrafficSnapshot(BaseModel):
@@ -65,6 +72,9 @@ class ClientListItem(BaseModel):
     blocked: bool = False
     created_at: Optional[str] = None
     keepalive: int = 25
+    billing_mode: str = "free"
+    billing_amount_kopecks: Optional[int] = None
+    billing_period_months: int = 1
 
 
 class ClientDetail(ClientListItem):

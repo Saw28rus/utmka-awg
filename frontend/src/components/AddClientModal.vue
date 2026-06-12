@@ -66,6 +66,36 @@
             <span>Действует до</span>
             <input v-model="form.expiresAt" type="date" :min="todayStr" />
           </label>
+          <label class="field">
+            <span>Тариф</span>
+            <select v-model="form.billingMode">
+              <option value="free">Бесплатный</option>
+              <option value="paid">Платный (самооплата в чате)</option>
+            </select>
+          </label>
+          <template v-if="form.billingMode === 'paid'">
+            <label class="field">
+              <span>Сумма за период, ₽</span>
+              <input
+                v-model="form.billingAmountRub"
+                inputmode="decimal"
+                type="number"
+                min="1"
+                step="1"
+                placeholder="Например, 300"
+              />
+            </label>
+            <label class="field">
+              <span>Период оплаты</span>
+              <select v-model="form.billingPeriodMonths">
+                <option :value="1">Раз в месяц</option>
+                <option :value="3">Раз в 3 месяца</option>
+              </select>
+            </label>
+            <p class="field-wide hint-text">
+              Клиент сможет сам продлить доступ в чате (если подключена ЮKassa): ссылка на 1 день, не чаще 3 раз в месяц.
+            </p>
+          </template>
         </form>
 
         <div v-if="saving" class="saving-state">
@@ -131,7 +161,10 @@ const form = reactive({
   protocol: 'awg2',
   format: 'both',
   trafficLimitGb: '',
-  expiresAt: ''
+  expiresAt: '',
+  billingMode: 'free',
+  billingAmountRub: '',
+  billingPeriodMonths: 1
 })
 
 const visible = computed({
@@ -183,6 +216,9 @@ watch(visible, async (open) => {
     form.format = 'both'
     form.trafficLimitGb = ''
     form.expiresAt = ''
+    form.billingMode = 'free'
+    form.billingAmountRub = ''
+    form.billingPeriodMonths = 1
     await loadServers()
     if (eligibleServers.value.length) {
       form.server_id = eligibleServers.value[0].id
@@ -229,6 +265,15 @@ async function submit() {
     error.value = 'Выбери сервер.'
     return
   }
+  let billingAmountKopecks: number | null = null
+  if (form.billingMode === 'paid') {
+    const rub = parseFloat(form.billingAmountRub)
+    if (!form.billingAmountRub || Number.isNaN(rub) || rub <= 0) {
+      error.value = 'Укажи сумму тарифа.'
+      return
+    }
+    billingAmountKopecks = Math.round(rub * 100)
+  }
   saving.value = true
   error.value = ''
   try {
@@ -243,7 +288,10 @@ async function submit() {
       protocol: form.protocol,
       format: form.format,
       traffic_limit_bytes: trafficLimitBytes,
-      expires_at: form.expiresAt || null
+      expires_at: form.expiresAt || null,
+      billing_mode: form.billingMode,
+      billing_amount_kopecks: billingAmountKopecks,
+      billing_period_months: form.billingPeriodMonths
     })
     message.success('Клиент создан. Конфиг и QR готовы.')
     emit('created', { clientId: data.id, format: form.format })
@@ -321,6 +369,13 @@ function close() {
 
 .field-wide {
   grid-column: 1 / -1;
+}
+
+.hint-text {
+  margin: 0;
+  color: var(--color-muted);
+  font-size: 12.5px;
+  font-weight: 400;
 }
 
 .field input,

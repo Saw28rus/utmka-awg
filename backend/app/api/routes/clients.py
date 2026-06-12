@@ -77,6 +77,19 @@ async def create_client(
     except (ClientCreateError, XrayClientCreateError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+    if payload.billing_mode == "paid" and not payload.billing_amount_kopecks:
+        raise HTTPException(status_code=400, detail="Для платного тарифа укажите сумму.")
+    billing_changes = {
+        "billing_mode": payload.billing_mode,
+        "billing_amount_kopecks": payload.billing_amount_kopecks
+        if payload.billing_mode == "paid"
+        else None,
+        "billing_period_months": payload.billing_period_months,
+    }
+    refreshed = client_store.update_limits(detail.id, changes=billing_changes)
+    if refreshed:
+        detail = refreshed
+
     audit = AuditService(db)
     await audit.log(
         "client_created",
@@ -138,6 +151,11 @@ async def update_client(
     db: AsyncSession = Depends(get_db),
 ) -> ClientDetail:
     changes = payload.model_dump(exclude_unset=True)
+    if changes.get("billing_mode") == "paid":
+        existing = client_store.get_detail(client_id)
+        amount = changes.get("billing_amount_kopecks")
+        if not amount and not (existing and existing.billing_amount_kopecks):
+            raise HTTPException(status_code=400, detail="Для платного тарифа укажите сумму.")
     detail = client_store.update_limits(client_id, changes=changes)
     if not detail:
         raise HTTPException(status_code=404, detail="Клиент не найден.")

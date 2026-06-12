@@ -11,6 +11,49 @@
           </n-button>
         </div>
 
+        <div class="chat-folders">
+          <button
+            type="button"
+            class="chat-folder-chip"
+            :class="{ active: activeFolderId === 'all' }"
+            @click="activeFolderId = 'all'"
+          >
+            Все <span class="chat-folder-count">{{ threads.length }}</span>
+          </button>
+          <button
+            v-for="f in folders"
+            :key="f.id"
+            type="button"
+            class="chat-folder-chip"
+            :class="{ active: activeFolderId === f.id }"
+            :style="f.color ? { borderColor: f.color } : undefined"
+            @click="activeFolderId = f.id"
+          >
+            {{ f.name }} <span class="chat-folder-count">{{ f.count }}</span>
+            <span
+              v-if="isAdmin"
+              class="chat-folder-x"
+              title="Удалить папку"
+              @click.stop="confirmDeleteFolder(f)"
+            >×</span>
+          </button>
+          <button
+            type="button"
+            class="chat-folder-chip"
+            :class="{ active: activeFolderId === 'none' }"
+            @click="activeFolderId = 'none'"
+          >
+            Без папки <span class="chat-folder-count">{{ noFolderCount }}</span>
+          </button>
+          <button
+            v-if="isAdmin"
+            type="button"
+            class="chat-folder-chip add"
+            title="Создать папку"
+            @click="openCreateFolder"
+          >+ Папка</button>
+        </div>
+
         <div v-if="threadsLoading && !threads.length" class="chat-empty">
           <n-spin size="small" />
         </div>
@@ -24,7 +67,7 @@
         </div>
 
         <button
-          v-for="t in threads"
+          v-for="t in filteredThreads"
           :key="t.id"
           type="button"
           class="chat-thread"
@@ -102,6 +145,16 @@
               <n-button size="tiny" tertiary :loading="statusBusy" @click="toggleResolved">
                 {{ activeThread.status === 'resolved' ? 'Открыть снова' : 'Пометить решённым' }}
               </n-button>
+              <n-dropdown
+                v-if="isAdmin"
+                trigger="click"
+                :options="adminMenuOptions"
+                @select="onAdminMenu"
+              >
+                <n-button size="tiny" tertiary title="Управление аккаунтом">
+                  <template #icon><Settings :size="14" /></template>
+                </n-button>
+              </n-dropdown>
             </div>
           </div>
 
@@ -169,9 +222,12 @@
               <n-button size="tiny" tertiary @click="openLinkAccount(u)">
                 {{ u.client_id ? 'VPN-клиент' : 'Привязать VPN' }}
               </n-button>
-              <n-button size="tiny" tertiary @click="resetPassword(u)">Новый пароль</n-button>
+              <n-button size="tiny" tertiary @click="openResetPassword(u.id)">Новый пароль</n-button>
               <n-button size="tiny" tertiary :type="u.is_active ? 'warning' : 'primary'" @click="toggleActive(u)">
-                {{ u.is_active ? 'Отключить' : 'Включить' }}
+                {{ u.is_active ? 'Заблокировать' : 'Разблокировать' }}
+              </n-button>
+              <n-button size="tiny" tertiary type="error" @click="openDeleteAccount(u.id, u.display_name || u.username, u.username)">
+                Удалить
               </n-button>
             </div>
           </div>
@@ -237,6 +293,75 @@
       </div>
     </n-modal>
 
+    <!-- Создание папки -->
+    <n-modal v-model:show="showFolder">
+      <div class="panel modal-card">
+        <h3>Новая папка</h3>
+        <p class="hint">Сгруппируйте диалоги: «Друзья», «Семья», «NL каскад» и т.п.</p>
+        <n-input
+          v-model:value="folderName"
+          placeholder="Название папки"
+          maxlength="64"
+          :disabled="folderBusy"
+          @keyup.enter="doCreateFolder"
+        />
+        <div class="modal-actions">
+          <n-button @click="showFolder = false">Отмена</n-button>
+          <n-button type="primary" :loading="folderBusy" @click="doCreateFolder">Создать</n-button>
+        </div>
+      </div>
+    </n-modal>
+
+    <!-- Сброс пароля -->
+    <n-modal v-model:show="showReset">
+      <div class="panel modal-card">
+        <h3>Сбросить пароль</h3>
+        <p class="hint">
+          Старый пароль перестанет работать, активные сессии клиента сбросятся.
+          Оставьте поле пустым — сгенерируем случайный пароль.
+        </p>
+        <n-input
+          v-model:value="resetCustomPassword"
+          type="password"
+          show-password-on="click"
+          placeholder="Свой пароль (необязательно, мин. 8 символов)"
+          :disabled="resetBusy"
+        />
+        <div class="modal-actions">
+          <n-button @click="showReset = false">Отмена</n-button>
+          <n-button type="primary" :loading="resetBusy" @click="doResetPassword">Сбросить</n-button>
+        </div>
+      </div>
+    </n-modal>
+
+    <!-- Удаление аккаунта -->
+    <n-modal v-model:show="showDelete">
+      <div class="panel modal-card">
+        <h3>Удалить аккаунт навсегда</h3>
+        <p class="hint">
+          Будут удалены аккаунт <strong>@{{ deleteUsername }}</strong>, вся переписка, ключи и push-подписки.
+          VPN-клиент и оплаченные счета не затрагиваются. Действие необратимо.
+        </p>
+        <p class="hint">Для подтверждения введите <strong>@{{ deleteUsername }}</strong>:</p>
+        <n-input
+          v-model:value="deleteConfirmText"
+          :placeholder="'@' + deleteUsername"
+          :disabled="deleteBusy"
+        />
+        <div class="modal-actions">
+          <n-button @click="showDelete = false">Отмена</n-button>
+          <n-button
+            type="error"
+            :loading="deleteBusy"
+            :disabled="deleteConfirmText.trim() !== '@' + deleteUsername"
+            @click="doDeleteAccount"
+          >
+            Удалить навсегда
+          </n-button>
+        </div>
+      </div>
+    </n-modal>
+
     <!-- Пароль (показывается один раз) -->
     <n-modal v-model:show="showPassword" :mask-closable="false">
       <div class="panel modal-card">
@@ -260,8 +385,8 @@
 </template>
 
 <script setup lang="ts">
-import { Copy, KeyRound, MessagesSquare, Receipt, Send, UserPlus } from '@lucide/vue'
-import { NButton, NInput, NModal, NSelect, NSpin, useDialog, useMessage } from 'naive-ui'
+import { Copy, KeyRound, MessagesSquare, Receipt, Send, Settings, UserPlus } from '@lucide/vue'
+import { NButton, NDropdown, NInput, NModal, NSelect, NSpin, useDialog, useMessage } from 'naive-ui'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 
 import { api } from '@/api/client'
@@ -278,6 +403,7 @@ type ChatStatus = {
 type ThreadRow = {
   id: string
   status: string
+  folder_id: string | null
   last_message_at: string | null
   username: string
   display_name: string | null
@@ -289,6 +415,8 @@ type ThreadRow = {
   last_preview: string | null
   last_sender: string | null
 }
+
+type FolderRow = { id: string; name: string; color: string | null; sort_order: number; count: number }
 
 type AttachmentInfo = { id: string; kind: string; filename: string; expires_at: string; expired: boolean }
 
@@ -333,6 +461,19 @@ const threadsLoading = ref(false)
 const activeThreadId = ref('')
 const activeThread = computed(() => threads.value.find((t) => t.id === activeThreadId.value) || null)
 
+const folders = ref<FolderRow[]>([])
+const activeFolderId = ref<'all' | 'none' | string>('all')
+const noFolderCount = computed(() => threads.value.filter((t) => !t.folder_id).length)
+const filteredThreads = computed(() => {
+  if (activeFolderId.value === 'all') return threads.value
+  if (activeFolderId.value === 'none') return threads.value.filter((t) => !t.folder_id)
+  return threads.value.filter((t) => t.folder_id === activeFolderId.value)
+})
+
+const showFolder = ref(false)
+const folderName = ref('')
+const folderBusy = ref(false)
+
 const messages = ref<MessageRow[]>([])
 const messagesLoading = ref(false)
 const messagesBox = ref<HTMLElement | null>(null)
@@ -362,11 +503,122 @@ const invoicesLoading = ref(false)
 const insertBusy = ref('')
 const keyBusy = ref(false)
 
+const showReset = ref(false)
+const resetTargetId = ref('')
+const resetCustomPassword = ref('')
+const resetBusy = ref(false)
+
+const showDelete = ref(false)
+const deleteTargetId = ref('')
+const deleteUsername = ref('')
+const deleteConfirmText = ref('')
+const deleteBusy = ref(false)
+
+const adminMenuOptions = computed(() => {
+  const moveChildren: any[] = folders.value.map((f) => ({
+    label: f.name,
+    key: 'move:' + f.id,
+    disabled: activeThread.value?.folder_id === f.id
+  }))
+  moveChildren.push({
+    label: 'Без папки',
+    key: 'move:none',
+    disabled: !activeThread.value?.folder_id
+  })
+  return [
+    { label: 'Сбросить пароль', key: 'reset' },
+    {
+      label: activeThread.value?.user_is_active ? 'Заблокировать вход' : 'Разблокировать',
+      key: 'toggle'
+    },
+    { label: 'Переместить в папку', key: 'move', children: moveChildren },
+    { type: 'divider', key: 'd1' },
+    {
+      label: 'Удалить аккаунт',
+      key: 'delete',
+      props: { style: 'color: var(--error-color, #e88080)' }
+    }
+  ]
+})
+
+function onAdminMenu(key: string) {
+  const t = activeThread.value
+  if (!t || !t.chat_user_id) return
+  if (key === 'reset') openResetPassword(t.chat_user_id)
+  else if (key === 'toggle') toggleActiveById(t.chat_user_id, !t.user_is_active)
+  else if (key === 'delete') openDeleteAccount(t.chat_user_id, t.display_name || t.username, t.username)
+  else if (key.startsWith('move:')) {
+    const fid = key.slice(5)
+    moveThreadToFolder(t.id, fid === 'none' ? null : fid)
+  }
+}
+
+function openResetPassword(userId: string) {
+  resetTargetId.value = userId
+  resetCustomPassword.value = ''
+  showReset.value = true
+}
+
+async function doResetPassword() {
+  if (!resetTargetId.value) return
+  resetBusy.value = true
+  try {
+    const pwd = resetCustomPassword.value.trim()
+    const { data } = await api.post<{ user: AccountRow; password: string }>(
+      `/chat/admin/users/${resetTargetId.value}/reset-password`,
+      { password: pwd || null }
+    )
+    showReset.value = false
+    issuedLogin.value = data.user.username
+    issuedPassword.value = data.password
+    showPassword.value = true
+    await loadAccounts()
+  } catch (error: any) {
+    message.error(error?.response?.data?.detail || 'Не удалось сбросить пароль.')
+  } finally {
+    resetBusy.value = false
+  }
+}
+
+function openDeleteAccount(userId: string, _display: string, username: string) {
+  deleteTargetId.value = userId
+  deleteUsername.value = username
+  deleteConfirmText.value = ''
+  showDelete.value = true
+}
+
+async function doDeleteAccount() {
+  if (!deleteTargetId.value) return
+  deleteBusy.value = true
+  try {
+    await api.delete(`/chat/admin/users/${deleteTargetId.value}`)
+    showDelete.value = false
+    message.success('Аккаунт удалён.')
+    if (activeThreadId.value && activeThread.value?.chat_user_id === deleteTargetId.value) {
+      activeThreadId.value = ''
+    }
+    await Promise.all([loadThreads(), loadAccounts()])
+  } catch (error: any) {
+    message.error(error?.response?.data?.detail || 'Не удалось удалить аккаунт.')
+  } finally {
+    deleteBusy.value = false
+  }
+}
+
+async function toggleActiveById(userId: string, _next: boolean) {
+  try {
+    await api.post(`/chat/admin/users/${userId}/toggle-active`)
+    await Promise.all([loadThreads(), loadAccounts()])
+  } catch (error: any) {
+    message.error(error?.response?.data?.detail || 'Не удалось изменить статус.')
+  }
+}
+
 let threadsTimer: number | undefined
 let messagesTimer: number | undefined
 
 onMounted(async () => {
-  await Promise.all([loadStatus(), loadThreads()])
+  await Promise.all([loadStatus(), loadThreads(), loadFolders()])
   threadsTimer = window.setInterval(loadThreads, 10_000)
   messagesTimer = window.setInterval(pollMessages, 4_000)
 })
@@ -394,6 +646,62 @@ async function loadThreads() {
     /* поллинг — не шумим */
   } finally {
     threadsLoading.value = false
+  }
+}
+
+async function loadFolders() {
+  try {
+    const { data } = await api.get<FolderRow[]>('/chat/admin/folders')
+    folders.value = data
+  } catch {
+    folders.value = []
+  }
+}
+
+function openCreateFolder() {
+  folderName.value = ''
+  showFolder.value = true
+}
+
+async function doCreateFolder() {
+  const name = folderName.value.trim()
+  if (!name) return
+  folderBusy.value = true
+  try {
+    await api.post('/chat/admin/folders', { name })
+    showFolder.value = false
+    await loadFolders()
+  } catch (error: any) {
+    message.error(error?.response?.data?.detail || 'Не удалось создать папку.')
+  } finally {
+    folderBusy.value = false
+  }
+}
+
+function confirmDeleteFolder(folder: FolderRow) {
+  dialog.warning({
+    title: 'Удалить папку',
+    content: `Папка «${folder.name}» будет удалена. Диалоги останутся и переедут в «Без папки».`,
+    positiveText: 'Удалить',
+    negativeText: 'Отмена',
+    onPositiveClick: async () => {
+      try {
+        await api.delete(`/chat/admin/folders/${folder.id}`)
+        if (activeFolderId.value === folder.id) activeFolderId.value = 'all'
+        await Promise.all([loadFolders(), loadThreads()])
+      } catch (error: any) {
+        message.error(error?.response?.data?.detail || 'Не удалось удалить папку.')
+      }
+    }
+  })
+}
+
+async function moveThreadToFolder(threadId: string, folderId: string | null) {
+  try {
+    await api.post(`/chat/admin/threads/${threadId}/move`, { folder_id: folderId })
+    await Promise.all([loadThreads(), loadFolders()])
+  } catch (error: any) {
+    message.error(error?.response?.data?.detail || 'Не удалось переместить диалог.')
   }
 }
 
@@ -532,19 +840,6 @@ async function createAccount() {
     message.error(error?.response?.data?.detail || 'Не удалось создать аккаунт.')
   } finally {
     creating.value = false
-  }
-}
-
-async function resetPassword(u: AccountRow) {
-  try {
-    const { data } = await api.post<{ user: AccountRow; password: string }>(
-      `/chat/admin/users/${u.id}/reset-password`
-    )
-    issuedLogin.value = data.user.username
-    issuedPassword.value = data.password
-    showPassword.value = true
-  } catch (error: any) {
-    message.error(error?.response?.data?.detail || 'Не удалось сбросить пароль.')
   }
 }
 
@@ -716,6 +1011,46 @@ async function copyCredentials() {
   justify-content: space-between;
   margin-bottom: 6px;
 }
+
+.chat-folders {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 10px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.chat-folder-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  background: none;
+  color: var(--color-muted);
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+  transition: all 0.14s ease;
+}
+
+.chat-folder-chip:hover { color: var(--color-text); }
+.chat-folder-chip.active {
+  color: var(--color-text);
+  border-color: var(--color-accent);
+  background: color-mix(in srgb, var(--color-accent) 14%, transparent);
+}
+.chat-folder-chip.add { border-style: dashed; }
+.chat-folder-count { opacity: 0.7; font-size: 11.5px; }
+.chat-folder-x {
+  margin-left: 2px;
+  font-size: 14px;
+  line-height: 1;
+  opacity: 0.5;
+}
+.chat-folder-x:hover { opacity: 1; color: var(--color-danger, #e88080); }
 
 .chat-thread {
   display: block;

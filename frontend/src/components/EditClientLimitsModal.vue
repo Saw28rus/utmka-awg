@@ -25,6 +25,26 @@
           </n-button>
         </div>
       </label>
+      <label class="field">
+        <span>Тариф</span>
+        <select v-model="form.billingMode">
+          <option value="free">Бесплатный</option>
+          <option value="paid">Платный (самооплата в чате)</option>
+        </select>
+      </label>
+      <template v-if="form.billingMode === 'paid'">
+        <label class="field">
+          <span>Сумма за период, ₽</span>
+          <input v-model="form.billingAmountRub" type="number" min="1" step="1" placeholder="Например, 300" />
+        </label>
+        <label class="field">
+          <span>Период оплаты</span>
+          <select v-model.number="form.billingPeriodMonths">
+            <option :value="1">Раз в месяц</option>
+            <option :value="3">Раз в 3 месяца</option>
+          </select>
+        </label>
+      </template>
       <div class="edit-actions">
         <n-button tertiary @click="$emit('update:show', false)">Отмена</n-button>
         <n-button type="primary" :loading="saving" @click="save">Сохранить</n-button>
@@ -44,6 +64,9 @@ export type ClientLimitsSource = {
   traffic_limit_bytes?: number | null
   expires_at?: string | null
   status: string
+  billing_mode?: string | null
+  billing_amount_kopecks?: number | null
+  billing_period_months?: number | null
 }
 
 const props = defineProps<{
@@ -62,7 +85,10 @@ const todayStr = new Date().toISOString().slice(0, 10)
 
 const form = reactive({
   trafficLimitGb: '',
-  expiresAt: ''
+  expiresAt: '',
+  billingMode: 'free',
+  billingAmountRub: '',
+  billingPeriodMonths: 1
 })
 
 watch(
@@ -73,11 +99,25 @@ watch(
       ? String(+(props.client.traffic_limit_bytes / 1024 / 1024 / 1024).toFixed(2))
       : ''
     form.expiresAt = props.client.expires_at ? props.client.expires_at.slice(0, 10) : ''
+    form.billingMode = props.client.billing_mode === 'paid' ? 'paid' : 'free'
+    form.billingAmountRub = props.client.billing_amount_kopecks
+      ? String(+(props.client.billing_amount_kopecks / 100).toFixed(2))
+      : ''
+    form.billingPeriodMonths = props.client.billing_period_months || 1
   }
 )
 
 async function save() {
   if (!props.client) return
+  let billingAmountKopecks: number | null = null
+  if (form.billingMode === 'paid') {
+    const rub = parseFloat(form.billingAmountRub)
+    if (!form.billingAmountRub || Number.isNaN(rub) || rub <= 0) {
+      message.error('Укажи сумму тарифа.')
+      return
+    }
+    billingAmountKopecks = Math.round(rub * 100)
+  }
   saving.value = true
   try {
     const gb = parseFloat(form.trafficLimitGb)
@@ -87,7 +127,10 @@ async function save() {
         : null
     const { data } = await api.patch(`/clients/${props.client.id}`, {
       traffic_limit_bytes: trafficLimitBytes,
-      expires_at: form.expiresAt || null
+      expires_at: form.expiresAt || null,
+      billing_mode: form.billingMode,
+      billing_amount_kopecks: billingAmountKopecks,
+      billing_period_months: form.billingPeriodMonths
     })
     message.success('Сохранено. Изменения применены на сервере.')
     emit('saved', data)
@@ -130,7 +173,8 @@ async function save() {
 }
 
 .field input[type='number'],
-.field input[type='date'] {
+.field input[type='date'],
+.field select {
   width: 100%;
   height: 38px;
   padding: 0 12px;

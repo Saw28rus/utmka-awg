@@ -1,6 +1,7 @@
 from app.models.audit import AuditEvent
 from app.models.chat import (
     ChatAttachment,
+    ChatFolder,
     ChatMessage,
     ChatPushSubscription,
     ChatSession,
@@ -15,6 +16,7 @@ from app.models.user import User
 __all__ = [
     "AuditEvent",
     "ChatAttachment",
+    "ChatFolder",
     "ChatMessage",
     "ChatPushSubscription",
     "ChatSession",

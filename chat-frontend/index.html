@@ -8,7 +8,7 @@
 <meta name="color-scheme" content="dark light">
 <title>Чат поддержки</title>
 
-<link rel="manifest" href="/manifest.webmanifest?v=9">
+<link rel="manifest" href="/manifest.webmanifest?v=10">
 <link rel="icon" href="/icons/favicon-64.png" sizes="64x64" type="image/png">
 <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
 
@@ -18,7 +18,7 @@
 <meta name="apple-mobile-web-app-title" content="Поддержка">
 <meta name="mobile-web-app-capable" content="yes">
 
-<link rel="stylesheet" href="/style.css?v=9">
+<link rel="stylesheet" href="/style.css?v=10">
 </head>
 <body>
   <!-- Экран входа -->
@@ -53,6 +53,9 @@
         </div>
       </div>
       <div class="ch-actions">
+        <button id="vpn-btn" type="button" class="icon-btn" title="Мой VPN" aria-label="Мой VPN">
+          <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+        </button>
         <button id="notif-btn" type="button" class="icon-btn" title="Уведомления" aria-label="Уведомления" hidden>
           <span class="ic">🔔</span>
         </button>
@@ -60,7 +63,7 @@
           <span class="ic">⬇️</span>
         </button>
         <button id="logout-btn" type="button" class="icon-btn" title="Выйти" aria-label="Выйти">
-          <span class="ic">⎋</span>
+          <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
         </button>
       </div>
     </header>
@@ -91,6 +94,19 @@
     </footer>
   </div>
 
+  <!-- Кабинет «Мой VPN» -->
+  <div id="vpn-sheet" class="overlay" hidden>
+    <div class="overlay-card vpn-card">
+      <div class="vpn-head">
+        <strong>Мой VPN</strong>
+        <button id="vpn-close" type="button" class="banner-x" aria-label="Закрыть">✕</button>
+      </div>
+      <div id="vpn-body" class="vpn-body">
+        <div class="vpn-loading"><span class="muted">Загрузка…</span></div>
+      </div>
+    </div>
+  </div>
+
   <!-- Инструкция установки для iOS -->
   <div id="ios-help" class="overlay" hidden>
     <div class="overlay-card">
@@ -105,6 +121,6 @@
     </div>
   </div>
 
-  <script src="/app.js?v=9"></script>
+  <script src="/app.js?v=10"></script>
 </body>
 </html>

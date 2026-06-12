@@ -15,6 +15,7 @@ from app.core.crypto import decrypt, encrypt
 from app.core.security import hash_password, verify_password
 from app.models.chat import (
     ChatAttachment,
+    ChatFolder,
     ChatMessage,
     ChatPushSubscription,
     ChatSession,
@@ -81,17 +82,64 @@ class ChatService:
     async def get_user(self, user_id: uuid.UUID) -> Optional[ChatUser]:
         return await self.session.get(ChatUser, user_id)
 
-    async def reset_password(self, user_id: uuid.UUID) -> tuple[ChatUser, str]:
+    async def reset_password(
+        self, user_id: uuid.UUID, custom_password: Optional[str] = None
+    ) -> tuple[ChatUser, str]:
         user = await self.get_user(user_id)
         if not user:
             raise ChatServiceError("Аккаунт не найден.")
-        password = generate_password()
+        if custom_password is not None:
+            custom_password = custom_password.strip()
+            if len(custom_password) < 8:
+                raise ChatServiceError("Пароль должен быть не короче 8 символов.")
+            if len(custom_password) > 128:
+                raise ChatServiceError("Пароль слишком длинный (макс. 128).")
+            password = custom_password
+        else:
+            password = generate_password()
         user.password_hash = hash_password(password)
         user.password_reset_at = _utcnow()
         await self._revoke_all_sessions(user.id)
         await self.session.commit()
         await self.session.refresh(user)
         return user, password
+
+    async def delete_user(self, user_id: uuid.UUID) -> str:
+        """Полное удаление чат-аккаунта и всех связанных данных (hard delete).
+
+        Удаляем явно и в правильном порядке (вложения и сообщения зависят от тредов).
+        VPN-клиент в clients.json и финансовые счёта (invoices) НЕ трогаем.
+        Возвращает username удалённого аккаунта (для аудита).
+        """
+        user = await self.get_user(user_id)
+        if not user:
+            raise ChatServiceError("Аккаунт не найден.")
+        username = user.username
+
+        thread_rows = await self.session.execute(
+            select(ChatThread.id).where(ChatThread.chat_user_id == user_id)
+        )
+        thread_ids = [row[0] for row in thread_rows.all()]
+
+        await self.session.execute(
+            delete(ChatAttachment).where(ChatAttachment.chat_user_id == user_id)
+        )
+        if thread_ids:
+            await self.session.execute(
+                delete(ChatMessage).where(ChatMessage.thread_id.in_(thread_ids))
+            )
+            await self.session.execute(
+                delete(ChatThread).where(ChatThread.id.in_(thread_ids))
+            )
+        await self.session.execute(
+            delete(ChatSession).where(ChatSession.chat_user_id == user_id)
+        )
+        await self.session.execute(
+            delete(ChatPushSubscription).where(ChatPushSubscription.chat_user_id == user_id)
+        )
+        await self.session.execute(delete(ChatUser).where(ChatUser.id == user_id))
+        await self.session.commit()
+        return username
 
     async def link_client(self, user_id: uuid.UUID, client_id: Optional[str]) -> ChatUser:
         from app.services.client_store import client_store
@@ -256,6 +304,87 @@ class ChatService:
         await self.session.refresh(thread)
         return thread
 
+    # --- папки (CH7) ---------------------------------------------------------
+
+    async def list_folders(self) -> list[ChatFolder]:
+        rows = await self.session.execute(
+            select(ChatFolder).order_by(ChatFolder.sort_order.asc(), ChatFolder.created_at.asc())
+        )
+        return list(rows.scalars().all())
+
+    async def folder_counts(self) -> dict[Optional[str], int]:
+        rows = await self.session.execute(
+            select(ChatThread.folder_id, func.count()).group_by(ChatThread.folder_id)
+        )
+        counts: dict[Optional[str], int] = {}
+        for folder_id, cnt in rows.all():
+            counts[str(folder_id) if folder_id else None] = int(cnt)
+        return counts
+
+    async def create_folder(self, name: str, color: Optional[str] = None) -> ChatFolder:
+        name = (name or "").strip()
+        if not name:
+            raise ChatServiceError("Укажите название папки.")
+        if len(name) > 64:
+            raise ChatServiceError("Название слишком длинное (макс. 64).")
+        max_row = await self.session.execute(select(func.max(ChatFolder.sort_order)))
+        next_order = (max_row.scalar() or 0) + 1
+        folder = ChatFolder(name=name, color=color, sort_order=next_order)
+        self.session.add(folder)
+        await self.session.commit()
+        await self.session.refresh(folder)
+        return folder
+
+    async def update_folder(
+        self,
+        folder_id: uuid.UUID,
+        *,
+        name: Optional[str] = None,
+        color: Optional[str] = None,
+        sort_order: Optional[int] = None,
+    ) -> ChatFolder:
+        folder = await self.session.get(ChatFolder, folder_id)
+        if not folder:
+            raise ChatServiceError("Папка не найдена.")
+        if name is not None:
+            name = name.strip()
+            if not name:
+                raise ChatServiceError("Название не может быть пустым.")
+            folder.name = name[:64]
+        if color is not None:
+            folder.color = color or None
+        if sort_order is not None:
+            folder.sort_order = sort_order
+        await self.session.commit()
+        await self.session.refresh(folder)
+        return folder
+
+    async def delete_folder(self, folder_id: uuid.UUID) -> None:
+        folder = await self.session.get(ChatFolder, folder_id)
+        if not folder:
+            raise ChatServiceError("Папка не найдена.")
+        # Треды не удаляем — просто вынимаем из папки.
+        await self.session.execute(
+            update(ChatThread).where(ChatThread.folder_id == folder_id).values(folder_id=None)
+        )
+        await self.session.delete(folder)
+        await self.session.commit()
+
+    async def move_thread(
+        self, thread_id: uuid.UUID, folder_id: Optional[uuid.UUID]
+    ) -> ChatThread:
+        thread = await self.get_thread(thread_id)
+        if not thread:
+            raise ChatServiceError("Диалог не найден.")
+        if folder_id is not None:
+            folder = await self.session.get(ChatFolder, folder_id)
+            if not folder:
+                raise ChatServiceError("Папка не найдена.")
+        thread.folder_id = folder_id
+        await self.session.commit()
+        await self.session.refresh(thread)
+        return thread
+
     async def admin_threads(self) -> list[dict]:
         """Диалоги для админки: тред + пользователь + превью последнего сообщения."""
         from app.services.client_store import client_store
@@ -286,6 +415,7 @@ class ChatService:
                 {
                     "id": str(thread.id),
                     "status": thread.status,
+                    "folder_id": str(thread.folder_id) if thread.folder_id else None,
                     "last_message_at": thread.last_message_at.isoformat()
                     if thread.last_message_at
                     else None,
