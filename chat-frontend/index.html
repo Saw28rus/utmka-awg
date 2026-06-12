@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex, nofollow">
+<meta name="theme-color" content="#131618">
+<meta name="color-scheme" content="dark light">
+<title>Чат поддержки</title>
+
+<link rel="manifest" href="/manifest.webmanifest?v=9">
+<link rel="icon" href="/icons/favicon-64.png" sizes="64x64" type="image/png">
+<link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
+
+<!-- iOS standalone web app -->
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Поддержка">
+<meta name="mobile-web-app-capable" content="yes">
+
+<link rel="stylesheet" href="/style.css?v=9">
+</head>
+<body>
+  <!-- Экран входа -->
+  <div id="login-screen" class="screen login">
+    <form id="login-form" class="card" autocomplete="off">
+      <div class="brand">
+        <img class="brand-logo" src="/icons/icon-192.png" alt="" width="56" height="56">
+        <h1>Чат поддержки</h1>
+        <p class="sub">Войдите по логину и паролю, которые выдал администратор.</p>
+      </div>
+      <label>
+        <span>Логин</span>
+        <input id="login-username" type="text" autocapitalize="none" autocorrect="off" autocomplete="username" required>
+      </label>
+      <label>
+        <span>Пароль</span>
+        <input id="login-password" type="password" autocomplete="current-password" required>
+      </label>
+      <p id="login-error" class="error" hidden></p>
+      <button id="login-btn" type="submit">Войти</button>
+    </form>
+  </div>
+
+  <!-- Экран чата -->
+  <div id="chat-screen" class="screen chat" hidden>
+    <header class="chat-header">
+      <div class="ch-id">
+        <img class="ch-avatar" src="/icons/icon-192.png" alt="" width="38" height="38">
+        <div class="ch-meta">
+          <strong>Поддержка</strong>
+          <span id="conn-status" class="ch-status">в сети</span>
+        </div>
+      </div>
+      <div class="ch-actions">
+        <button id="notif-btn" type="button" class="icon-btn" title="Уведомления" aria-label="Уведомления" hidden>
+          <span class="ic">🔔</span>
+        </button>
+        <button id="install-btn" type="button" class="icon-btn" title="Установить приложение" aria-label="Установить" hidden>
+          <span class="ic">⬇️</span>
+        </button>
+        <button id="logout-btn" type="button" class="icon-btn" title="Выйти" aria-label="Выйти">
+          <span class="ic">⎋</span>
+        </button>
+      </div>
+    </header>
+
+    <!-- Баннер-подсказка (установка / уведомления) -->
+    <div id="banner" class="banner" hidden>
+      <span id="banner-text" class="banner-text"></span>
+      <div class="banner-actions">
+        <button id="banner-action" type="button" class="banner-btn"></button>
+        <button id="banner-close" type="button" class="banner-x" aria-label="Скрыть">✕</button>
+      </div>
+    </div>
+
+    <main id="messages" class="messages" aria-live="polite">
+      <div id="messages-empty" class="empty">
+        <div class="empty-emoji">💬</div>
+        <p>Здесь будет ваша переписка с поддержкой.<br>Напишите вопрос — мы ответим.</p>
+      </div>
+    </main>
+
+    <button id="scroll-down" class="scroll-down" type="button" aria-label="Вниз" hidden>⌄</button>
+
+    <footer class="compose">
+      <textarea id="draft" rows="1" maxlength="4000" placeholder="Сообщение…"></textarea>
+      <button id="send-btn" type="button" class="send" aria-label="Отправить">
+        <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M3.4 20.4 21 12 3.4 3.6 3 10l12 2-12 2z"/></svg>
+      </button>
+    </footer>
+  </div>
+
+  <!-- Инструкция установки для iOS -->
+  <div id="ios-help" class="overlay" hidden>
+    <div class="overlay-card">
+      <strong>Установить на «Домой»</strong>
+      <ol class="ios-steps">
+        <li>Нажмите кнопку <b>«Поделиться»</b> <span class="ios-share">􀈂</span> внизу Safari.</li>
+        <li>Выберите <b>«На экран “Домой”»</b>.</li>
+        <li>Нажмите <b>«Добавить»</b> — появится иконка приложения.</li>
+        <li>Откройте чат уже с иконки — тогда заработают уведомления.</li>
+      </ol>
+      <button id="ios-help-close" type="button" class="banner-btn">Понятно</button>
+    </div>
+  </div>
+
+  <script src="/app.js?v=9"></script>
+</body>
+</html>

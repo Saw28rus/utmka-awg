@@ -1,0 +1,68 @@
+:root,
+[data-theme="dark"] {
+  --color-bg: #101214;
+  --color-surface: #171a1d;
+  --color-surface-2: #202429;
+  --color-sidebar: #131618;
+  --color-border: #2c3230;
+  --color-border-hover: #3a423e;
+  --color-text: #f2f3f0;
+  --color-muted: #b8bdb7;
+  --color-dim: #7d8580;
+  --color-accent: #6fbf9a;
+  --color-accent-soft: rgba(111, 191, 154, 0.12);
+  --color-info: #7aa7c7;
+  --color-warning: #d6a85c;
+  --color-danger: #d86b6b;
+  --color-avatar-bg: #1f2428;
+  --color-avatar-text: #6fbf9a;
+  --color-avatar-border: #2c3230;
+  --color-cascade-bg: #101312;
+  --color-cascade-bg-active: #101412;
+  --color-cascade-border: #2a3530;
+  --color-cascade-border-active: #2a4a3a;
+  --color-cascade-card-bg: #151819;
+  --color-pill-entry-bg: #142018;
+  --color-pill-entry-text: #7ec8a8;
+  --color-pill-entry-border: #2a4a3a;
+  --color-pill-exit-bg: #141820;
+  --color-pill-exit-text: #8eb4e8;
+  --color-pill-exit-border: #2a3a4a;
+  --color-metric-track: #0d0f10;
+  --radius: 8px;
+  --radius-sm: 6px;
+  --sidebar-width: 240px;
+  --topbar-height: 56px;
+}
+
+[data-theme="light"] {
+  --color-bg: #e8ebe6;
+  --color-surface: #f4f6f2;
+  --color-surface-2: #ecefe9;
+  --color-sidebar: #dfe3dc;
+  --color-border: #c5cbc3;
+  --color-border-hover: #aeb8ad;
+  --color-text: #1a1d1a;
+  --color-muted: #4f564f;
+  --color-dim: #6d746c;
+  --color-accent: #3d8f6a;
+  --color-accent-soft: rgba(61, 143, 106, 0.14);
+  --color-info: #4a7f9c;
+  --color-warning: #b8862f;
+  --color-danger: #c44f4f;
+  --color-avatar-bg: #d8e2d6;
+  --color-avatar-text: #2a6b4a;
+  --color-avatar-border: #b8c6b4;
+  --color-cascade-bg: #e8efe8;
+  --color-cascade-bg-active: #dfeadf;
+  --color-cascade-border: #b8cdb8;
+  --color-cascade-border-active: #8fbf9a;
+  --color-cascade-card-bg: #f8faf7;
+  --color-pill-entry-bg: #dcebe2;
+  --color-pill-entry-text: #2d6b4a;
+  --color-pill-entry-border: #a8cdb8;
+  --color-pill-exit-bg: #dce6f0;
+  --color-pill-exit-text: #3a6288;
+  --color-pill-exit-border: #a8bdd4;
+  --color-metric-track: #dce2da;
+}

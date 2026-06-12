@@ -1,0 +1,1012 @@
+<template>
+  <AppShell title="Чат" eyebrow="Поддержка клиентов">
+    <div class="chat-layout">
+      <!-- Список диалогов -->
+      <aside class="panel chat-side">
+        <div class="chat-side-head">
+          <strong>Диалоги</strong>
+          <n-button v-if="isAdmin" size="tiny" tertiary @click="openAccounts">
+            <template #icon><UserPlus :size="14" /></template>
+            Аккаунты
+          </n-button>
+        </div>
+
+        <div v-if="threadsLoading && !threads.length" class="chat-empty">
+          <n-spin size="small" />
+        </div>
+        <div v-else-if="!threads.length" class="chat-empty">
+          <MessagesSquare :size="22" />
+          <p>Диалогов пока нет.</p>
+          <p v-if="isAdmin" class="chat-empty-hint">
+            Создайте клиенту аккаунт чата (кнопка «Аккаунты») и передайте ему логин, пароль и адрес
+            <a v-if="status?.public_url" :href="status.public_url" target="_blank" rel="noopener">{{ status.public_url }}</a>.
+          </p>
+        </div>
+
+        <button
+          v-for="t in threads"
+          :key="t.id"
+          type="button"
+          class="chat-thread"
+          :class="{ active: t.id === activeThreadId }"
+          @click="selectThread(t.id)"
+        >
+          <div class="chat-thread-top">
+            <span class="chat-thread-name">
+              <span
+                v-if="t.last_sender === 'client' && t.status !== 'resolved'"
+                class="chat-thread-dot"
+                title="Ожидает ответа"
+              ></span>
+              {{ t.display_name || t.username }}
+            </span>
+            <span v-if="t.status === 'resolved'" class="chat-thread-resolved">решён</span>
+          </div>
+          <div class="chat-thread-preview">
+            <template v-if="t.last_preview">
+              <span v-if="t.last_sender === 'admin'" class="muted">Вы: </span>{{ t.last_preview }}
+            </template>
+            <span v-else class="muted">нет сообщений</span>
+          </div>
+        </button>
+      </aside>
+
+      <!-- Активный диалог -->
+      <section class="panel chat-main">
+        <div v-if="!activeThread" class="chat-empty tall">
+          <MessagesSquare :size="26" />
+          <p>Выберите диалог слева.</p>
+        </div>
+
+        <template v-else>
+          <div class="chat-main-head">
+            <div class="chat-head-info">
+              <div>
+                <strong>{{ activeThread.display_name || activeThread.username }}</strong>
+                <span class="muted mono"> @{{ activeThread.username }}</span>
+                <span v-if="!activeThread.user_is_active" class="chat-thread-resolved">отключён</span>
+              </div>
+              <div class="chat-head-link">
+                <template v-if="activeThread.client_missing">
+                  <span class="chat-link-chip warn">VPN-клиент удалён — перепривяжите</span>
+                </template>
+                <template v-else-if="activeThread.client_name">
+                  <span class="chat-link-chip">VPN: {{ activeThread.client_name }}</span>
+                </template>
+                <span v-else class="chat-link-chip muted-chip">VPN-клиент не привязан</span>
+                <n-button v-if="isAdmin" size="tiny" quaternary @click="openLink(activeThread)">
+                  {{ activeThread.client_id ? 'изменить' : 'привязать' }}
+                </n-button>
+              </div>
+            </div>
+            <div class="chat-head-actions">
+              <n-button
+                v-if="activeThread.client_id && !activeThread.client_missing"
+                size="tiny"
+                tertiary
+                :loading="keyBusy"
+                @click="confirmSendKey"
+              >
+                <template #icon><KeyRound :size="14" /></template>
+                Выдать ключ
+              </n-button>
+              <n-button
+                v-if="activeThread.client_id && !activeThread.client_missing"
+                size="tiny"
+                tertiary
+                @click="openInvoices"
+              >
+                <template #icon><Receipt :size="14" /></template>
+                Счёт
+              </n-button>
+              <n-button size="tiny" tertiary :loading="statusBusy" @click="toggleResolved">
+                {{ activeThread.status === 'resolved' ? 'Открыть снова' : 'Пометить решённым' }}
+              </n-button>
+            </div>
+          </div>
+
+          <div ref="messagesBox" class="chat-messages">
+            <div v-if="messagesLoading && !messages.length" class="chat-empty">
+              <n-spin size="small" />
+            </div>
+            <div
+              v-for="m in messages"
+              :key="m.id"
+              class="chat-msg"
+              :class="m.sender === 'client' ? 'from-client' : 'from-admin'"
+            >
+              <div class="chat-msg-body">{{ m.body }}</div>
+              <div v-if="m.attachment" class="chat-msg-att" :class="{ expired: m.attachment.expired }">
+                <KeyRound :size="13" />
+                <span>{{ m.attachment.filename }}</span>
+                <span v-if="m.attachment.expired" class="muted">— срок истёк</span>
+              </div>
+              <div class="chat-msg-time">{{ formatTime(m.created_at) }}</div>
+            </div>
+          </div>
+
+          <div class="chat-compose">
+            <n-input
+              v-model:value="draft"
+              type="textarea"
+              :autosize="{ minRows: 1, maxRows: 5 }"
+              placeholder="Сообщение клиенту…"
+              :disabled="sending"
+              @keydown="onComposeKeydown"
+            />
+            <n-button type="primary" :loading="sending" :disabled="!draft.trim()" @click="sendMessage">
+              <template #icon><Send :size="15" /></template>
+            </n-button>
+          </div>
+        </template>
+      </section>
+    </div>
+
+    <!-- Аккаунты чата -->
+    <n-modal v-model:show="showAccounts">
+      <div class="panel modal-card chat-accounts">
+        <h3>Аккаунты чата</h3>
+        <p class="hint">
+          Аккаунт чата — отдельный логин/пароль для клиента (не VPN-ключ и не пользователь панели).
+          Передайте клиенту: адрес <span class="mono">{{ status?.public_url || '—' }}</span>, логин и пароль.
+        </p>
+
+        <div class="chat-acc-create">
+          <n-input v-model:value="newUsername" placeholder="логин: латиница, цифры, _" :disabled="creating" />
+          <n-input v-model:value="newDisplayName" placeholder="Имя (необязательно)" :disabled="creating" />
+          <n-button type="primary" :loading="creating" @click="createAccount">Создать</n-button>
+        </div>
+
+        <div class="chat-acc-list">
+          <div v-for="u in accounts" :key="u.id" class="chat-acc-row">
+            <div class="chat-acc-info">
+              <strong>{{ u.display_name || u.username }}</strong>
+              <span class="muted mono">@{{ u.username }}</span>
+              <span v-if="u.client_name" class="chat-link-chip">VPN: {{ u.client_name }}</span>
+              <span v-if="!u.is_active" class="chat-thread-resolved">отключён</span>
+            </div>
+            <div class="chat-acc-actions">
+              <n-button size="tiny" tertiary @click="openLinkAccount(u)">
+                {{ u.client_id ? 'VPN-клиент' : 'Привязать VPN' }}
+              </n-button>
+              <n-button size="tiny" tertiary @click="resetPassword(u)">Новый пароль</n-button>
+              <n-button size="tiny" tertiary :type="u.is_active ? 'warning' : 'primary'" @click="toggleActive(u)">
+                {{ u.is_active ? 'Отключить' : 'Включить' }}
+              </n-button>
+            </div>
+          </div>
+          <p v-if="!accounts.length" class="muted">Аккаунтов пока нет.</p>
+        </div>
+
+        <div class="modal-actions">
+          <n-button @click="showAccounts = false">Закрыть</n-button>
+        </div>
+      </div>
+    </n-modal>
+
+    <!-- Привязка VPN-клиента -->
+    <n-modal v-model:show="showLink">
+      <div class="panel modal-card">
+        <h3>Привязка VPN-клиента</h3>
+        <p class="hint">
+          Привязка позволяет вставлять в диалог счета этого клиента (а далее — ключ/QR).
+          Аккаунт чата: <span class="mono">@{{ linkTarget?.username }}</span>
+        </p>
+        <n-select
+          v-model:value="linkClientId"
+          :options="clientOptions"
+          filterable
+          clearable
+          placeholder="Выберите VPN-клиента (пусто — отвязать)"
+          :loading="clientsLoading"
+        />
+        <div class="modal-actions">
+          <n-button @click="showLink = false">Отмена</n-button>
+          <n-button type="primary" :loading="linkBusy" @click="saveLink">Сохранить</n-button>
+        </div>
+      </div>
+    </n-modal>
+
+    <!-- Счета привязанного клиента -->
+    <n-modal v-model:show="showInvoices">
+      <div class="panel modal-card chat-accounts">
+        <h3>Вставить счёт в чат</h3>
+        <p class="hint">
+          Счета клиента <strong>{{ activeThread?.client_name }}</strong>. Новый счёт создаётся в разделе
+          «Счета и оплата», после чего появится здесь.
+        </p>
+        <div v-if="invoicesLoading" class="chat-empty"><n-spin size="small" /></div>
+        <div v-else class="chat-acc-list">
+          <div v-for="inv in invoices" :key="inv.id" class="chat-acc-row">
+            <div class="chat-acc-info chat-inv-info">
+              <strong>{{ inv.amount_rub }} ₽</strong>
+              <span class="muted">{{ inv.description || 'без описания' }}</span>
+              <span class="chat-link-chip" :class="{ warn: inv.status !== 'pending' && inv.status !== 'succeeded' }">
+                {{ invoiceStatusLabel(inv.status) }}
+              </span>
+            </div>
+            <n-button size="tiny" type="primary" tertiary :loading="insertBusy === inv.id" @click="insertInvoice(inv)">
+              Вставить
+            </n-button>
+          </div>
+          <p v-if="!invoices.length" class="muted">У клиента пока нет счетов.</p>
+        </div>
+        <div class="modal-actions">
+          <n-button @click="showInvoices = false">Закрыть</n-button>
+        </div>
+      </div>
+    </n-modal>
+
+    <!-- Пароль (показывается один раз) -->
+    <n-modal v-model:show="showPassword" :mask-closable="false">
+      <div class="panel modal-card">
+        <h3>Данные для входа клиента</h3>
+        <p class="hint">Пароль показывается <strong>один раз</strong> — скопируйте и отправьте клиенту.</p>
+        <div class="chat-cred">
+          <div class="chat-cred-row"><span>Адрес</span><span class="mono">{{ status?.public_url || '—' }}</span></div>
+          <div class="chat-cred-row"><span>Логин</span><span class="mono">{{ issuedLogin }}</span></div>
+          <div class="chat-cred-row"><span>Пароль</span><span class="mono">{{ issuedPassword }}</span></div>
+        </div>
+        <div class="modal-actions">
+          <n-button tertiary @click="copyCredentials">
+            <template #icon><Copy :size="14" /></template>
+            Скопировать всё
+          </n-button>
+          <n-button type="primary" @click="showPassword = false">Готово</n-button>
+        </div>
+      </div>
+    </n-modal>
+  </AppShell>
+</template>
+
+<script setup lang="ts">
+import { Copy, KeyRound, MessagesSquare, Receipt, Send, UserPlus } from '@lucide/vue'
+import { NButton, NInput, NModal, NSelect, NSpin, useDialog, useMessage } from 'naive-ui'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
+
+import { api } from '@/api/client'
+import AppShell from '@/layouts/AppShell.vue'
+import { useAuthStore } from '@/stores/auth'
+
+type ChatStatus = {
+  enabled: boolean
+  domain: string | null
+  public_url: string | null
+  moderator_access: boolean
+}
+
+type ThreadRow = {
+  id: string
+  status: string
+  last_message_at: string | null
+  username: string
+  display_name: string | null
+  user_is_active: boolean
+  client_id: string | null
+  client_name: string | null
+  client_missing: boolean
+  chat_user_id: string | null
+  last_preview: string | null
+  last_sender: string | null
+}
+
+type AttachmentInfo = { id: string; kind: string; filename: string; expires_at: string; expired: boolean }
+
+type MessageRow = {
+  id: number
+  sender: string
+  body: string
+  created_at: string
+  attachment?: AttachmentInfo | null
+}
+
+type AccountRow = {
+  id: string
+  username: string
+  display_name: string | null
+  client_id: string | null
+  client_name: string | null
+  is_active: boolean
+  last_login_at: string | null
+}
+
+type ClientOption = { id: string; name: string; server_name?: string | null }
+
+type InvoiceRow = {
+  id: string
+  description: string | null
+  amount_rub: string
+  status: string
+  pay_url: string | null
+  created_at: string
+  expires_at: string | null
+}
+
+const message = useMessage()
+const dialog = useDialog()
+const auth = useAuthStore()
+const isAdmin = computed(() => auth.user?.role === 'admin')
+
+const status = ref<ChatStatus | null>(null)
+const threads = ref<ThreadRow[]>([])
+const threadsLoading = ref(false)
+const activeThreadId = ref('')
+const activeThread = computed(() => threads.value.find((t) => t.id === activeThreadId.value) || null)
+
+const messages = ref<MessageRow[]>([])
+const messagesLoading = ref(false)
+const messagesBox = ref<HTMLElement | null>(null)
+const draft = ref('')
+const sending = ref(false)
+const statusBusy = ref(false)
+
+const showAccounts = ref(false)
+const accounts = ref<AccountRow[]>([])
+const newUsername = ref('')
+const newDisplayName = ref('')
+const creating = ref(false)
+const showPassword = ref(false)
+const issuedLogin = ref('')
+const issuedPassword = ref('')
+
+const showLink = ref(false)
+const linkTarget = ref<{ id: string; username: string } | null>(null)
+const linkClientId = ref<string | null>(null)
+const linkBusy = ref(false)
+const clientsLoading = ref(false)
+const clientOptions = ref<{ label: string; value: string }[]>([])
+
+const showInvoices = ref(false)
+const invoices = ref<InvoiceRow[]>([])
+const invoicesLoading = ref(false)
+const insertBusy = ref('')
+const keyBusy = ref(false)
+
+let threadsTimer: number | undefined
+let messagesTimer: number | undefined
+
+onMounted(async () => {
+  await Promise.all([loadStatus(), loadThreads()])
+  threadsTimer = window.setInterval(loadThreads, 10_000)
+  messagesTimer = window.setInterval(pollMessages, 4_000)
+})
+
+onBeforeUnmount(() => {
+  if (threadsTimer) clearInterval(threadsTimer)
+  if (messagesTimer) clearInterval(messagesTimer)
+})
+
+async function loadStatus() {
+  try {
+    const { data } = await api.get<ChatStatus>('/chat/admin/status')
+    status.value = data
+  } catch {
+    status.value = null
+  }
+}
+
+async function loadThreads() {
+  threadsLoading.value = true
+  try {
+    const { data } = await api.get<ThreadRow[]>('/chat/admin/threads')
+    threads.value = data
+  } catch {
+    /* поллинг — не шумим */
+  } finally {
+    threadsLoading.value = false
+  }
+}
+
+async function selectThread(id: string) {
+  if (activeThreadId.value === id) return
+  activeThreadId.value = id
+  messages.value = []
+  messagesLoading.value = true
+  try {
+    const { data } = await api.get<{ messages: MessageRow[] }>(
+      `/chat/admin/threads/${id}/messages`,
+      { params: { limit: 200 } }
+    )
+    messages.value = data.messages
+    scrollToBottom()
+  } catch {
+    message.error('Не удалось загрузить сообщения.')
+  } finally {
+    messagesLoading.value = false
+  }
+}
+
+async function pollMessages() {
+  if (!activeThreadId.value || sending.value) return
+  const lastId = messages.value.length ? messages.value[messages.value.length - 1].id : 0
+  try {
+    const { data } = await api.get<{ messages: MessageRow[] }>(
+      `/chat/admin/threads/${activeThreadId.value}/messages`,
+      { params: { after_id: lastId, limit: 100 } }
+    )
+    if (data.messages.length) {
+      messages.value.push(...data.messages)
+      scrollToBottom()
+    }
+  } catch {
+    /* поллинг — не шумим */
+  }
+}
+
+function onComposeKeydown(e: KeyboardEvent) {
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault()
+    void sendMessage()
+  }
+}
+
+async function sendMessage() {
+  const body = draft.value.trim()
+  if (!body || !activeThreadId.value) return
+  sending.value = true
+  try {
+    const { data } = await api.post<MessageRow>(
+      `/chat/admin/threads/${activeThreadId.value}/messages`,
+      { body }
+    )
+    messages.value.push(data)
+    draft.value = ''
+    scrollToBottom()
+    void loadThreads()
+  } catch (error: any) {
+    message.error(error?.response?.data?.detail || 'Не удалось отправить.')
+  } finally {
+    sending.value = false
+  }
+}
+
+async function toggleResolved() {
+  if (!activeThread.value) return
+  statusBusy.value = true
+  const next = activeThread.value.status === 'resolved' ? 'open' : 'resolved'
+  try {
+    await api.post(`/chat/admin/threads/${activeThreadId.value}/status`, { status: next })
+    await loadThreads()
+  } catch (error: any) {
+    message.error(error?.response?.data?.detail || 'Не удалось изменить статус.')
+  } finally {
+    statusBusy.value = false
+  }
+}
+
+function scrollToBottom() {
+  void nextTick(() => {
+    const el = messagesBox.value
+    if (el) el.scrollTop = el.scrollHeight
+  })
+}
+
+function formatTime(iso: string): string {
+  try {
+    return new Date(iso).toLocaleString('ru-RU', {
+      day: '2-digit',
+      month: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit'
+    })
+  } catch {
+    return iso
+  }
+}
+
+// --- аккаунты ---------------------------------------------------------------
+
+async function openAccounts() {
+  showAccounts.value = true
+  await loadAccounts()
+}
+
+async function loadAccounts() {
+  try {
+    const { data } = await api.get<AccountRow[]>('/chat/admin/users')
+    accounts.value = data
+  } catch (error: any) {
+    message.error(error?.response?.data?.detail || 'Не удалось загрузить аккаунты.')
+  }
+}
+
+async function createAccount() {
+  const username = newUsername.value.trim().toLowerCase()
+  if (!username) {
+    message.warning('Укажите логин.')
+    return
+  }
+  creating.value = true
+  try {
+    const { data } = await api.post<{ user: AccountRow; password: string }>('/chat/admin/users', {
+      username,
+      display_name: newDisplayName.value.trim() || null
+    })
+    issuedLogin.value = data.user.username
+    issuedPassword.value = data.password
+    showPassword.value = true
+    newUsername.value = ''
+    newDisplayName.value = ''
+    await loadAccounts()
+  } catch (error: any) {
+    message.error(error?.response?.data?.detail || 'Не удалось создать аккаунт.')
+  } finally {
+    creating.value = false
+  }
+}
+
+async function resetPassword(u: AccountRow) {
+  try {
+    const { data } = await api.post<{ user: AccountRow; password: string }>(
+      `/chat/admin/users/${u.id}/reset-password`
+    )
+    issuedLogin.value = data.user.username
+    issuedPassword.value = data.password
+    showPassword.value = true
+  } catch (error: any) {
+    message.error(error?.response?.data?.detail || 'Не удалось сбросить пароль.')
+  }
+}
+
+async function toggleActive(u: AccountRow) {
+  try {
+    await api.post(`/chat/admin/users/${u.id}/toggle-active`)
+    await loadAccounts()
+    await loadThreads()
+  } catch (error: any) {
+    message.error(error?.response?.data?.detail || 'Не удалось изменить статус.')
+  }
+}
+
+// --- привязка VPN-клиента -----------------------------------------------------
+
+async function loadClientOptions() {
+  clientsLoading.value = true
+  try {
+    const { data } = await api.get<ClientOption[]>('/clients')
+    clientOptions.value = data.map((c) => ({
+      label: c.server_name ? `${c.name} · ${c.server_name}` : c.name,
+      value: c.id
+    }))
+  } catch {
+    message.error('Не удалось загрузить список VPN-клиентов.')
+  } finally {
+    clientsLoading.value = false
+  }
+}
+
+function openLink(thread: ThreadRow) {
+  if (!thread.chat_user_id) return
+  linkTarget.value = { id: thread.chat_user_id, username: thread.username }
+  linkClientId.value = thread.client_id
+  showLink.value = true
+  void loadClientOptions()
+}
+
+function openLinkAccount(account: AccountRow) {
+  linkTarget.value = { id: account.id, username: account.username }
+  linkClientId.value = account.client_id
+  showLink.value = true
+  void loadClientOptions()
+}
+
+async function saveLink() {
+  if (!linkTarget.value) return
+  linkBusy.value = true
+  try {
+    await api.post(`/chat/admin/users/${linkTarget.value.id}/link`, {
+      client_id: linkClientId.value || null
+    })
+    message.success(linkClientId.value ? 'VPN-клиент привязан.' : 'Привязка снята.')
+    showLink.value = false
+    await Promise.all([loadThreads(), showAccounts.value ? loadAccounts() : Promise.resolve()])
+  } catch (error: any) {
+    message.error(error?.response?.data?.detail || 'Не удалось сохранить привязку.')
+  } finally {
+    linkBusy.value = false
+  }
+}
+
+// --- выдача ключа ----------------------------------------------------------------
+
+function confirmSendKey() {
+  if (!activeThread.value) return
+  dialog.info({
+    title: 'Выдать ключ подключения?',
+    content:
+      `Клиент «${activeThread.value.client_name}» получит в чате защищённую ссылку на файл ` +
+      'конфигурации и QR-код. Ссылка работает только после входа в чат и истекает через 72 часа.',
+    positiveText: 'Выдать',
+    negativeText: 'Отмена',
+    onPositiveClick: async () => {
+      keyBusy.value = true
+      try {
+        const { data } = await api.post<MessageRow>(`/chat/admin/threads/${activeThreadId.value}/send-key`)
+        messages.value.push(data)
+        scrollToBottom()
+        message.success('Ключ отправлен в чат.')
+        void loadThreads()
+      } catch (error: any) {
+        message.error(error?.response?.data?.detail || 'Не удалось выдать ключ.')
+      } finally {
+        keyBusy.value = false
+      }
+    }
+  })
+}
+
+// --- счета ---------------------------------------------------------------------
+
+function invoiceStatusLabel(status: string): string {
+  switch (status) {
+    case 'pending': return 'ожидает оплаты'
+    case 'succeeded': return 'оплачен'
+    case 'canceled': return 'отменён'
+    case 'expired': return 'просрочен'
+    default: return status
+  }
+}
+
+async function openInvoices() {
+  showInvoices.value = true
+  invoicesLoading.value = true
+  try {
+    const { data } = await api.get<InvoiceRow[]>(`/chat/admin/threads/${activeThreadId.value}/invoices`)
+    invoices.value = data
+  } catch (error: any) {
+    message.error(error?.response?.data?.detail || 'Не удалось загрузить счета.')
+  } finally {
+    invoicesLoading.value = false
+  }
+}
+
+async function insertInvoice(inv: InvoiceRow) {
+  insertBusy.value = inv.id
+  try {
+    const { data } = await api.post<MessageRow>(
+      `/chat/admin/threads/${activeThreadId.value}/insert-invoice`,
+      { invoice_id: inv.id }
+    )
+    messages.value.push(data)
+    scrollToBottom()
+    showInvoices.value = false
+    message.success('Счёт отправлен в чат.')
+    void loadThreads()
+  } catch (error: any) {
+    message.error(error?.response?.data?.detail || 'Не удалось вставить счёт.')
+  } finally {
+    insertBusy.value = ''
+  }
+}
+
+async function copyCredentials() {
+  const text = `Чат поддержки: ${status.value?.public_url || ''}\nЛогин: ${issuedLogin.value}\nПароль: ${issuedPassword.value}`
+  try {
+    await navigator.clipboard.writeText(text)
+    message.success('Скопировано — отправьте клиенту.')
+  } catch {
+    message.error('Не удалось скопировать.')
+  }
+}
+</script>
+
+<style scoped>
+.chat-layout {
+  display: grid;
+  grid-template-columns: 300px 1fr;
+  gap: 16px;
+  align-items: stretch;
+  /* фиксированная высота: переписка скроллится внутри, а не растит страницу */
+  height: calc(100vh - 210px);
+  min-height: 420px;
+}
+
+.chat-side {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 14px;
+  overflow-y: auto;
+  min-height: 0;
+}
+
+.chat-side-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+
+.chat-thread {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  padding: 10px 12px;
+  cursor: pointer;
+  color: inherit;
+  font: inherit;
+}
+
+.chat-thread:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.chat-thread.active {
+  border-color: var(--color-border);
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.chat-thread-top {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.chat-thread-name {
+  font-weight: 600;
+  font-size: 13.5px;
+}
+
+.chat-thread-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  margin-right: 5px;
+  border-radius: 50%;
+  background: var(--color-primary, #63e2b7);
+  vertical-align: middle;
+}
+
+.chat-thread-resolved {
+  font-size: 11px;
+  color: var(--color-muted);
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  padding: 1px 8px;
+}
+
+.chat-thread-preview {
+  margin-top: 3px;
+  font-size: 12.5px;
+  color: var(--color-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-main {
+  display: flex;
+  flex-direction: column;
+  padding: 0;
+  overflow: hidden;
+  min-height: 0;
+}
+
+.chat-main-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.chat-head-info {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.chat-head-link {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.chat-head-actions {
+  display: flex;
+  gap: 6px;
+  flex: none;
+}
+
+.chat-link-chip {
+  font-size: 11.5px;
+  color: var(--color-accent);
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  padding: 1px 8px;
+  white-space: nowrap;
+}
+
+.chat-link-chip.warn {
+  color: var(--color-warning);
+}
+
+.chat-link-chip.muted-chip {
+  color: var(--color-muted);
+}
+
+.chat-inv-info {
+  flex-wrap: wrap;
+}
+
+.chat-messages {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  scrollbar-width: none; /* Firefox */
+}
+
+.chat-messages::-webkit-scrollbar,
+.chat-side::-webkit-scrollbar,
+.chat-acc-list::-webkit-scrollbar {
+  display: none; /* Chrome/Safari: скролл работает, полоса скрыта */
+}
+
+.chat-side,
+.chat-acc-list {
+  scrollbar-width: none;
+}
+
+.chat-msg {
+  max-width: 72%;
+  border-radius: 12px;
+  padding: 8px 12px;
+  font-size: 13.5px;
+  line-height: 1.45;
+}
+
+.chat-msg.from-admin {
+  align-self: flex-end;
+  background: rgba(99, 226, 183, 0.12);
+  border: 1px solid rgba(99, 226, 183, 0.25);
+}
+
+.chat-msg.from-client {
+  align-self: flex-start;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--color-border);
+}
+
+.chat-msg-body {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.chat-msg-att {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+  padding: 6px 10px;
+  border: 1px dashed var(--color-border);
+  border-radius: 8px;
+  font-size: 12.5px;
+  color: var(--color-accent);
+}
+
+.chat-msg-att.expired {
+  color: var(--color-muted);
+}
+
+.chat-msg-time {
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--color-muted);
+  text-align: right;
+}
+
+.chat-compose {
+  display: flex;
+  gap: 8px;
+  align-items: flex-end;
+  padding: 12px 16px;
+  border-top: 1px solid var(--color-border);
+}
+
+.chat-compose :deep(.n-input) {
+  flex: 1;
+}
+
+.chat-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 28px 12px;
+  color: var(--color-muted);
+  font-size: 13px;
+  text-align: center;
+}
+
+.chat-empty.tall {
+  flex: 1;
+}
+
+.chat-empty-hint {
+  max-width: 240px;
+  font-size: 12.5px;
+}
+
+.muted {
+  color: var(--color-muted);
+}
+
+.chat-accounts {
+  width: min(620px, 92vw);
+}
+
+.chat-acc-create {
+  display: grid;
+  grid-template-columns: 1fr 1fr auto;
+  gap: 8px;
+  margin: 12px 0;
+}
+
+.chat-acc-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+.chat-acc-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  border: 1px solid var(--color-border);
+  border-radius: 10px;
+  padding: 8px 12px;
+}
+
+.chat-acc-info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+}
+
+.chat-acc-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.chat-cred {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 12px 0;
+  border: 1px solid var(--color-border);
+  border-radius: 10px;
+  padding: 12px;
+}
+
+.chat-cred-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 13px;
+}
+
+.chat-cred-row span:first-child {
+  color: var(--color-muted);
+}
+
+@media (max-width: 900px) {
+  .chat-layout {
+    grid-template-columns: 1fr;
+    grid-template-rows: 220px 1fr;
+    height: calc(100vh - 180px);
+  }
+}
+</style>
