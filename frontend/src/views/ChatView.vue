@@ -5,31 +5,41 @@
       <aside class="panel chat-side">
         <div class="chat-side-head">
           <strong>Диалоги</strong>
-          <n-button v-if="isAdmin" size="tiny" tertiary @click="openAccounts">
-            <template #icon><UserPlus :size="14" /></template>
-            Аккаунты
-          </n-button>
+          <div class="chat-side-actions">
+            <n-button v-if="isAdmin" size="tiny" tertiary @click="openCreateFolder">
+              <template #icon><FolderPlus :size="14" /></template>
+              Папка
+            </n-button>
+            <n-button v-if="isAdmin" size="tiny" tertiary @click="openAccounts">
+              <template #icon><UserPlus :size="14" /></template>
+              Аккаунты
+            </n-button>
+          </div>
         </div>
 
-        <div class="chat-folders">
+        <!-- Папки: вертикальный список (как в веб-чатах) -->
+        <div v-if="folders.length" class="chat-folder-list">
           <button
             type="button"
-            class="chat-folder-chip"
+            class="chat-folder-row"
             :class="{ active: activeFolderId === 'all' }"
             @click="activeFolderId = 'all'"
           >
-            Все <span class="chat-folder-count">{{ threads.length }}</span>
+            <Inbox :size="15" class="chat-folder-ico" />
+            <span class="chat-folder-name">Все</span>
+            <span class="chat-folder-count">{{ threads.length }}</span>
           </button>
           <button
             v-for="f in folders"
             :key="f.id"
             type="button"
-            class="chat-folder-chip"
+            class="chat-folder-row"
             :class="{ active: activeFolderId === f.id }"
-            :style="f.color ? { borderColor: f.color } : undefined"
             @click="activeFolderId = f.id"
           >
-            {{ f.name }} <span class="chat-folder-count">{{ f.count }}</span>
+            <Folder :size="15" class="chat-folder-ico" :style="f.color ? { color: f.color } : undefined" />
+            <span class="chat-folder-name">{{ f.name }}</span>
+            <span class="chat-folder-count">{{ f.count }}</span>
             <span
               v-if="isAdmin"
               class="chat-folder-x"
@@ -39,19 +49,14 @@
           </button>
           <button
             type="button"
-            class="chat-folder-chip"
+            class="chat-folder-row"
             :class="{ active: activeFolderId === 'none' }"
             @click="activeFolderId = 'none'"
           >
-            Без папки <span class="chat-folder-count">{{ noFolderCount }}</span>
+            <FolderOpen :size="15" class="chat-folder-ico" />
+            <span class="chat-folder-name">Без папки</span>
+            <span class="chat-folder-count">{{ noFolderCount }}</span>
           </button>
-          <button
-            v-if="isAdmin"
-            type="button"
-            class="chat-folder-chip add"
-            title="Создать папку"
-            @click="openCreateFolder"
-          >+ Папка</button>
         </div>
 
         <div v-if="threadsLoading && !threads.length" class="chat-empty">
@@ -385,7 +390,19 @@
 </template>
 
 <script setup lang="ts">
-import { Copy, KeyRound, MessagesSquare, Receipt, Send, Settings, UserPlus } from '@lucide/vue'
+import {
+  Copy,
+  Folder,
+  FolderOpen,
+  FolderPlus,
+  Inbox,
+  KeyRound,
+  MessagesSquare,
+  Receipt,
+  Send,
+  Settings,
+  UserPlus
+} from '@lucide/vue'
 import { NButton, NDropdown, NInput, NModal, NSelect, NSpin, useDialog, useMessage } from 'naive-ui'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 
@@ -1012,45 +1029,52 @@ async function copyCredentials() {
   margin-bottom: 6px;
 }
 
-.chat-folders {
+.chat-side-actions {
   display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  margin-bottom: 10px;
-  padding-bottom: 10px;
+  align-items: center;
+  gap: 4px;
+}
+
+.chat-folder-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-bottom: 8px;
+  padding-bottom: 8px;
   border-bottom: 1px solid var(--color-border);
 }
 
-.chat-folder-chip {
-  display: inline-flex;
+.chat-folder-row {
+  display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 4px 10px;
-  border: 1px solid var(--color-border);
-  border-radius: 999px;
+  gap: 9px;
+  width: 100%;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 9px;
   background: none;
   color: var(--color-muted);
   font: inherit;
-  font-size: 12.5px;
+  font-size: 13.5px;
+  text-align: left;
   cursor: pointer;
-  transition: all 0.14s ease;
+  transition: background 0.14s ease, color 0.14s ease;
 }
 
-.chat-folder-chip:hover { color: var(--color-text); }
-.chat-folder-chip.active {
-  color: var(--color-text);
-  border-color: var(--color-accent);
-  background: color-mix(in srgb, var(--color-accent) 14%, transparent);
-}
-.chat-folder-chip.add { border-style: dashed; }
-.chat-folder-count { opacity: 0.7; font-size: 11.5px; }
+.chat-folder-row:hover { background: var(--color-surface-2, rgba(127, 127, 127, 0.08)); color: var(--color-text); }
+.chat-folder-row.active { background: color-mix(in srgb, var(--color-accent) 16%, transparent); color: var(--color-text); }
+.chat-folder-ico { flex: none; opacity: 0.85; }
+.chat-folder-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chat-folder-count { flex: none; opacity: 0.6; font-size: 12px; }
 .chat-folder-x {
-  margin-left: 2px;
-  font-size: 14px;
+  flex: none;
+  font-size: 15px;
   line-height: 1;
-  opacity: 0.5;
+  opacity: 0;
+  padding: 0 2px;
 }
-.chat-folder-x:hover { opacity: 1; color: var(--color-danger, #e88080); }
+.chat-folder-row:hover .chat-folder-x { opacity: 0.5; }
+.chat-folder-x:hover { opacity: 1 !important; color: var(--color-danger, #e88080); }
 
 .chat-thread {
   display: block;

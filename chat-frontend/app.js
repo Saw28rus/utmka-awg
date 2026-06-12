@@ -33,7 +33,8 @@
     vpnBtn: document.getElementById('vpn-btn'),
     vpnSheet: document.getElementById('vpn-sheet'),
     vpnClose: document.getElementById('vpn-close'),
-    vpnBody: document.getElementById('vpn-body')
+    vpnBody: document.getElementById('vpn-body'),
+    themeBtn: document.getElementById('theme-btn')
   };
 
   var state = {
@@ -68,6 +69,46 @@
     for (var i = 0; i < raw.length; i++) out[i] = raw.charCodeAt(i);
     return out;
   }
+
+  // --- высота под клавиатуру (iPhone) -----------------------------------------
+  // Экран чата фиксирован; реальную видимую высоту берём из visualViewport,
+  // чтобы поле ввода всегда было над клавиатурой без зазоров.
+  function syncAppHeight() {
+    var h = (window.visualViewport && window.visualViewport.height) || window.innerHeight;
+    document.documentElement.style.setProperty('--app-height', Math.round(h) + 'px');
+  }
+  syncAppHeight();
+  if (window.visualViewport) {
+    window.visualViewport.addEventListener('resize', syncAppHeight);
+    window.visualViewport.addEventListener('scroll', syncAppHeight);
+  }
+  window.addEventListener('resize', syncAppHeight);
+  window.addEventListener('orientationchange', function () { setTimeout(syncAppHeight, 250); });
+
+  // --- тема -------------------------------------------------------------------
+  function effectiveTheme() {
+    var saved = localStorage.getItem('chat_theme');
+    if (saved === 'light' || saved === 'dark') return saved;
+    return (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches) ? 'light' : 'dark';
+  }
+  function applyThemeIcon() {
+    var light = effectiveTheme() === 'light';
+    var moon = els.themeBtn && els.themeBtn.querySelector('.ic-moon');
+    var sun = els.themeBtn && els.themeBtn.querySelector('.ic-sun');
+    // В тёмной теме показываем солнце (тап → светлая); в светлой — луну.
+    if (moon) moon.hidden = !light;
+    if (sun) sun.hidden = light;
+    var meta = document.querySelector('meta[name="theme-color"]');
+    if (meta) meta.setAttribute('content', light ? '#f6f8f7' : '#131618');
+  }
+  function toggleTheme() {
+    var next = effectiveTheme() === 'dark' ? 'light' : 'dark';
+    localStorage.setItem('chat_theme', next);
+    document.documentElement.setAttribute('data-theme', next);
+    applyThemeIcon();
+  }
+  if (els.themeBtn) els.themeBtn.addEventListener('click', toggleTheme);
+  applyThemeIcon();
 
   // --- api --------------------------------------------------------------------
 
@@ -431,9 +472,23 @@
   function clearBadge() {
     state.unread = 0;
     if (navigator.clearAppBadge) navigator.clearAppBadge().catch(function () {});
+    // Закрываем уже показанные push-уведомления — иначе на Android значок
+    // на иконке приложения остаётся, даже когда чат прочитан.
+    if (navigator.serviceWorker && navigator.serviceWorker.ready) {
+      navigator.serviceWorker.ready.then(function (reg) {
+        if (reg && reg.getNotifications) {
+          reg.getNotifications().then(function (list) {
+            list.forEach(function (n) { n.close(); });
+          }).catch(function () {});
+        }
+      }).catch(function () {});
+    }
   }
   document.addEventListener('visibilitychange', function () {
     if (!document.hidden) clearBadge();
+  });
+  window.addEventListener('focus', function () {
+    if (!els.chatScreen.hidden) clearBadge();
   });
 
   // --- отправка ---------------------------------------------------------------
@@ -872,11 +927,18 @@
 
   function initServiceWorker() {
     if (!('serviceWorker' in navigator)) return;
-    navigator.serviceWorker.register('/sw.js?v=10').catch(function () {});
+    navigator.serviceWorker.register('/sw.js?v=11').catch(function () {});
     navigator.serviceWorker.addEventListener('message', function (e) {
-      if (e.data && e.data.type === 'open-chat') {
+      if (!e.data) return;
+      if (e.data.type === 'open-chat') {
         clearBadge();
         if (!els.chatScreen.hidden) scrollDown(true);
+      } else if (e.data.type === 'push-msg') {
+        // Пришло новое сообщение, а чат открыт — подтянем сразу.
+        if (!els.chatScreen.hidden) {
+          poll(false);
+          if (!document.hidden) clearBadge();
+        }
       }
     });
     state.pushSupported = ('PushManager' in window) && (typeof Notification !== 'undefined');

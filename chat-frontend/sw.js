@@ -1,13 +1,13 @@
 /* Service worker чата поддержки: офлайн-оболочка + push-уведомления.
    ВАЖНО: при изменении статики поднимайте CACHE — иначе клиенты получат старое. */
 
-var CACHE = 'utmka-chat-v10';
+var CACHE = 'utmka-chat-v11';
 var SHELL = [
   '/',
   '/index.html',
-  '/style.css?v=10',
-  '/app.js?v=10',
-  '/manifest.webmanifest?v=10',
+  '/style.css?v=11',
+  '/app.js?v=11',
+  '/manifest.webmanifest?v=11',
   '/icons/icon-192.png',
   '/icons/icon-512.png',
   '/icons/apple-touch-icon.png',
@@ -81,14 +81,22 @@ self.addEventListener('push', function (e) {
   var body = data.body || 'Новое сообщение';
   var url = data.url || '/';
   e.waitUntil(
-    self.registration.showNotification(title, {
-      body: body,
-      icon: '/icons/icon-192.png',
-      badge: '/icons/badge-96.png',
-      tag: 'chat-support',
-      renotify: true,
-      data: { url: url },
-      vibrate: [80, 40, 80]
+    self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then(function (list) {
+      var focused = list.some(function (c) { return c.focused || c.visibilityState === 'visible'; });
+      // Сообщаем открытому приложению, что есть новое — оно подтянет сообщение.
+      list.forEach(function (c) { c.postMessage({ type: 'push-msg' }); });
+      // Если чат открыт и активен — не показываем системное уведомление и не
+      // вешаем значок на иконку (пользователь и так всё видит).
+      if (focused) return;
+      return self.registration.showNotification(title, {
+        body: body,
+        icon: '/icons/icon-192.png',
+        badge: '/icons/badge-96.png',
+        tag: 'chat-support',
+        renotify: true,
+        data: { url: url },
+        vibrate: [80, 40, 80]
+      });
     })
   );
 });

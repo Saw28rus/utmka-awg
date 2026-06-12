@@ -14,8 +14,10 @@
   --safe-bottom: env(safe-area-inset-bottom);
 }
 
+/* Светлая тема: применяется либо по системной настройке (если пользователь не
+   выбрал вручную), либо принудительно через data-theme="light". */
 @media (prefers-color-scheme: light) {
-  :root {
+  :root:not([data-theme="dark"]) {
     --bg: #eef2f0;
     --bg2: #f6f8f7;
     --panel: #ffffff;
@@ -27,6 +29,19 @@
     --accent-ink: #ffffff;
     --danger: #c0392b;
   }
+}
+
+:root[data-theme="light"] {
+  --bg: #eef2f0;
+  --bg2: #f6f8f7;
+  --panel: #ffffff;
+  --panel2: #f0f3f1;
+  --border: #d9e0db;
+  --text: #14201b;
+  --muted: #5d6b63;
+  --accent: #12a37a;
+  --accent-ink: #ffffff;
+  --danger: #c0392b;
 }
 
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
@@ -42,6 +57,19 @@ html, body {
 }
 
 .screen { height: 100%; min-height: 100dvh; }
+
+/* Экран чата фиксируем по реальному видимому вьюпорту (--app-height задаётся из
+   JS по visualViewport). Так клавиатура на iPhone не оставляет зазоров. */
+.screen.chat {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  margin: 0 auto;
+  height: var(--app-height, 100dvh);
+  min-height: 0;
+  overflow: hidden;
+}
 
 button {
   font: inherit;
@@ -123,6 +151,7 @@ input:focus, textarea:focus { border-color: var(--accent); }
 }
 
 .chat-header {
+  flex: none;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -130,8 +159,6 @@ input:focus, textarea:focus { border-color: var(--accent); }
   padding: calc(10px + var(--safe-top)) 14px 10px;
   background: var(--panel);
   border-bottom: 1px solid var(--border);
-  position: sticky;
-  top: 0;
   z-index: 5;
 }
 
@@ -188,6 +215,7 @@ input:focus, textarea:focus { border-color: var(--accent); }
 /* лента сообщений */
 .messages {
   flex: 1;
+  min-height: 0;
   overflow-y: auto;
   -webkit-overflow-scrolling: touch;
   padding: 16px 14px;
@@ -284,29 +312,30 @@ input:focus, textarea:focus { border-color: var(--accent); }
   z-index: 4;
 }
 
-/* поле ввода — «парящее», как в Telegram: текстовое поле отдельно от кнопки */
+/* поле ввода — «парящее», как в Telegram: текстовое поле отдельно от кнопки.
+   flex: none — низ закреплён внизу фиксированного экрана, над клавиатурой. */
 .compose {
+  flex: none;
   display: flex;
   gap: 9px;
   align-items: flex-end;
-  padding: 8px calc(10px + env(safe-area-inset-right)) max(10px, var(--safe-bottom)) calc(10px + env(safe-area-inset-left));
-  background: transparent;
-  position: sticky;
-  bottom: 0;
+  padding: 8px calc(10px + env(safe-area-inset-right)) max(8px, var(--safe-bottom)) calc(10px + env(safe-area-inset-left));
+  background: var(--bg2);
 }
 .compose textarea {
   flex: 1;
   resize: none;
-  max-height: 130px;
+  max-height: 120px;
   border-radius: 22px;
-  padding: 12px 16px;
+  padding: 11px 16px;
+  line-height: 1.35;
   background: var(--panel);
   border: 1px solid var(--border);
-  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.18);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.14);
 }
 .compose .send {
-  width: 46px;
-  height: 46px;
+  width: 44px;
+  height: 44px;
   border-radius: 50%;
   flex: none;
   background: var(--accent);
@@ -314,20 +343,10 @@ input:focus, textarea:focus { border-color: var(--accent); }
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.22);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.18);
   transition: transform 0.12s ease;
 }
 .compose .send:active { transform: scale(0.92); }
-
-/* мягкая подложка под «парящим» полем, чтобы лента не просвечивала резко */
-.chat .compose::before {
-  content: "";
-  position: absolute;
-  inset: 0;
-  background: linear-gradient(180deg, transparent, var(--bg2) 55%);
-  z-index: -1;
-  pointer-events: none;
-}
 
 /* ============ ВЛОЖЕНИЕ-КЛЮЧ ============ */
 
