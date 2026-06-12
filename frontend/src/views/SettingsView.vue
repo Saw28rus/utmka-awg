@@ -84,7 +84,7 @@
 
         <!-- Интеграции -->
         <section v-else-if="activeSection === 'integrations'" class="section-body section-body--wide">
-          <div class="integration-tabs">
+          <div v-if="integrationTabs.length > 1" class="integration-tabs">
             <button
               v-for="item in integrationTabs"
               :key="item.id"
@@ -175,25 +175,6 @@
               Секретный ключ хранится в базе в зашифрованном виде. Перед сохранением панель
               проверяет ключи запросом к API ЮKassa.
             </p>
-          </div>
-
-          <div v-else class="integration-panel">
-            <p class="hint integration-note">
-              Временная настройка: нужна только пока репозиторий панели приватный.
-              После открытого доступа обновления будут работать без токена.
-            </p>
-            <label class="field">
-              <span>GitHub token</span>
-              <n-input
-                v-model:value="githubToken"
-                type="password"
-                :placeholder="settings?.has_github_token ? 'Токен сохранён — введи новый для замены' : 'github_pat_...'"
-              />
-            </label>
-            <p class="hint">Права: Read на репозиторий <code>utmka-awg</code> — для проверки и установки обновлений.</p>
-            <div class="actions">
-              <n-button :loading="savingGeneral" @click="saveGithubToken">Сохранить token</n-button>
-            </div>
           </div>
         </section>
 
@@ -297,7 +278,7 @@ type SectionId =
   | 'updates'
   | 'audit'
 
-type IntegrationId = 'yookassa' | 'github'
+type IntegrationId = 'yookassa'
 
 type SettingsData = {
   app_name: string
@@ -308,7 +289,6 @@ type SettingsData = {
   access_token_minutes: number
   refresh_token_days: number
   maintenance_mode: boolean
-  has_github_token: boolean
   panel_version: string
   update_capable: boolean
 }
@@ -356,8 +336,7 @@ const integrationTabs = computed(() => [
     label: 'ЮKassa',
     icon: CreditCard,
     badge: yookassaStatus.value?.connected ? 'Подключено' : undefined
-  },
-  { id: 'github' as IntegrationId, label: 'GitHub', icon: Link2, badge: 'Временно' }
+  }
 ])
 
 const activeSection = ref<SectionId>('security')
@@ -373,7 +352,6 @@ const form = ref({
   refresh_token_days: 7
 })
 const pwd = ref({ old: '', new: '' })
-const githubToken = ref('')
 const yookassaStatus = ref<YooKassaStatus | null>(null)
 const yookassaShopId = ref('')
 const yookassaSecretKey = ref('')
@@ -518,18 +496,6 @@ async function saveGeneral() {
     const { data } = await api.patch<SettingsData>('/settings', form.value)
     settings.value = data
     message.success('Настройки сохранены.')
-  } finally {
-    savingGeneral.value = false
-  }
-}
-
-async function saveGithubToken() {
-  savingGeneral.value = true
-  try {
-    await api.patch('/settings', { github_token: githubToken.value || '' })
-    githubToken.value = ''
-    message.success('GitHub token сохранён.')
-    await loadAll()
   } finally {
     savingGeneral.value = false
   }
