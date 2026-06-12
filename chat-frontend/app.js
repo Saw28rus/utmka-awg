@@ -74,8 +74,12 @@
   // Экран чата фиксирован; реальную видимую высоту берём из visualViewport,
   // чтобы поле ввода всегда было над клавиатурой без зазоров.
   function syncAppHeight() {
-    var h = (window.visualViewport && window.visualViewport.height) || window.innerHeight;
-    document.documentElement.style.setProperty('--app-height', Math.round(h) + 'px');
+    var vv = window.visualViewport;
+    var h = (vv && vv.height) || window.innerHeight;
+    var top = (vv && vv.offsetTop) || 0;
+    var s = document.documentElement.style;
+    s.setProperty('--app-height', Math.round(h) + 'px');
+    s.setProperty('--vv-top', Math.round(top) + 'px');
   }
   syncAppHeight();
   if (window.visualViewport) {
@@ -84,6 +88,9 @@
   }
   window.addEventListener('resize', syncAppHeight);
   window.addEventListener('orientationchange', function () { setTimeout(syncAppHeight, 250); });
+  // Клавиатура на iOS появляется/скрывается с задержкой — досчитываем после события фокуса.
+  document.addEventListener('focusin', function () { setTimeout(syncAppHeight, 100); });
+  document.addEventListener('focusout', function () { setTimeout(syncAppHeight, 100); });
 
   // --- тема -------------------------------------------------------------------
   function effectiveTheme() {
@@ -927,7 +934,7 @@
 
   function initServiceWorker() {
     if (!('serviceWorker' in navigator)) return;
-    navigator.serviceWorker.register('/sw.js?v=11').catch(function () {});
+    navigator.serviceWorker.register('/sw.js?v=12').catch(function () {});
     navigator.serviceWorker.addEventListener('message', function (e) {
       if (!e.data) return;
       if (e.data.type === 'open-chat') {

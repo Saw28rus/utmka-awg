@@ -215,31 +215,42 @@
           <n-button type="primary" :loading="creating" @click="createAccount">Создать</n-button>
         </div>
 
+        <n-input
+          v-if="accounts.length > 6"
+          v-model:value="accountSearch"
+          placeholder="Поиск по имени, логину или VPN-клиенту"
+          clearable
+        >
+          <template #prefix><Search :size="15" /></template>
+        </n-input>
+
         <div class="chat-acc-list">
-          <div v-for="u in accounts" :key="u.id" class="chat-acc-row">
+          <div v-for="u in filteredAccounts" :key="u.id" class="chat-acc-row" :class="{ blocked: !u.is_active }">
+            <span class="entity-avatar entity-avatar--md chat-acc-avatar">
+              {{ (u.display_name || u.username).slice(0, 1).toUpperCase() }}
+            </span>
             <div class="chat-acc-info">
-              <strong>{{ u.display_name || u.username }}</strong>
-              <span class="muted mono">@{{ u.username }}</span>
-              <span v-if="u.client_name" class="chat-link-chip">VPN: {{ u.client_name }}</span>
-              <span v-if="!u.is_active" class="chat-thread-resolved">отключён</span>
+              <div class="chat-acc-name">
+                <strong>{{ u.display_name || u.username }}</strong>
+                <span v-if="!u.is_active" class="chat-acc-badge">заблокирован</span>
+              </div>
+              <div class="chat-acc-sub">
+                <span class="muted mono">@{{ u.username }}</span>
+                <span v-if="u.client_name" class="chat-link-chip">VPN: {{ u.client_name }}</span>
+              </div>
             </div>
-            <div class="chat-acc-actions">
-              <n-button size="tiny" tertiary @click="openLinkAccount(u)">
-                {{ u.client_id ? 'VPN-клиент' : 'Привязать VPN' }}
+            <n-dropdown trigger="click" :options="accountMenuOptions(u)" @select="(k: string) => onAccountMenu(k, u)">
+              <n-button size="small" tertiary circle title="Действия">
+                <template #icon><MoreHorizontal :size="16" /></template>
               </n-button>
-              <n-button size="tiny" tertiary @click="openResetPassword(u.id)">Новый пароль</n-button>
-              <n-button size="tiny" tertiary :type="u.is_active ? 'warning' : 'primary'" @click="toggleActive(u)">
-                {{ u.is_active ? 'Заблокировать' : 'Разблокировать' }}
-              </n-button>
-              <n-button size="tiny" tertiary type="error" @click="openDeleteAccount(u.id, u.display_name || u.username, u.username)">
-                Удалить
-              </n-button>
-            </div>
+            </n-dropdown>
           </div>
-          <p v-if="!accounts.length" class="muted">Аккаунтов пока нет.</p>
+          <p v-if="!accounts.length" class="muted chat-acc-empty">Аккаунтов пока нет.</p>
+          <p v-else-if="!filteredAccounts.length" class="muted chat-acc-empty">Ничего не найдено.</p>
         </div>
 
         <div class="modal-actions">
+          <span class="muted chat-acc-count">{{ accounts.length }} {{ plural(accounts.length, 'аккаунт', 'аккаунта', 'аккаунтов') }}</span>
           <n-button @click="showAccounts = false">Закрыть</n-button>
         </div>
       </div>
@@ -398,7 +409,9 @@ import {
   Inbox,
   KeyRound,
   MessagesSquare,
+  MoreHorizontal,
   Receipt,
+  Search,
   Send,
   Settings,
   UserPlus
@@ -500,6 +513,14 @@ const statusBusy = ref(false)
 
 const showAccounts = ref(false)
 const accounts = ref<AccountRow[]>([])
+const accountSearch = ref('')
+const filteredAccounts = computed(() => {
+  const q = accountSearch.value.trim().toLowerCase()
+  if (!q) return accounts.value
+  return accounts.value.filter((u) =>
+    [u.display_name, u.username, u.client_name].some((v) => (v || '').toLowerCase().includes(q))
+  )
+})
 const newUsername = ref('')
 const newDisplayName = ref('')
 const creating = ref(false)
@@ -568,6 +589,31 @@ function onAdminMenu(key: string) {
     const fid = key.slice(5)
     moveThreadToFolder(t.id, fid === 'none' ? null : fid)
   }
+}
+
+function plural(n: number, one: string, few: string, many: string): string {
+  const mod10 = n % 10
+  const mod100 = n % 100
+  if (mod10 === 1 && mod100 !== 11) return one
+  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 10 || mod100 >= 20)) return few
+  return many
+}
+
+function accountMenuOptions(u: AccountRow): any[] {
+  return [
+    { label: u.client_id ? 'VPN-клиент' : 'Привязать VPN', key: 'link' },
+    { label: 'Новый пароль', key: 'reset' },
+    { label: u.is_active ? 'Заблокировать вход' : 'Разблокировать', key: 'toggle' },
+    { type: 'divider', key: 'd1' },
+    { label: 'Удалить аккаунт', key: 'delete', props: { style: 'color: var(--error-color, #e88080)' } }
+  ]
+}
+
+function onAccountMenu(key: string, u: AccountRow) {
+  if (key === 'link') openLinkAccount(u)
+  else if (key === 'reset') openResetPassword(u.id)
+  else if (key === 'toggle') toggleActive(u)
+  else if (key === 'delete') openDeleteAccount(u.id, u.display_name || u.username, u.username)
 }
 
 function openResetPassword(userId: string) {
@@ -1189,7 +1235,10 @@ async function copyCredentials() {
 }
 
 .chat-inv-info {
+  flex-direction: row;
   flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
 }
 
 .chat-messages {
@@ -1300,51 +1349,110 @@ async function copyCredentials() {
 }
 
 .chat-accounts {
-  width: min(620px, 92vw);
+  width: min(560px, 94vw);
 }
 
 .chat-acc-create {
   display: grid;
   grid-template-columns: 1fr 1fr auto;
   gap: 8px;
-  margin: 12px 0;
 }
 
 .chat-acc-list {
   display: flex;
   flex-direction: column;
   gap: 6px;
-  max-height: 320px;
+  max-height: min(48vh, 400px);
   overflow-y: auto;
+  margin: 0 -4px;
+  padding: 0 4px;
 }
 
 .chat-acc-row {
   display: flex;
   align-items: center;
-  justify-content: space-between;
   gap: 10px;
   border: 1px solid var(--color-border);
-  border-radius: 10px;
-  padding: 8px 12px;
+  border-radius: 12px;
+  padding: 8px 10px 8px 8px;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+.chat-acc-row:hover {
+  border-color: var(--color-accent);
+  background: var(--color-accent-soft);
+}
+
+.chat-acc-row.blocked {
+  opacity: 0.62;
+}
+
+.chat-acc-avatar {
+  flex-shrink: 0;
 }
 
 .chat-acc-info {
   display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 13px;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
 }
 
-.chat-acc-actions {
+.chat-acc-name {
   display: flex;
-  gap: 6px;
+  align-items: center;
+  gap: 8px;
+  font-size: 13.5px;
+}
+
+.chat-acc-name strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-acc-sub {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  min-width: 0;
+}
+
+.chat-acc-sub .chat-link-chip {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 220px;
+}
+
+.chat-acc-badge {
+  flex-shrink: 0;
+  font-size: 10.5px;
+  font-weight: 600;
+  padding: 1px 7px;
+  border-radius: 999px;
+  color: #e0a04a;
+  background: rgba(224, 160, 74, 0.14);
+  border: 1px solid rgba(224, 160, 74, 0.3);
+}
+
+.chat-acc-empty {
+  text-align: center;
+  padding: 20px 0;
+}
+
+.chat-acc-count {
+  margin-right: auto;
+  font-size: 12px;
+  align-self: center;
 }
 
 .chat-cred {
   display: flex;
   flex-direction: column;
   gap: 6px;
-  margin: 12px 0;
   border: 1px solid var(--color-border);
   border-radius: 10px;
   padding: 12px;
@@ -1366,6 +1474,12 @@ async function copyCredentials() {
     grid-template-columns: 1fr;
     grid-template-rows: 220px 1fr;
     height: calc(100vh - 180px);
+  }
+}
+
+@media (max-width: 560px) {
+  .chat-acc-create {
+    grid-template-columns: 1fr;
   }
 }
 </style>

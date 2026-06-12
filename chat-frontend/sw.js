@@ -1,13 +1,13 @@
 /* Service worker чата поддержки: офлайн-оболочка + push-уведомления.
    ВАЖНО: при изменении статики поднимайте CACHE — иначе клиенты получат старое. */
 
-var CACHE = 'utmka-chat-v11';
+var CACHE = 'utmka-chat-v12';
 var SHELL = [
   '/',
   '/index.html',
-  '/style.css?v=11',
-  '/app.js?v=11',
-  '/manifest.webmanifest?v=11',
+  '/style.css?v=12',
+  '/app.js?v=12',
+  '/manifest.webmanifest?v=12',
   '/icons/icon-192.png',
   '/icons/icon-512.png',
   '/icons/apple-touch-icon.png',

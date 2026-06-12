@@ -45,7 +45,7 @@
 <script setup lang="ts">
 import { Download } from '@lucide/vue'
 import { NButton, useMessage } from 'naive-ui'
-import { computed, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 
 import { usePanelUpdateStore } from '@/stores/panelUpdate'
 
@@ -53,7 +53,43 @@ const update = usePanelUpdateStore()
 const message = useMessage()
 const cancelling = ref(false)
 
-const displayProgress = computed(() => Math.max(update.progress, update.isRunning ? 4 : 0))
+// «Живой» прогресс: бэкенд отдаёт вехи (10/20/30/55/80/100) с долгими паузами
+// между ними (особенно сборка на 55%). Чтобы полоса не выглядела зависшей, плавно
+// подкручиваем её к следующей вехе, а при реальном скачке — догоняем мгновенно.
+const MILESTONES = [10, 20, 30, 55, 80, 100]
+const display = ref(4)
+
+function tick() {
+  const real = Math.max(update.progress, 4)
+  if (update.status === 'success' || real >= 100) {
+    display.value = 100
+    return
+  }
+  if (!update.isRunning) return
+  if (real > display.value) {
+    // Догоняем реальную веху быстро.
+    display.value = Math.min(real, display.value + Math.max(0.6, (real - display.value) * 0.3))
+  } else {
+    // Ползём к следующей вехе, не доходя до неё (эффект «trickle»).
+    const next = MILESTONES.find((m) => m > real) ?? 100
+    const ceiling = Math.max(real, next - 2)
+    if (display.value < ceiling) {
+      display.value = Math.min(ceiling, display.value + (ceiling - display.value) * 0.035 + 0.05)
+    }
+  }
+}
+
+const timer = window.setInterval(tick, 120)
+onBeforeUnmount(() => window.clearInterval(timer))
+
+watch(
+  () => update.isRunning,
+  (running, prev) => {
+    if (running && !prev) display.value = 4
+  }
+)
+
+const displayProgress = computed(() => Math.round(display.value))
 
 const steps = computed(() => {
   const p = update.progress
@@ -204,7 +240,7 @@ async function onCancel() {
   height: 100%;
   border-radius: 999px;
   background: linear-gradient(90deg, #3d8f6a, #6fbf9a, #85d2ae);
-  transition: width 0.8s cubic-bezier(0.4, 0, 0.2, 1);
+  transition: width 0.35s cubic-bezier(0.4, 0, 0.2, 1);
   min-width: 8%;
 }
 
