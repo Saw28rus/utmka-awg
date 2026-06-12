@@ -86,11 +86,13 @@ fi
 touch "$LOCK_FILE"
 
 cd "$INSTALL_DIR"
-state "running" 8 "Подготовка"
+state "running" 5 "Подготовка окружения"
 
 if [ ! -d ".git" ]; then
   fail "В $INSTALL_DIR нет git-репозитория."
 fi
+
+state "running" 8 "Проверка места и настроек"
 
 # Проверка свободного места ДО любых действий: git fetch + docker build
 # на полном диске роняют обновление на середине.
@@ -138,7 +140,7 @@ else
   log "Токен не задан — обновление из публичного репозитория."
 fi
 
-state "running" 10 "Бэкап данных"
+state "running" 12 "Бэкап файлов панели"
 log "Бэкап данных → $BACKUP_DIR"
 # ВАЖНО: каталог backups исключаем, иначе каждый бэкап включает все предыдущие
 # (экспоненциальный рост и переполнение диска).
@@ -158,7 +160,7 @@ fi
 # Дамп БД ДО любых изменений кода/миграций. Без него кривая миграция = потеря данных.
 # pg_dump --clean --if-exists → восстановление само пересоздаёт объекты.
 DB_DUMP="$BACKUP_DIR/db.sql.gz"
-state "running" 20 "Дамп базы данных"
+state "running" 22 "Дамп базы данных"
 log "pg_dump → $DB_DUMP"
 if dc exec -T -e PGPASSWORD="$(pg_password)" postgres \
      pg_dump -U "$PG_USER" --clean --if-exists "$PG_DB" > "$BACKUP_DIR/db.sql" 2>>"$LOG_FILE"; then
@@ -201,7 +203,7 @@ rollback() {
   dc up -d --build
 }
 
-state "running" 30 "Загрузка обновления (git)"
+state "running" 32 "Подготовка git"
 # Устойчивость к ручным правкам на сервере: не падаем молча на ff-merge,
 # а аккуратно убираем локальные изменения в stash (сохранены, не потеряны).
 if [ -n "$(git status --porcelain 2>/dev/null)" ]; then
@@ -215,6 +217,7 @@ if [ -n "$(git status --porcelain 2>/dev/null)" ]; then
 fi
 # Обновляемся на ПОМЕЧЕННЫЙ релиз-тег (semver), а не на «сырой» main.
 log "git fetch --tags"
+state "running" 38 "Загрузка релизов с GitHub"
 if ! git fetch --tags --force --prune origin; then
   fail "git fetch не удался. Проверьте GitHub token в настройках панели."
 fi
@@ -240,16 +243,25 @@ if ! git checkout -f "tags/${TARGET_TAG}"; then
   exit 2
 fi
 
-state "running" 55 "Сборка и перезапуск контейнеров"
-log "docker compose build + up"
-if ! docker compose -f "$COMPOSE_FILE" up -d --build; then
+state "running" 52 "Сборка контейнеров"
+log "docker compose build"
+if ! docker compose -f "$COMPOSE_FILE" build; then
   log "docker compose failed — выполняю rollback"
   state "running" 60 "Сбой сборки — откат"
   rollback || true
   fail "Сборка контейнеров не удалась. Выполнен откат на $PREV_COMMIT."
 fi
 
-state "running" 80 "Проверка работоспособности"
+state "running" 72 "Перезапуск контейнеров"
+log "docker compose up"
+if ! docker compose -f "$COMPOSE_FILE" up -d; then
+  log "docker compose up failed — выполняю rollback"
+  state "running" 75 "Сбой запуска — откат"
+  rollback || true
+  fail "Запуск контейнеров не удался. Выполнен откат на $PREV_COMMIT."
+fi
+
+state "running" 84 "Проверка работоспособности"
 log "healthcheck $HEALTH_URL"
 ok=0
 i=1
@@ -284,6 +296,7 @@ TARGET_COMMIT="$(git rev-parse HEAD)"
 
 # Чистка после успешной сборки: dangling-слои копятся гигабайтами с каждым update.
 log "Чистка старых docker-слоёв (image/builder prune)"
+state "running" 94 "Чистка временных docker-слоёв"
 docker image prune -f >/dev/null 2>&1 || true
 docker builder prune -f >/dev/null 2>&1 || true
 

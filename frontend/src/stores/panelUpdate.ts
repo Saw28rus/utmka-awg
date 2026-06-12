@@ -49,7 +49,7 @@ export const usePanelUpdateStore = defineStore('panelUpdate', {
       this.stopPolling()
       this.pollTimer = setInterval(() => {
         void this.poll()
-      }, 2500)
+      }, 1000)
     },
 
     stopPolling() {

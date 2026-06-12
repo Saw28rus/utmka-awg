@@ -262,6 +262,8 @@
                 <n-dropdown
                   trigger="click"
                   placement="bottom-end"
+                  to="body"
+                  :show-arrow="false"
                   :options="accountMenuOptions(u)"
                   @select="(k: string) => onAccountMenu(k, u)"
                 >
