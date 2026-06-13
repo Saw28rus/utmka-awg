@@ -60,6 +60,13 @@
           транзит {{ ch.transit_subnet }} · UDP {{ ch.transit_port }} · слот {{ ch.transit_slot }}
         </div>
 
+        <div v-if="ch.kind === 'cascade' && ch.protocol === 'xray'" class="channel-transit">
+          relay TCP {{ ch.relay_port }} · SNI {{ ch.sni || '—' }}
+        </div>
+        <div v-if="ch.kind === 'cascade' && ch.protocol === 'xray' && ch.split_ru" class="channel-split">
+          <Split :size="13" /> РФ напрямую (split)
+        </div>
+
         <div class="channel-foot">
           <StatusBadge
             v-if="ch.kind === 'cascade'"
@@ -78,7 +85,7 @@
 </template>
 
 <script setup lang="ts">
-import { ArrowRight, KeyRound, Network, RefreshCw, Server } from '@lucide/vue'
+import { ArrowRight, KeyRound, Network, RefreshCw, Server, Split } from '@lucide/vue'
 import { onMounted, ref } from 'vue'
 
 import { api } from '@/api/client'
@@ -101,6 +108,9 @@ type Channel = {
   transit_slot?: number
   transit_subnet?: string
   transit_port?: number
+  relay_port?: number
+  sni?: string | null
+  split_ru?: boolean
 }
 
 const channels = ref<Channel[]>([])
@@ -253,5 +263,13 @@ onMounted(load)
   font-size: 12px;
   color: var(--color-muted);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.channel-split {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  color: #4ade80;
 }
 </style>

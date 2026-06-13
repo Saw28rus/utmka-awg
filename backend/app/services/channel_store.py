@@ -125,6 +125,7 @@ def list_channels() -> list[dict]:
                 "clients": counts.get(cid, 0),
                 "relay_port": link.get("relay_port"),
                 "sni": link.get("sni"),
+                "split_ru": bool(link.get("split_ru")),
             }
         )
 
