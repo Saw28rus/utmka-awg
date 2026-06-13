@@ -173,6 +173,31 @@
               <span v-if="proto.managed && proto.installed" class="meta-chip accent">
                 {{ proto.clients_count }} клиентов в панели
               </span>
+              <span
+                v-if="proto.installed && protocolVersions[proto.id]?.installed_version"
+                class="meta-chip mono"
+                :class="{
+                  ok: protocolVersions[proto.id]?.up_to_date === true,
+                  warn: protocolVersions[proto.id]?.up_to_date === false,
+                }"
+                :title="
+                  protocolVersions[proto.id]?.up_to_date === false
+                    ? `Доступна версия ${protocolVersions[proto.id]?.pinned_version}`
+                    : 'Версия зафиксирована панелью'
+                "
+              >
+                {{ protocolVersions[proto.id]?.installed_version }}
+                <template v-if="protocolVersions[proto.id]?.up_to_date === false">
+                  → {{ protocolVersions[proto.id]?.pinned_version }}
+                </template>
+              </span>
+              <span
+                v-else-if="proto.installed && protocolVersions[proto.id]?.needs_adopt"
+                class="meta-chip warn"
+                title="Версия не зафиксирована в манифесте панели (например, после переустановки панели)"
+              >
+                версия не зафиксирована
+              </span>
             </div>
             <footer class="proto-actions">
               <template v-if="proto.installed">
@@ -1035,6 +1060,17 @@ type ProtocolInfo = {
   clients_count: number
 }
 
+type ProtocolVersion = {
+  protocol: string
+  container: string | null
+  running: boolean
+  status: string
+  pinned_version: string | null
+  installed_version: string | null
+  up_to_date: boolean | null
+  needs_adopt: boolean
+}
+
 type ContainerInfo = {
   name: string
   image: string
@@ -1576,6 +1612,7 @@ onMounted(async () => {
       void loadCascadeStatus()
     }
     if (activeTab.value === 'rules') void loadRulesStatus()
+    if (activeTab.value === 'protocols') void loadProtocolVersions()
   }
 })
 
@@ -1609,6 +1646,25 @@ async function loadOverview() {
     message.error('Не удалось получить данные сервера.')
   } finally {
     overviewLoading.value = false
+  }
+}
+
+const protocolVersions = ref<Record<string, ProtocolVersion>>({})
+const versionsLoading = ref(false)
+
+async function loadProtocolVersions() {
+  versionsLoading.value = true
+  try {
+    const { data } = await api.get<{ protocols: ProtocolVersion[] }>(
+      `/servers/${serverId}/protocols/versions`,
+    )
+    const map: Record<string, ProtocolVersion> = {}
+    for (const item of data.protocols || []) map[item.protocol] = item
+    protocolVersions.value = map
+  } catch {
+    /* версии — вспомогательная инфа, тихо игнорируем сбой */
+  } finally {
+    versionsLoading.value = false
   }
 }
 
@@ -2054,6 +2110,7 @@ watch(activeTab, (tab) => {
     void loadCascadeStatus()
   }
   if (tab === 'rules' && server.value) void loadRulesStatus()
+  if (tab === 'protocols' && server.value) void loadProtocolVersions()
 })
 
 const cpuText = computed(() => {
@@ -2915,6 +2972,16 @@ function confirmDeleteServer() {
 
 .meta-chip.accent {
   color: var(--color-accent);
+}
+
+.meta-chip.ok {
+  color: #16a34a;
+  border-color: rgba(22, 163, 74, 0.4);
+}
+
+.meta-chip.warn {
+  color: #d97706;
+  border-color: rgba(217, 119, 6, 0.45);
 }
 
 .proto-actions {

@@ -97,6 +97,7 @@ from app.services.awg_install import AwgInstallError
 from app.services.wireguard_install import WireguardInstallError, install_wireguard
 from app.services.telemt_install import TelemtInstallError, install_telemt
 from app.services.protocol_engine import get_engine
+from app.services.protocol_versions import record_install, reconcile_node
 from app.services.server_store import server_store
 
 
@@ -172,8 +173,10 @@ async def delete_server(server_id: str, _: CurrentUser = Depends(require_admin))
     if not server_store.delete(server_id):
         raise HTTPException(status_code=404, detail="Сервер не найден.")
     from app.services.metrics_cache import metrics_cache
+    from app.services.protocol_versions import forget_node
 
     metrics_cache.invalidate(server_id)
+    forget_node(server_id)
     return {"status": "ok"}
 
 
@@ -264,6 +267,22 @@ async def protocols_capabilities(
     return {"protocols": result}
 
 
+@router.get("/{server_id}/protocols/versions")
+async def protocol_versions(
+    server_id: str,
+    _: CurrentUser = Depends(require_admin),
+) -> dict:
+    """Сверка версий протоколов узла: pinned (что шипит панель) vs installed.
+
+    Делает live-reconcile (SSH к узлу): какие протоколы есть, что запущено,
+    актуальна ли версия. Не меняет конфиги — только читает статус.
+    """
+    if not server_store.get_record(server_id):
+        raise HTTPException(status_code=404, detail="Сервер не найден.")
+    items = await asyncio.to_thread(reconcile_node, server_id)
+    return {"protocols": items}
+
+
 @router.post("/{server_id}/protocols/{protocol_id}/install", response_model=ProtocolInstallResult)
 async def protocol_install(
     server_id: str,
@@ -281,6 +300,7 @@ async def protocol_install(
                 port=payload.port,
                 site_name=payload.site_name,
             )
+            record_install(server_id, "xray")
             return ProtocolInstallResult(
                 message=result.message,
                 container=result.container,
@@ -296,6 +316,7 @@ async def protocol_install(
                 server_id,
                 port=payload.port,
             )
+            record_install(server_id, protocol_id)
             return ProtocolInstallResult(
                 message=result.message,
                 container=result.container,
@@ -321,6 +342,7 @@ async def protocol_install(
                 port=payload.port,
                 tls_domain=payload.site_name,
             )
+            record_install(server_id, "telemt")
             return ProtocolInstallResult(
                 message=result.message,
                 container=result.container,
