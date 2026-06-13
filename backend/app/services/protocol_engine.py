@@ -142,7 +142,7 @@ class XrayEngine(ProtocolEngine):
             enforce=True,
             masking=False,
             cascade=False,
-            update=False,
+            update=True,
         )
 
     def install(self, server_id: str, *, port: Optional[int] = None, site_name: Optional[str] = None, **opts):
@@ -179,6 +179,11 @@ class XrayEngine(ProtocolEngine):
             return enforce_xray_server(ssh, server_id)
         finally:
             ssh.close()
+
+    def update(self, server_id: str):
+        from app.services.protocol_update import update_protocol
+
+        return update_protocol(server_id, "xray")
 
 
 def get_engine(protocol_id: str) -> ProtocolEngine:

@@ -2300,7 +2300,7 @@ async function protoAction(proto: ProtocolInfo, action: 'start' | 'stop' | 'rest
 }
 
 const SNAPSHOT_PROTOCOLS = ['awg2', 'awg_legacy', 'xray']
-const UPDATE_PROTOCOLS = ['awg2', 'awg_legacy']
+const UPDATE_PROTOCOLS = ['awg2', 'awg_legacy', 'xray']
 
 function canSnapshot(proto: ProtocolInfo) {
   return proto.installed && SNAPSHOT_PROTOCOLS.includes(proto.id)
