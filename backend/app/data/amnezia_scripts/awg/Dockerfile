@@ -1,4 +1,7 @@
-FROM amneziavpn/amneziawg-go:latest
+# Версия запинена (не :latest) для воспроизводимых сборок — «не дрейфует».
+# На 2026-05-13 :latest указывал ровно на 0.2.18
+# (digest sha256:168eb450d57d880effddab6202900ecc318a74da00c584715997e38eb441d3d4).
+FROM amneziavpn/amneziawg-go:0.2.18
 
 LABEL maintainer="AmneziaVPN"
 
