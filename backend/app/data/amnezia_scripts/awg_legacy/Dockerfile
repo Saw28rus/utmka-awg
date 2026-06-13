@@ -1,4 +1,6 @@
-FROM amneziavpn/amnezia-wg:latest
+# Запинено по digest: образ публикует только :latest (последнее обновление 2023-10-03),
+# версионных тегов нет — фиксируем неизменяемый digest, чтобы сборка не дрейфовала.
+FROM amneziavpn/amnezia-wg@sha256:ea050861bd2012a6265817636ce7c0c15764ef955782d953cef42e05c1381250
 
 LABEL maintainer="AmneziaVPN"
 

@@ -4,6 +4,9 @@
 
 FROM debian:12-slim
 
+# Версия запинена (не releases/latest) для воспроизводимых сборок. Релиз от 2026-06-12.
+ARG TELEMT_RELEASE=3.4.18
+
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         binutils \
@@ -23,9 +26,9 @@ RUN set -eux; \
         *) echo "Unsupported architecture: $ARCH" >&2; exit 1 ;; \
     esac; \
     curl -fL --retry 5 --retry-delay 3 --connect-timeout 10 --max-time 120 \
-        -o "/tmp/${ASSET}" "https://github.com/telemt/telemt/releases/latest/download/${ASSET}"; \
+        -o "/tmp/${ASSET}" "https://github.com/telemt/telemt/releases/download/${TELEMT_RELEASE}/${ASSET}"; \
     curl -fL --retry 5 --retry-delay 3 --connect-timeout 10 --max-time 120 \
-        -o "/tmp/${ASSET}.sha256" "https://github.com/telemt/telemt/releases/latest/download/${ASSET}.sha256"; \
+        -o "/tmp/${ASSET}.sha256" "https://github.com/telemt/telemt/releases/download/${TELEMT_RELEASE}/${ASSET}.sha256"; \
     cd /tmp && sha256sum -c "${ASSET}.sha256"; \
     tar -xzf "${ASSET}" -C /tmp; \
     test -f /tmp/telemt; \
