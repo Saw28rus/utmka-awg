@@ -20,6 +20,7 @@ from typing import Optional
 from app.services.cascade_store import cascade_store
 from app.services.client_store import client_store
 from app.services.server_store import server_store
+from app.services.transit_allocator import resolve_profile
 
 
 def _is_awg(protocol: str) -> bool:
@@ -74,6 +75,7 @@ def list_channels() -> list[dict]:
         exit_id = link["exit_server_id"]
         exit_label = _server_label(exit_id)
         cid = f"cascade:{entry_id}"
+        profile = resolve_profile(link)
         channels.append(
             {
                 "id": cid,
@@ -87,6 +89,9 @@ def list_channels() -> list[dict]:
                 "exit_host": exit_label["host"],
                 "state": link.get("state") or "unknown",
                 "clients": counts.get(cid, 0),
+                "transit_slot": profile.slot,
+                "transit_subnet": profile.subnet,
+                "transit_port": profile.transit_port,
             }
         )
 

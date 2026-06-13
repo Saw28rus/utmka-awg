@@ -56,6 +56,10 @@
           </div>
         </div>
 
+        <div v-if="ch.kind === 'cascade' && ch.transit_subnet" class="channel-transit">
+          транзит {{ ch.transit_subnet }} · UDP {{ ch.transit_port }} · слот {{ ch.transit_slot }}
+        </div>
+
         <div class="channel-foot">
           <StatusBadge
             v-if="ch.kind === 'cascade'"
@@ -94,6 +98,9 @@ type Channel = {
   entry_host?: string | null
   exit_name?: string
   exit_host?: string | null
+  transit_slot?: number
+  transit_subnet?: string
+  transit_port?: number
 }
 
 const channels = ref<Channel[]>([])
@@ -240,5 +247,11 @@ onMounted(load)
   gap: 6px;
   font-size: 13px;
   color: var(--color-muted);
+}
+
+.channel-transit {
+  font-size: 12px;
+  color: var(--color-muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 </style>

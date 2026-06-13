@@ -19,11 +19,7 @@ from app.schemas.cascade import (
     CascadeLinkSummary,
     CascadePreflightResult,
 )
-from app.services.cascade_store import (
-    DEFAULT_TRANSIT_PORT,
-    DEFAULT_TRANSIT_SUBNET,
-    cascade_store,
-)
+from app.services.cascade_store import cascade_store
 from app.services.server_store import server_store
 from app.ssh import exec as ssh_exec
 
@@ -63,7 +59,9 @@ if [ -n "$CTN" ]; then
 fi
 """
 
-_LIVE_PROBE = r"""
+# Плейсхолдеры __IFACE__/__TABLE__ подставляются под слот каскада (PA2-2).
+# Слот 0 → utmka-cas0 / 7770 = прежнее поведение байт-в-байт.
+_LIVE_PROBE_TMPL = r"""
 CTN=""
 for c in amnezia-awg2 amnezia-awg; do
   if docker ps --format '{{.Names}}' 2>/dev/null | grep -qx "$c"; then CTN="$c"; break; fi
@@ -72,15 +70,19 @@ echo "container=$CTN"
 if [ -z "$CTN" ]; then echo "active=0"; exit 0; fi
 PID=$(docker inspect -f '{{.State.Pid}}' "$CTN" 2>/dev/null)
 if [ -z "$PID" ] || [ "$PID" = "0" ]; then echo "active=0"; exit 0; fi
-CAS0=$(nsenter -t "$PID" -n ip link show utmka-cas0 >/dev/null 2>&1 && echo 1 || echo 0)
-RULE=$(nsenter -t "$PID" -n ip rule show 2>/dev/null | grep -c 'lookup 7770' || true)
-HS=$(nsenter -t "$PID" -n awg show utmka-cas0 latest-handshakes 2>/dev/null | awk '{print $2}' | sort -nr | head -n1)
+CAS0=$(nsenter -t "$PID" -n ip link show __IFACE__ >/dev/null 2>&1 && echo 1 || echo 0)
+RULE=$(nsenter -t "$PID" -n ip rule show 2>/dev/null | grep -c 'lookup __TABLE__' || true)
+HS=$(nsenter -t "$PID" -n awg show __IFACE__ latest-handshakes 2>/dev/null | awk '{print $2}' | sort -nr | head -n1)
 [ -z "$HS" ] && HS=0
 echo "cas0=$CAS0"
 echo "rule=$RULE"
 echo "handshake=$HS"
 if [ "$CAS0" = "1" ] && [ "$RULE" -gt 0 ]; then echo "active=1"; else echo "active=0"; fi
 """
+
+
+def _live_probe_script(iface: str, table: str) -> str:
+    return _LIVE_PROBE_TMPL.replace("__IFACE__", iface).replace("__TABLE__", table)
 
 _EXIT_PROBE = r"""
 CTN=""
@@ -141,13 +143,19 @@ def _connect(server_id: str):
 
 
 def probe_cascade_live(entry_server_id: str) -> dict[str, bool]:
-    """Проверяет на entry: поднят ли utmka-cas0 и есть ли policy-routing каскада."""
+    """Проверяет на entry: поднят ли транзит-интерфейс и есть ли policy-routing каскада.
+
+    Интерфейс/таблица берутся из слота каскада (PA2-2); слот 0 = utmka-cas0/7770.
+    """
+    from app.services.transit_allocator import resolve_profile
+
+    profile = resolve_profile(cascade_store.get_link(entry_server_id))
     try:
         ssh = _connect(entry_server_id)
     except Exception:  # noqa: BLE001
         return {"active": False, "cas0": False, "rule": False, "handshake": False}
     try:
-        res = ssh_exec.run(ssh, _LIVE_PROBE, timeout=25)
+        res = ssh_exec.run(ssh, _live_probe_script(profile.iface, profile.table), timeout=25)
         vals = _parse_kv(res.stdout)
         cas0 = vals.get("cas0") == "1"
         rule = int(vals.get("rule") or 0) > 0
@@ -483,7 +491,10 @@ def run_preflight(entry_server_id: str, exit_server_id: str) -> CascadePreflight
         ))
 
     # --- Subnet overlap (client vs transit) ---
-    transit_subnet = DEFAULT_TRANSIT_SUBNET
+    from app.services.transit_allocator import allocate_slot, profile_for_slot
+
+    profile = profile_for_slot(allocate_slot(entry_server_id))
+    transit_subnet = profile.subnet
     if client_subnet and _subnets_overlap(client_subnet, transit_subnet):
         checks.append(CascadeCheck(
             id="overlap", label="Пересечение подсетей", status="danger",
@@ -518,7 +529,8 @@ def run_preflight(entry_server_id: str, exit_server_id: str) -> CascadePreflight
         nat_model="model_a",
         client_subnet=client_subnet,
         transit_subnet=transit_subnet,
-        transit_port=DEFAULT_TRANSIT_PORT,
+        transit_port=profile.transit_port,
+        transit_slot=profile.slot,
         recommended_hook=recommended_hook,
         last_preflight_at=datetime.now(timezone.utc).isoformat(),
         last_preflight_ok=ok,
@@ -539,7 +551,7 @@ def run_preflight(entry_server_id: str, exit_server_id: str) -> CascadePreflight
         exit_public_ip=exit_public_ip,
         exit_awg_tooling=exit_awg_tooling,
         transit_subnet=transit_subnet,
-        transit_port=DEFAULT_TRANSIT_PORT,
+        transit_port=profile.transit_port,
         checks=checks,
         blockers=blockers,
         message=message,

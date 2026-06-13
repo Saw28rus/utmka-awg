@@ -36,21 +36,12 @@ from app.services.cascade import (
     _connect,
     _parse_kv,
 )
-from app.services.cascade_store import (
-    DEFAULT_ENTRY_TRANSIT_IP,
-    DEFAULT_EXIT_TRANSIT_IP,
-    DEFAULT_TRANSIT_SUBNET,
-    cascade_store,
-)
+from app.services.cascade_store import cascade_store
 from app.services.server_store import server_store
+from app.services.transit_allocator import TransitProfile, resolve_profile
 
-IFACE = "utmka-cas0"
-CONF_PATH = "/tmp/utmka-cas0.conf"
-TABLE = "7770"
-RULE_PRIORITY = "300"
 MTU = "1280"
 LABEL = "utmka-cascade"
-ENTRY_HOST_PORT_OFFSET = 1  # entry ListenPort / SNAT на хосте = transit_port + 1
 
 
 # ---------------------------------------------------------------------------
@@ -258,8 +249,9 @@ def apply_cascade(entry_id: str) -> CascadeApplyResult:
     entry_public_ip = entry_f.get("public_ip") or entry_rec.get("host")
     exit_ctn_ip = exit_f.get("ctn_ip") or ""
     entry_ctn_ip = entry_f.get("ctn_ip") or ""
-    port = int(link.get("transit_port") or 51821)
-    entry_host_port = port + ENTRY_HOST_PORT_OFFSET
+    profile = resolve_profile(link)
+    port = profile.transit_port
+    entry_host_port = profile.entry_host_port
 
     # --- abort-before-change: проверка предусловий ---
     problems = []
@@ -304,15 +296,15 @@ def apply_cascade(entry_id: str) -> CascadeApplyResult:
         # === EXIT: транзит + NAT в netns + host DNAT ===
         exit_conf = _render_conf(
             private_key=exit_keys["priv"],
-            address=f"{DEFAULT_EXIT_TRANSIT_IP}/30",
+            address=f"{profile.exit_ip}/30",
             listen_port=port,
             peer_pub=entry_keys["pub"],
             psk=psk,
-            allowed_ips=f"{DEFAULT_ENTRY_TRANSIT_IP}/32",
+            allowed_ips=f"{profile.entry_ip}/32",
             params=params,
         )
-        _write_container_file(exit_ssh, exit_ctn, CONF_PATH, exit_conf)
-        res = run_container_script(exit_ssh, exit_ctn, _EXIT_UP_SCRIPT, timeout=60)
+        _write_container_file(exit_ssh, exit_ctn, profile.conf_path, exit_conf)
+        res = run_container_script(exit_ssh, exit_ctn, _exit_up_script(profile), timeout=60)
         _ensure(res, "Поднять транзит на exit (netns)")
         steps.append(CascadeStep(name="Exit: транзит utmka-cas0 + NAT", status="ok"))
 
@@ -334,7 +326,7 @@ def apply_cascade(entry_id: str) -> CascadeApplyResult:
         # === ENTRY: транзит + policy routing + double-SNAT + fail-closed ===
         entry_conf = _render_conf(
             private_key=entry_keys["priv"],
-            address=f"{DEFAULT_ENTRY_TRANSIT_IP}/30",
+            address=f"{profile.entry_ip}/30",
             listen_port=entry_host_port,
             peer_pub=exit_keys["pub"],
             psk=psk,
@@ -342,16 +334,16 @@ def apply_cascade(entry_id: str) -> CascadeApplyResult:
             params=params,
             endpoint=f"{exit_public_ip}:{port}",
         )
-        _write_container_file(entry_ssh, entry_ctn, CONF_PATH, entry_conf)
+        _write_container_file(entry_ssh, entry_ctn, profile.conf_path, entry_conf)
         applied_traffic = True
         res = run_container_script(
-            entry_ssh, entry_ctn, _entry_up_script(client_subnet), timeout=60
+            entry_ssh, entry_ctn, _entry_up_script(client_subnet, profile), timeout=60
         )
         _ensure(res, "Поднять каскад на entry (routing+SNAT+fail-closed)")
         steps.append(CascadeStep(name="Entry: транзит + policy routing + SNAT + fail-closed", status="ok"))
 
         # === HEALTH: egress через каскад должен быть = exit public IP ===
-        egress_ip, handshake_ok = _health_egress(entry_ssh, entry_ctn, server_addr)
+        egress_ip, handshake_ok = _health_egress(entry_ssh, entry_ctn, server_addr, profile.iface)
         health_note = None
         if egress_ip and exit_public_ip and egress_ip.strip() == exit_public_ip.strip():
             steps.append(CascadeStep(
@@ -395,8 +387,9 @@ def apply_cascade(entry_id: str) -> CascadeApplyResult:
         cascade_store.upsert_link(
             entry_id,
             state="active",
-            transit_subnet=DEFAULT_TRANSIT_SUBNET,
+            transit_subnet=profile.subnet,
             transit_port=port,
+            transit_slot=profile.slot,
             egress_ip=egress_ip,
             last_applied_at=datetime.now(timezone.utc).isoformat(),
             entry_priv_enc=encrypt(entry_keys["priv"]),
@@ -413,7 +406,7 @@ def apply_cascade(entry_id: str) -> CascadeApplyResult:
             ok=True, state="active",
             entry_server_id=entry_id, exit_server_id=exit_id,
             egress_ip=egress_ip, expected_exit_ip=exit_public_ip,
-            transit_subnet=DEFAULT_TRANSIT_SUBNET, transit_port=port,
+            transit_subnet=profile.subnet, transit_port=port,
             steps=steps,
             message=health_note or "Каскад активен. Клиент → entry → exit → интернет.",
         )
@@ -423,9 +416,8 @@ def apply_cascade(entry_id: str) -> CascadeApplyResult:
         rb_ok = True
         try:
             _teardown(
-                entry_ssh, entry_ctn, exit_ssh, exit_ctn, client_subnet, port,
-                exit_ctn_ip, entry_ctn_ip, entry_public_ip, entry_host_port,
-                exit_public_ip,
+                entry_ssh, entry_ctn, exit_ssh, exit_ctn, client_subnet, profile,
+                exit_ctn_ip, entry_ctn_ip, entry_public_ip, exit_public_ip,
             )
         except Exception:  # noqa: BLE001
             rb_ok = False
@@ -444,7 +436,7 @@ def apply_cascade(entry_id: str) -> CascadeApplyResult:
             ok=False, state=state,
             entry_server_id=entry_id, exit_server_id=exit_id,
             egress_ip=egress_ip, expected_exit_ip=exit_public_ip,
-            transit_subnet=DEFAULT_TRANSIT_SUBNET, transit_port=port,
+            transit_subnet=profile.subnet, transit_port=port,
             steps=steps, message=msg,
         )
     finally:
@@ -472,13 +464,13 @@ def rollback_cascade(entry_id: str) -> CascadeApplyResult:
     entry_ctn = facts.get("entry", {}).get("container") or _amnezia_container(entry_rec)
     exit_ctn = facts.get("exit", {}).get("container") or _amnezia_container(exit_rec)
     client_subnet = _client_subnet_from_addr(facts.get("entry", {}).get("server_addr")) or link.get("client_subnet")
-    port = int(link.get("transit_port") or 51821)
+    profile = resolve_profile(link)
+    port = profile.transit_port
     exit_ctn_ip = facts.get("exit", {}).get("ctn_ip") or link.get("exit_ctn_ip") or ""
     entry_ctn_ip = facts.get("entry", {}).get("ctn_ip") or link.get("entry_ctn_ip") or ""
     entry_public_ip = (
         facts.get("entry", {}).get("public_ip") or entry_rec.get("host") or ""
     )
-    entry_host_port = int(link.get("entry_host_port") or port + ENTRY_HOST_PORT_OFFSET)
     exit_public_ip = facts.get("exit", {}).get("public_ip") or (exit_rec.get("host") if exit_rec else "")
 
     steps: list[CascadeStep] = []
@@ -488,9 +480,8 @@ def rollback_cascade(entry_id: str) -> CascadeApplyResult:
         ok = True
         try:
             _teardown(
-                entry_ssh, entry_ctn, exit_ssh, exit_ctn, client_subnet, port,
-                exit_ctn_ip, entry_ctn_ip, entry_public_ip, entry_host_port,
-                exit_public_ip,
+                entry_ssh, entry_ctn, exit_ssh, exit_ctn, client_subnet, profile,
+                exit_ctn_ip, entry_ctn_ip, entry_public_ip, exit_public_ip,
             )
         except Exception:  # noqa: BLE001
             ok = False
@@ -535,20 +526,24 @@ def _snapshot(entry_ssh, entry_ctn, exit_ssh, exit_ctn) -> str:
     return base64.b64encode(raw.encode("utf-8")).decode("ascii")
 
 
-_EXIT_UP_SCRIPT = r"""
+def _exit_up_script(profile: TransitProfile) -> str:
+    iface = profile.iface
+    conf = profile.conf_path
+    subnet = profile.subnet
+    return f"""
 set -e
-WAN=$(ip route show default | awk '/default/{print $5; exit}')
+WAN=$(ip route show default | awk '/default/{{print $5; exit}}')
 [ -n "$WAN" ] || WAN=eth0
-awg-quick down /tmp/utmka-cas0.conf 2>/dev/null || true
-ip link del utmka-cas0 2>/dev/null || true
-awg-quick up /tmp/utmka-cas0.conf
+awg-quick down {conf} 2>/dev/null || true
+ip link del {iface} 2>/dev/null || true
+awg-quick up {conf}
 sysctl -w net.ipv4.ip_forward=1 >/dev/null 2>&1 || true
-iptables -t nat -D POSTROUTING -s 10.250.0.0/30 -o "$WAN" -j MASQUERADE 2>/dev/null || true
-iptables -t nat -A POSTROUTING -s 10.250.0.0/30 -o "$WAN" -j MASQUERADE
-iptables -D FORWARD -i utmka-cas0 -o "$WAN" -j ACCEPT 2>/dev/null || true
-iptables -A FORWARD -i utmka-cas0 -o "$WAN" -j ACCEPT
-iptables -D FORWARD -i "$WAN" -o utmka-cas0 -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || true
-iptables -A FORWARD -i "$WAN" -o utmka-cas0 -m state --state RELATED,ESTABLISHED -j ACCEPT
+iptables -t nat -D POSTROUTING -s {subnet} -o "$WAN" -j MASQUERADE 2>/dev/null || true
+iptables -t nat -A POSTROUTING -s {subnet} -o "$WAN" -j MASQUERADE
+iptables -D FORWARD -i {iface} -o "$WAN" -j ACCEPT 2>/dev/null || true
+iptables -A FORWARD -i {iface} -o "$WAN" -j ACCEPT
+iptables -D FORWARD -i "$WAN" -o {iface} -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || true
+iptables -A FORWARD -i "$WAN" -o {iface} -m state --state RELATED,ESTABLISHED -j ACCEPT
 echo OK_EXIT
 """
 
@@ -606,34 +601,39 @@ echo OK_ENTRY_HOST_NAT
 """
 
 
-def _entry_up_script(client_subnet: str) -> str:
+def _entry_up_script(client_subnet: str, profile: TransitProfile) -> str:
     cs = shlex.quote(client_subnet)
+    iface = profile.iface
+    conf = profile.conf_path
+    table = profile.table
+    prio = profile.rule_priority
+    entry_ip = profile.entry_ip
     return f"""
 set -e
-awg-quick down /tmp/utmka-cas0.conf 2>/dev/null || true
-ip link del utmka-cas0 2>/dev/null || true
-awg-quick up /tmp/utmka-cas0.conf
-ip rule del from {cs} lookup {TABLE} 2>/dev/null || true
-ip rule add from {cs} lookup {TABLE} priority {RULE_PRIORITY}
-ip route flush table {TABLE} 2>/dev/null || true
-ip route add default dev {IFACE} table {TABLE}
-ip route add blackhole default metric 100 table {TABLE}
-iptables -t nat -D POSTROUTING -s {cs} -o {IFACE} -j SNAT --to-source {DEFAULT_ENTRY_TRANSIT_IP} 2>/dev/null || true
-iptables -t nat -A POSTROUTING -s {cs} -o {IFACE} -j SNAT --to-source {DEFAULT_ENTRY_TRANSIT_IP}
-iptables -D FORWARD -s {cs} -o {IFACE} -j ACCEPT 2>/dev/null || true
-iptables -A FORWARD -s {cs} -o {IFACE} -j ACCEPT
-iptables -D FORWARD -d {cs} -i {IFACE} -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || true
-iptables -A FORWARD -d {cs} -i {IFACE} -m state --state RELATED,ESTABLISHED -j ACCEPT
+awg-quick down {conf} 2>/dev/null || true
+ip link del {iface} 2>/dev/null || true
+awg-quick up {conf}
+ip rule del from {cs} lookup {table} 2>/dev/null || true
+ip rule add from {cs} lookup {table} priority {prio}
+ip route flush table {table} 2>/dev/null || true
+ip route add default dev {iface} table {table}
+ip route add blackhole default metric 100 table {table}
+iptables -t nat -D POSTROUTING -s {cs} -o {iface} -j SNAT --to-source {entry_ip} 2>/dev/null || true
+iptables -t nat -A POSTROUTING -s {cs} -o {iface} -j SNAT --to-source {entry_ip}
+iptables -D FORWARD -s {cs} -o {iface} -j ACCEPT 2>/dev/null || true
+iptables -A FORWARD -s {cs} -o {iface} -j ACCEPT
+iptables -D FORWARD -d {cs} -i {iface} -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || true
+iptables -A FORWARD -d {cs} -i {iface} -m state --state RELATED,ESTABLISHED -j ACCEPT
 echo OK_ENTRY
 """
 
 
-def _health_egress(entry_ssh, entry_ctn, server_addr: str) -> tuple[Optional[str], bool]:
+def _health_egress(entry_ssh, entry_ctn, server_addr: str, iface: str) -> tuple[Optional[str], bool]:
     src = shlex.quote(server_addr)
     script = f"""
 HS=0
 for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
-  HS=$(awg show {IFACE} latest-handshakes 2>/dev/null | awk '{{print $2}}' | sort -nr | head -n1)
+  HS=$(awg show {iface} latest-handshakes 2>/dev/null | awk '{{print $2}}' | sort -nr | head -n1)
   [ -n "$HS" ] && [ "$HS" != "0" ] && break
   sleep 2
 done
@@ -657,32 +657,38 @@ def _teardown(
     exit_ssh,
     exit_ctn,
     client_subnet,
-    port,
+    profile: TransitProfile,
     exit_ctn_ip,
     entry_ctn_ip="",
     entry_public_ip="",
-    entry_host_port=0,
     exit_public_ip="",
 ) -> None:
     cs = shlex.quote(client_subnet or "10.8.1.0/24")
+    port = profile.transit_port
+    entry_host_port = profile.entry_host_port
+    iface = profile.iface
+    conf = profile.conf_path
+    table = profile.table
+    entry_ip = profile.entry_ip
+    subnet = profile.subnet
     p = str(int(port))
     entry_down = f"""
-ip rule del from {cs} lookup {TABLE} 2>/dev/null || true
-ip route flush table {TABLE} 2>/dev/null || true
-iptables -t nat -D POSTROUTING -s {cs} -o {IFACE} -j SNAT --to-source {DEFAULT_ENTRY_TRANSIT_IP} 2>/dev/null || true
-iptables -D FORWARD -s {cs} -o {IFACE} -j ACCEPT 2>/dev/null || true
-iptables -D FORWARD -d {cs} -i {IFACE} -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || true
-awg-quick down /tmp/utmka-cas0.conf 2>/dev/null || ip link del {IFACE} 2>/dev/null || true
-rm -f /tmp/utmka-cas0.conf 2>/dev/null || true
+ip rule del from {cs} lookup {table} 2>/dev/null || true
+ip route flush table {table} 2>/dev/null || true
+iptables -t nat -D POSTROUTING -s {cs} -o {iface} -j SNAT --to-source {entry_ip} 2>/dev/null || true
+iptables -D FORWARD -s {cs} -o {iface} -j ACCEPT 2>/dev/null || true
+iptables -D FORWARD -d {cs} -i {iface} -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || true
+awg-quick down {conf} 2>/dev/null || ip link del {iface} 2>/dev/null || true
+rm -f {conf} 2>/dev/null || true
 echo DOWN_ENTRY
 """
     exit_down = f"""
 WAN=$(ip route show default | awk '/default/{{print $5; exit}}'); [ -n "$WAN" ] || WAN=eth0
-iptables -t nat -D POSTROUTING -s 10.250.0.0/30 -o "$WAN" -j MASQUERADE 2>/dev/null || true
-iptables -D FORWARD -i {IFACE} -o "$WAN" -j ACCEPT 2>/dev/null || true
-iptables -D FORWARD -i "$WAN" -o {IFACE} -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || true
-awg-quick down /tmp/utmka-cas0.conf 2>/dev/null || ip link del {IFACE} 2>/dev/null || true
-rm -f /tmp/utmka-cas0.conf 2>/dev/null || true
+iptables -t nat -D POSTROUTING -s {subnet} -o "$WAN" -j MASQUERADE 2>/dev/null || true
+iptables -D FORWARD -i {iface} -o "$WAN" -j ACCEPT 2>/dev/null || true
+iptables -D FORWARD -i "$WAN" -o {iface} -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || true
+awg-quick down {conf} 2>/dev/null || ip link del {iface} 2>/dev/null || true
+rm -f {conf} 2>/dev/null || true
 echo DOWN_EXIT
 """
     exit_host_down = f"""
