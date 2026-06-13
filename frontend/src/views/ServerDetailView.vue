@@ -463,6 +463,17 @@
                 </div>
                 <p v-if="check.recommendation" class="check-rec">{{ check.recommendation }}</p>
               </div>
+              <n-button
+                v-if="check.actionable && check.control"
+                size="tiny"
+                :type="check.enabled ? 'default' : 'primary'"
+                :loading="securityBusy === check.control"
+                :disabled="!!securityBusy"
+                class="check-action"
+                @click="toggleSecurity(check)"
+              >
+                {{ check.enabled ? 'Выключить' : 'Включить' }}
+              </n-button>
             </div>
           </div>
         </div>
@@ -975,7 +986,7 @@ import {
   useDialog,
   useMessage
 } from 'naive-ui'
-import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { computed, h, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
 import { api } from '@/api/client'
@@ -1040,6 +1051,15 @@ type SecurityCheck = {
   status: 'ok' | 'warning' | 'danger' | 'unknown'
   value: string
   recommendation: string | null
+  actionable?: boolean
+  control?: string | null
+  enabled?: boolean | null
+}
+
+type UfwPreview = {
+  tcp_ports: number[]
+  udp_ports: number[]
+  ssh_port: number
 }
 
 type ChatIsolationCheck = { label: string; expected: string; actual: string; ok: boolean }
@@ -2065,6 +2085,93 @@ const createdText = computed(() => {
   const date = new Date(raw)
   return Number.isNaN(date.getTime()) ? '—' : date.toLocaleDateString('ru-RU')
 })
+
+const securityBusy = ref<string>('')
+
+function toggleSecurity(check: SecurityCheck) {
+  if (!check.control) return
+  const control = check.control
+  const turningOn = !check.enabled
+  if (control === 'ufw') {
+    if (turningOn) void confirmUfwEnable()
+    else confirmSecurityDisable(control, 'Выключить файрвол UFW?', 'Фильтрация портов на уровне ОС будет снята. VPN и панель продолжат работать.')
+    return
+  }
+  if (control === 'fail2ban') {
+    if (turningOn) void doSecurityAction(control, 'enable')
+    else confirmSecurityDisable(control, 'Выключить Fail2ban?', 'Защита SSH от перебора паролей перестанет работать.')
+    return
+  }
+  if (control === 'updates') {
+    if (turningOn) void doSecurityAction(control, 'enable')
+    else confirmSecurityDisable(control, 'Выключить автообновления?', 'Сервер перестанет автоматически получать патчи безопасности.')
+    return
+  }
+}
+
+async function confirmUfwEnable() {
+  let preview: UfwPreview | null = null
+  securityBusy.value = 'ufw'
+  try {
+    const { data } = await api.get<UfwPreview>(`/servers/${serverId}/security/ufw-preview`)
+    preview = data
+  } catch (error: any) {
+    message.error(error?.response?.data?.detail || 'Не удалось получить список портов.')
+    securityBusy.value = ''
+    return
+  }
+  securityBusy.value = ''
+  const tcp = preview.tcp_ports.join(', ') || '—'
+  const udp = preview.udp_ports.join(', ') || '—'
+  dialog.info({
+    title: 'Включить файрвол UFW?',
+    content: () =>
+      h('div', { style: 'display:flex;flex-direction:column;gap:8px' }, [
+        h('p', { style: 'margin:0' }, 'Панель сама откроет порты всех работающих сервисов, чтобы ничего не сломалось:'),
+        h('p', { style: 'margin:0' }, [h('strong', 'TCP: '), `${tcp}`]),
+        h('p', { style: 'margin:0' }, [h('strong', 'UDP: '), `${udp}`]),
+        h(
+          'p',
+          { style: 'margin:0;color:var(--color-text-soft,#888)' },
+          `SSH-порт ${preview.ssh_port} открывается в первую очередь. Если связь не восстановится — файрвол сам выключится через 2 минуты.`
+        )
+      ]),
+    positiveText: 'Включить',
+    negativeText: 'Отмена',
+    onPositiveClick: () => {
+      void doSecurityAction('ufw', 'enable')
+    }
+  })
+}
+
+function confirmSecurityDisable(control: string, title: string, content: string) {
+  dialog.warning({
+    title,
+    content,
+    positiveText: 'Выключить',
+    negativeText: 'Отмена',
+    onPositiveClick: () => {
+      void doSecurityAction(control, 'disable')
+    }
+  })
+}
+
+async function doSecurityAction(control: string, action: 'enable' | 'disable') {
+  securityBusy.value = control
+  try {
+    const { data } = await api.post<{ ok: boolean; message: string }>(
+      `/servers/${serverId}/security/action`,
+      { control, action },
+      { timeout: 180_000 }
+    )
+    message.success(data.message)
+    await loadOverview()
+  } catch (error: any) {
+    message.error(error?.response?.data?.detail || 'Не удалось применить настройку безопасности.')
+  } finally {
+    securityBusy.value = ''
+  }
+}
 
 const securityWarnings = computed(
   () => (overview.value?.security || []).filter((c) => c.status === 'warning' || c.status === 'danger').length
@@ -3446,6 +3553,12 @@ function confirmDeleteServer() {
 
 .check-text {
   min-width: 0;
+  flex: 1;
+}
+
+.check-action {
+  flex-shrink: 0;
+  align-self: center;
 }
 
 .check-title {
