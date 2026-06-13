@@ -92,10 +92,11 @@ from app.services.panel_ssl import (
     rollback_panel_ssl,
     verify_panel_domain,
 )
-from app.services.xray_install import XrayInstallError, install_xray
-from app.services.awg_install import AwgInstallError, install_awg
+from app.services.xray_install import XrayInstallError
+from app.services.awg_install import AwgInstallError
 from app.services.wireguard_install import WireguardInstallError, install_wireguard
 from app.services.telemt_install import TelemtInstallError, install_telemt
+from app.services.protocol_engine import get_engine
 from app.services.server_store import server_store
 
 
@@ -242,6 +243,27 @@ async def protocol_action(
     return {"status": "ok", "message": message}
 
 
+@router.get("/protocols/capabilities")
+async def protocols_capabilities(
+    _: CurrentUser = Depends(require_admin),
+) -> dict:
+    """Возможности движков по протоколам (UI прячет неподдержанные кнопки).
+
+    Аддитивный эндпоинт: поведение существующих операций не меняет.
+    """
+    from dataclasses import asdict
+
+    from app.services.protocol_engine import EngineNotSupported
+
+    result: dict[str, dict] = {}
+    for pid in ("awg2", "awg_legacy", "xray"):
+        try:
+            result[pid] = asdict(get_engine(pid).capabilities())
+        except EngineNotSupported:
+            continue
+    return {"protocols": result}
+
+
 @router.post("/{server_id}/protocols/{protocol_id}/install", response_model=ProtocolInstallResult)
 async def protocol_install(
     server_id: str,
@@ -254,7 +276,7 @@ async def protocol_install(
     try:
         if protocol_id == "xray":
             result = await asyncio.to_thread(
-                install_xray,
+                get_engine("xray").install,
                 server_id,
                 port=payload.port,
                 site_name=payload.site_name,
@@ -270,9 +292,8 @@ async def protocol_install(
             )
         if protocol_id in ("awg2", "awg_legacy"):
             result = await asyncio.to_thread(
-                install_awg,
+                get_engine(protocol_id).install,
                 server_id,
-                variant=protocol_id,
                 port=payload.port,
             )
             return ProtocolInstallResult(
