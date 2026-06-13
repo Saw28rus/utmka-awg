@@ -57,6 +57,7 @@ class ClientListItem(BaseModel):
     name: str
     server_id: str
     server_name: Optional[str] = None
+    channel_id: Optional[str] = None
     protocol: str = "awg2"
     status: str
     client_ip: str

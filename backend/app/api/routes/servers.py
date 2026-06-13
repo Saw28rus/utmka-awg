@@ -170,15 +170,34 @@ async def get_server(server_id: str, _: CurrentUser = Depends(require_admin)) ->
 
 @router.delete("/{server_id}")
 async def delete_server(server_id: str, _: CurrentUser = Depends(require_admin)) -> dict:
+    if not server_store.get_record(server_id):
+        raise HTTPException(status_code=404, detail="Сервер не найден.")
+
+    from app.services.channel_store import describe_blocking_cascades
+
+    blocking = describe_blocking_cascades(server_id)
+    if blocking:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Узел занят в активном канале: "
+                + "; ".join(blocking)
+                + ". Сначала выключите каскад(ы), затем удаляйте сервер."
+            ),
+        )
+
     if not server_store.delete(server_id):
         raise HTTPException(status_code=404, detail="Сервер не найден.")
     from app.services.metrics_cache import metrics_cache
     from app.services.protocol_backup import forget_node as forget_snapshots
     from app.services.protocol_versions import forget_node
 
+    from app.services.cascade_store import cascade_store
+
     metrics_cache.invalidate(server_id)
     forget_node(server_id)
     forget_snapshots(server_id)
+    cascade_store.forget_server(server_id)
     return {"status": "ok"}
 
 

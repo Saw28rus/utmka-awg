@@ -77,5 +77,16 @@ class CascadeStore:
             return True
         return False
 
+    def forget_server(self, server_id: str) -> int:
+        """Убрать все звенья, где узел — entry или exit (очистка при удалении узла)."""
+        removed = 0
+        for entry_id, link in list(self._links.items()):
+            if link.get("entry_server_id") == server_id or link.get("exit_server_id") == server_id:
+                del self._links[entry_id]
+                removed += 1
+        if removed:
+            self._persist()
+        return removed
+
 
 cascade_store = CascadeStore()

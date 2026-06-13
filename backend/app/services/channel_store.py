@@ -123,3 +123,29 @@ def get_channel(channel_id: str) -> Optional[dict]:
         if channel["id"] == channel_id:
             return channel
     return None
+
+
+def active_cascades_for_server(server_id: str) -> list[dict]:
+    """Активные каскады, где узел — entry или exit (для fail-closed удаления)."""
+    out: list[dict] = []
+    for link in cascade_store.list_links():
+        if (link.get("state") or "") != "active":
+            continue
+        if not link.get("exit_server_id"):
+            continue
+        if link.get("entry_server_id") == server_id or link.get("exit_server_id") == server_id:
+            out.append(link)
+    return out
+
+
+def describe_blocking_cascades(server_id: str) -> list[str]:
+    """Человекочитаемое описание активных каскадов, мешающих удалению узла."""
+    notes: list[str] = []
+    for link in active_cascades_for_server(server_id):
+        entry_id = link.get("entry_server_id") or ""
+        exit_id = link.get("exit_server_id") or ""
+        entry = _server_label(entry_id)["name"]
+        exit_name = _server_label(exit_id)["name"]
+        role = "entry" if entry_id == server_id else "exit"
+        notes.append(f"{role} активного каскада «{entry} → {exit_name}»")
+    return notes

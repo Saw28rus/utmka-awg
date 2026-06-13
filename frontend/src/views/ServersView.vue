@@ -305,9 +305,14 @@ function confirmDelete(server: ServerListItem) {
     positiveText: 'Удалить',
     negativeText: 'Отмена',
     onPositiveClick: async () => {
-      await api.delete(`/servers/${server.id}`)
-      message.success('Сервер удалён из панели.')
-      await loadServers()
+      try {
+        await api.delete(`/servers/${server.id}`)
+        message.success('Сервер удалён из панели.')
+        await loadServers()
+      } catch (error: any) {
+        message.error(error?.response?.data?.detail || 'Не удалось удалить сервер.')
+        return false
+      }
     }
   })
 }

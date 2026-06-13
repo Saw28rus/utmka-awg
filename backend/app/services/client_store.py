@@ -357,12 +357,23 @@ class ClientStore:
 
         return base
 
+    def _channel_id(self, server_id: str, protocol: str) -> str:
+        """Производный id канала клиента (PA2-3). Совпадает с channel_store."""
+        from app.services.cascade_store import cascade_store
+
+        if (protocol or "").lower().startswith("awg"):
+            link = cascade_store.get_link(server_id)
+            if link and link.get("exit_server_id"):
+                return f"cascade:{server_id}"
+        return f"direct:{server_id}:{(protocol or 'awg2').lower()}"
+
     def _common_fields(self, record: dict) -> dict:
         return {
             "id": record["id"],
             "name": record["name"],
             "server_id": record["server_id"],
             "server_name": record.get("server_name"),
+            "channel_id": self._channel_id(record["server_id"], record.get("protocol", "awg2")),
             "protocol": record.get("protocol", "awg2"),
             "status": self._effective_status(record),
             "client_ip": record.get("client_ip", "—"),
