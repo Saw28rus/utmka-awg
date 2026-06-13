@@ -243,6 +243,17 @@
                   Обновить
                 </n-button>
                 <n-button
+                  v-if="proto.installed && proto.id === 'xray'"
+                  size="tiny"
+                  tertiary
+                  :loading="isProtoBusy(proto.id, 'masking')"
+                  title="Показать параметры маскировки Reality (dest/SNI/shortId/порт)"
+                  @click="showXrayMasking(proto)"
+                >
+                  <template #icon><Fingerprint :size="13" /></template>
+                  Reality
+                </n-button>
+                <n-button
                   v-if="canSnapshot(proto)"
                   size="tiny"
                   tertiary
@@ -2345,6 +2356,62 @@ async function updateProtocol(proto: ProtocolInfo) {
     } else {
       message.error(detail || 'Не удалось обновить протокол.')
     }
+  } finally {
+    delete protoBusy[proto.id]
+  }
+}
+
+function renderMaskingDialog(data: any) {
+  const rows: any[] = []
+  const line = (label: string, value: string) =>
+    h('div', { style: 'display:flex;gap:8px;margin:2px 0;' }, [
+      h('span', { style: 'color:var(--color-muted);min-width:120px;' }, label),
+      h('span', { style: 'font-family:monospace;' }, value)
+    ])
+  if (data.port != null) rows.push(line('Порт', String(data.port)))
+  if (data.dest)
+    rows.push(
+      line(
+        'dest',
+        `${data.dest}${
+          data.dest_reachable === true ? ' (доступен)' : data.dest_reachable === false ? ' (не отвечает)' : ''
+        }`
+      )
+    )
+  if (data.sni) rows.push(line('SNI', data.sni))
+  if (data.short_id_count != null) rows.push(line('shortId', `${data.short_id_count} шт.`))
+  if (data.flow) rows.push(line('flow', data.flow))
+  if (data.clients_count != null) rows.push(line('Клиентов', String(data.clients_count)))
+  for (const c of data.critical || []) {
+    rows.push(h('div', { style: 'color:#dc2626;margin-top:4px;' }, `⚠ ${c}`))
+  }
+  for (const n of data.notes || []) {
+    rows.push(h('div', { style: 'color:#d97706;margin-top:4px;' }, `• ${n}`))
+  }
+  if (!(data.critical || []).length && !(data.notes || []).length) {
+    rows.push(h('div', { style: 'color:#16a34a;margin-top:4px;' }, '✓ Замечаний нет'))
+  }
+  rows.push(
+    h(
+      'div',
+      { style: 'color:var(--color-muted);margin-top:8px;font-size:12px;' },
+      'Статус — это качество настройки маскировки, а не гарантия обхода DPI.'
+    )
+  )
+  return h('div', {}, rows)
+}
+
+async function showXrayMasking(proto: ProtocolInfo) {
+  protoBusy[proto.id] = 'masking'
+  try {
+    const { data } = await api.get(`/servers/${serverId}/xray/masking`)
+    dialog.info({
+      title: `Reality-маскировка — ${data.label || 'статус неизвестен'}`,
+      content: () => renderMaskingDialog(data),
+      positiveText: 'Закрыть'
+    })
+  } catch (error: any) {
+    message.error(error?.response?.data?.detail || 'Не удалось получить статус маскировки.')
   } finally {
     delete protoBusy[proto.id]
   }

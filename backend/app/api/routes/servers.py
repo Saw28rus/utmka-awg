@@ -285,6 +285,19 @@ async def protocol_versions(
     return {"protocols": items}
 
 
+@router.get("/{server_id}/xray/masking")
+async def xray_masking(
+    server_id: str,
+    _: CurrentUser = Depends(require_admin),
+) -> dict:
+    """Инспектор Reality-маскировки Xray (read-only): dest/SNI/shortId/порт + scoring."""
+    if not server_store.get_record(server_id):
+        raise HTTPException(status_code=404, detail="Сервер не найден.")
+    from app.services.xray_masking import inspect_xray_masking
+
+    return await asyncio.to_thread(inspect_xray_masking, server_id)
+
+
 @router.get("/{server_id}/protocols/{protocol_id}/update-plan")
 async def protocol_update_plan(
     server_id: str,
