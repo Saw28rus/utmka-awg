@@ -49,7 +49,10 @@ def channel_id_for(server_id: str, protocol: str, cascade_entries: Optional[set[
 def _client_counts(cascade_entries: set[str]) -> dict[str, int]:
     counts: dict[str, int] = {}
     for item in client_store.channel_index():
-        cid = channel_id_for(item["server_id"], item["protocol"], cascade_entries)
+        if (item.get("protocol") or "").lower() == "xray" and item.get("channel_entry_id"):
+            cid = f"xcascade:{item['channel_entry_id']}"
+        else:
+            cid = channel_id_for(item["server_id"], item["protocol"], cascade_entries)
         counts[cid] = counts.get(cid, 0) + 1
     return counts
 

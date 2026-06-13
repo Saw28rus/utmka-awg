@@ -66,6 +66,7 @@ class ClientStore:
         traffic_limit_bytes: Optional[int] = None,
         expires_at: Optional[str] = None,
         keepalive: int = 25,
+        channel_entry_id: Optional[str] = None,
     ) -> ClientDetail:
         client_id = str(uuid4())
         record = {
@@ -73,6 +74,7 @@ class ClientStore:
             "name": name,
             "server_id": server_id,
             "server_name": server_name,
+            "channel_entry_id": channel_entry_id,
             "protocol": protocol,
             "status": "active",
             "client_ip": client_ip,
@@ -154,6 +156,7 @@ class ClientStore:
                 "id": cid,
                 "server_id": record["server_id"],
                 "protocol": (record.get("protocol") or "awg2"),
+                "channel_entry_id": record.get("channel_entry_id"),
             }
             for cid, record in self._clients.items()
         ]
@@ -357,15 +360,19 @@ class ClientStore:
 
         return base
 
-    def _channel_id(self, server_id: str, protocol: str) -> str:
-        """Производный id канала клиента (PA2-3). Совпадает с channel_store."""
-        from app.services.cascade_store import cascade_store
+    def _channel_id(self, record: dict) -> str:
+        """Производный id канала клиента (PA2-3/CX1). Совпадает с channel_store."""
+        server_id = record["server_id"]
+        protocol = (record.get("protocol") or "awg2").lower()
+        if protocol == "xray" and record.get("channel_entry_id"):
+            return f"xcascade:{record['channel_entry_id']}"
+        if protocol.startswith("awg"):
+            from app.services.cascade_store import cascade_store
 
-        if (protocol or "").lower().startswith("awg"):
             link = cascade_store.get_link(server_id)
             if link and link.get("exit_server_id"):
                 return f"cascade:{server_id}"
-        return f"direct:{server_id}:{(protocol or 'awg2').lower()}"
+        return f"direct:{server_id}:{protocol}"
 
     def _common_fields(self, record: dict) -> dict:
         return {
@@ -373,7 +380,7 @@ class ClientStore:
             "name": record["name"],
             "server_id": record["server_id"],
             "server_name": record.get("server_name"),
-            "channel_id": self._channel_id(record["server_id"], record.get("protocol", "awg2")),
+            "channel_id": self._channel_id(record),
             "protocol": record.get("protocol", "awg2"),
             "status": self._effective_status(record),
             "client_ip": record.get("client_ip", "—"),

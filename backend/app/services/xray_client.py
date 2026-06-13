@@ -36,7 +36,16 @@ def create_xray_client(
     format: str = "both",
     traffic_limit_bytes: Optional[int] = None,
     expires_at: Optional[str] = None,
+    link_host: Optional[str] = None,
+    link_port: Optional[int] = None,
+    channel_entry_id: Optional[str] = None,
 ) -> ClientDetail:
+    """Создаёт VLESS-Reality клиента на сервере ``server_id`` (где живёт UUID).
+
+    Для Xray-каскада (CX1-2) ``server_id`` — это exit, а ``link_host``/``link_port``
+    указывают на entry-relay: UUID/ключи остаются на exit, но клиентский конфиг
+    адресован на entry. ``channel_entry_id`` помечает клиента как каскадного.
+    """
     record = server_store.get_record(server_id)
     target = server_store.ssh_target(server_id)
     if not record or not target:
@@ -78,9 +87,12 @@ def create_xray_client(
         client_uuid = str(uuid.uuid4())
         _append_client_to_server(ssh, server_config, client_uuid, flow)
 
+        client_host = link_host or target.host
+        client_port = int(link_port or port)
+
         native_config = build_xray_native_config(
-            host=target.host,
-            port=port,
+            host=client_host,
+            port=client_port,
             client_uuid=client_uuid,
             flow=flow,
             site=site,
@@ -88,8 +100,8 @@ def create_xray_client(
             short_id=short_id,
         )
         vless_uri = build_vless_uri(
-            host=target.host,
-            port=port,
+            host=client_host,
+            port=client_port,
             client_uuid=client_uuid,
             flow=flow,
             site=site,
@@ -102,7 +114,7 @@ def create_xray_client(
         want_vpn = format in {"both", "vpn"}
         config_text = vless_uri if want_config else None
         vpn_link = (
-            build_xray_vpn_link(host=target.host, native_config_json=native_config, description=record["name"])
+            build_xray_vpn_link(host=client_host, native_config_json=native_config, description=record["name"])
             if want_vpn
             else None
         )
@@ -118,10 +130,11 @@ def create_xray_client(
             preshared_key=None,
             config_text=config_text,
             vpn_link=vpn_link,
-            endpoint=f"{target.host}:{port}",
+            endpoint=f"{client_host}:{client_port}",
             imported=False,
             traffic_limit_bytes=traffic_limit_bytes,
             expires_at=expires_at,
+            channel_entry_id=channel_entry_id,
         )
         server_store.update_runtime(server_id, active_peers=client_store.count_for_server(server_id))
         return detail

@@ -311,6 +311,50 @@ def xray_cascade_status(entry_id: str) -> dict:
     }
 
 
+def create_xray_cascade_client(
+    entry_id: str,
+    name: str,
+    *,
+    format: str = "both",
+    traffic_limit_bytes: Optional[int] = None,
+    expires_at: Optional[str] = None,
+):
+    """Выдать клиента в Xray-каскад (CX1-2).
+
+    UUID/ключи живут на exit, конфиг адресован на entry:relay_port.
+    """
+    link = xray_cascade_store.get_link(entry_id)
+    if not link:
+        raise XrayCascadeError("Xray-каскад для этого узла не настроен.")
+    if (link.get("state") or "") != "active":
+        raise XrayCascadeError("Каскад не активен — сначала включите relay.")
+    exit_id = link.get("exit_server_id")
+    relay_port = int(link.get("relay_port") or DEFAULT_RELAY_PORT)
+    if not exit_id:
+        raise XrayCascadeError("В каскаде не задан exit-сервер.")
+
+    entry_rec = server_store.get_record(entry_id)
+    if not entry_rec or not entry_rec.get("host"):
+        raise XrayCascadeError("Entry-сервер не найден.")
+    entry_host = entry_rec["host"]
+
+    from app.services.xray_client import ClientCreateError, create_xray_client
+
+    try:
+        return create_xray_client(
+            exit_id,
+            name,
+            format=format,
+            traffic_limit_bytes=traffic_limit_bytes,
+            expires_at=expires_at,
+            link_host=entry_host,
+            link_port=relay_port,
+            channel_entry_id=entry_id,
+        )
+    except ClientCreateError as exc:
+        raise XrayCascadeError(str(exc)) from exc
+
+
 def list_xray_cascades() -> list[dict]:
     out: list[dict] = []
     for link in xray_cascade_store.list_links():

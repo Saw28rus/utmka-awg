@@ -106,12 +106,34 @@
         Выключить каскад
       </n-button>
     </div>
+
+    <div v-if="isActive" class="xc-clients">
+      <div class="xc-clients-head">
+        <h4>Выдать клиента в каскад</h4>
+        <span class="xc-sub">Конфиг указывает на entry, ключи живут на exit.</span>
+      </div>
+      <div class="xc-clients-form">
+        <n-input v-model:value="clientName" placeholder="Имя клиента" :disabled="!!busy" />
+        <n-button
+          type="primary"
+          :loading="busy === 'client'"
+          :disabled="!clientName.trim() || !!busy"
+          @click="createClient"
+        >
+          Создать
+        </n-button>
+      </div>
+      <div v-if="lastClientLink" class="xc-client-result">
+        <span class="xc-sub">Ссылка VLESS (нажмите, чтобы скопировать):</span>
+        <code class="xc-link mono" @click="copyLink">{{ lastClientLink }}</code>
+      </div>
+    </div>
   </div>
 </template>
 
 <script setup lang="ts">
 import { AlertTriangle, ArrowRight, CheckCircle2, RefreshCw, XCircle } from '@lucide/vue'
-import { NButton, NInputNumber, NSelect, useMessage } from 'naive-ui'
+import { NButton, NInput, NInputNumber, NSelect, useMessage } from 'naive-ui'
 import { computed, onMounted, ref } from 'vue'
 
 import { api } from '@/api/client'
@@ -121,12 +143,14 @@ const props = defineProps<{ serverId: string; serverName?: string }>()
 
 const message = useMessage()
 const loading = ref(false)
-const busy = ref<'' | 'preflight' | 'apply' | 'rollback'>('')
+const busy = ref<'' | 'preflight' | 'apply' | 'rollback' | 'client'>('')
 const status = ref<any>(null)
 const preflight = ref<any>(null)
 const exitId = ref<string | null>(null)
 const relayPort = ref<number | null>(null)
 const servers = ref<any[]>([])
+const clientName = ref('')
+const lastClientLink = ref('')
 
 const entryName = computed(() => props.serverName || props.serverId.slice(0, 8))
 
@@ -231,6 +255,36 @@ async function runRollback() {
     message.error(error?.response?.data?.detail || 'Не удалось выключить каскад.')
   } finally {
     busy.value = ''
+  }
+}
+
+async function createClient() {
+  const name = clientName.value.trim()
+  if (!name) return
+  busy.value = 'client'
+  try {
+    const { data } = await api.post(
+      `/servers/${props.serverId}/xray-cascade/clients`,
+      { name },
+      { timeout: 180_000 },
+    )
+    lastClientLink.value = data.config_text || data.vpn_link || ''
+    clientName.value = ''
+    message.success('Клиент создан и добавлен в каскад.')
+  } catch (error: any) {
+    message.error(error?.response?.data?.detail || 'Не удалось создать клиента.')
+  } finally {
+    busy.value = ''
+  }
+}
+
+async function copyLink() {
+  if (!lastClientLink.value) return
+  try {
+    await navigator.clipboard.writeText(lastClientLink.value)
+    message.success('Скопировано.')
+  } catch {
+    message.warning('Не удалось скопировать — выделите вручную.')
   }
 }
 
@@ -359,5 +413,39 @@ onMounted(async () => {
   display: flex;
   gap: 10px;
   flex-wrap: wrap;
+}
+.xc-clients {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-top: 12px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+.xc-clients-head {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.xc-clients-head h4 {
+  margin: 0;
+}
+.xc-clients-form {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+.xc-client-result {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.xc-link {
+  display: block;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.05);
+  word-break: break-all;
+  cursor: pointer;
+  font-size: 12px;
 }
 </style>
