@@ -173,10 +173,12 @@ async def delete_server(server_id: str, _: CurrentUser = Depends(require_admin))
     if not server_store.delete(server_id):
         raise HTTPException(status_code=404, detail="Сервер не найден.")
     from app.services.metrics_cache import metrics_cache
+    from app.services.protocol_backup import forget_node as forget_snapshots
     from app.services.protocol_versions import forget_node
 
     metrics_cache.invalidate(server_id)
     forget_node(server_id)
+    forget_snapshots(server_id)
     return {"status": "ok"}
 
 
@@ -281,6 +283,38 @@ async def protocol_versions(
         raise HTTPException(status_code=404, detail="Сервер не найден.")
     items = await asyncio.to_thread(reconcile_node, server_id)
     return {"protocols": items}
+
+
+@router.get("/{server_id}/protocols/{protocol_id}/update-plan")
+async def protocol_update_plan(
+    server_id: str,
+    protocol_id: str,
+    _: CurrentUser = Depends(require_admin),
+) -> dict:
+    """План обновления протокола (installed→pinned, статус снапшота, шаги). Read-only."""
+    if not server_store.get_record(server_id):
+        raise HTTPException(status_code=404, detail="Сервер не найден.")
+    from app.services.protocol_backup import update_plan
+
+    return await asyncio.to_thread(update_plan, server_id, protocol_id)
+
+
+@router.post("/{server_id}/protocols/{protocol_id}/snapshot")
+async def protocol_snapshot(
+    server_id: str,
+    protocol_id: str,
+    _: CurrentUser = Depends(require_admin),
+) -> dict:
+    """Снять зашифрованный снапшот конфига/ключей протокола (read-only на узле)."""
+    if not server_store.get_record(server_id):
+        raise HTTPException(status_code=404, detail="Сервер не найден.")
+    from app.services.protocol_backup import SnapshotError, snapshot_protocol
+
+    try:
+        snapshot = await asyncio.to_thread(snapshot_protocol, server_id, protocol_id)
+    except SnapshotError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {"status": "ok", "snapshot": snapshot}
 
 
 @router.post("/{server_id}/protocols/{protocol_id}/install", response_model=ProtocolInstallResult)

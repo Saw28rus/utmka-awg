@@ -232,6 +232,17 @@
                   Стоп
                 </n-button>
                 <n-button
+                  v-if="canSnapshot(proto)"
+                  size="tiny"
+                  tertiary
+                  :loading="isProtoBusy(proto.id, 'snapshot')"
+                  title="Снять зашифрованный бэкап конфига и ключей (нужен перед обновлением)"
+                  @click="snapshotProtocol(proto)"
+                >
+                  <template #icon><Save :size="13" /></template>
+                  Снимок
+                </n-button>
+                <n-button
                   size="tiny"
                   tertiary
                   type="error"
@@ -989,6 +1000,7 @@ import {
   RefreshCw,
   RotateCcw,
   Route,
+  Save,
   Server,
   Shield,
   ShieldAlert,
@@ -2271,6 +2283,25 @@ async function protoAction(proto: ProtocolInfo, action: 'start' | 'stop' | 'rest
     await loadOverview()
   } catch (error: any) {
     message.error(error?.response?.data?.detail || 'Не удалось выполнить действие.')
+  } finally {
+    delete protoBusy[proto.id]
+  }
+}
+
+const SNAPSHOT_PROTOCOLS = ['awg2', 'awg_legacy', 'xray']
+
+function canSnapshot(proto: ProtocolInfo) {
+  return proto.installed && SNAPSHOT_PROTOCOLS.includes(proto.id)
+}
+
+async function snapshotProtocol(proto: ProtocolInfo) {
+  protoBusy[proto.id] = 'snapshot'
+  try {
+    const { data } = await api.post(`/servers/${serverId}/protocols/${proto.id}/snapshot`)
+    const kb = Math.max(1, Math.round((data?.snapshot?.size_bytes || 0) / 1024))
+    message.success(`Снимок конфига и ключей создан (~${kb} КБ).`)
+  } catch (error: any) {
+    message.error(error?.response?.data?.detail || 'Не удалось снять снапшот.')
   } finally {
     delete protoBusy[proto.id]
   }
