@@ -12,6 +12,7 @@ from app.api.routes import (
     health,
     health_nodes,
     invoices,
+    notifications,
     operations,
     servers,
     settings,
@@ -33,5 +34,6 @@ api_router.include_router(users.router, prefix="/users", tags=["users"])
 api_router.include_router(settings.router, prefix="/settings", tags=["settings"])
 api_router.include_router(audit.router, prefix="/audit", tags=["audit"])
 api_router.include_router(operations.router, prefix="/operations", tags=["operations"])
+api_router.include_router(notifications.router, prefix="/notifications", tags=["notifications"])
 api_router.include_router(chat_admin.router, prefix="/chat/admin", tags=["chat-admin"])
 api_router.include_router(chat_client.router, prefix="/chat/client", tags=["chat-client"])

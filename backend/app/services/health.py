@@ -16,6 +16,7 @@ import shlex
 from datetime import datetime, timezone
 
 from app.services.health_store import health_store
+from app.services.notification_store import notification_store
 from app.services.server_store import server_store
 from app.ssh import exec as ssh_exec
 
@@ -87,6 +88,46 @@ def _bump_restart(restarts: dict, container: str) -> None:
         restarts[container] = history
 
 
+def _notify_transition(record: dict, prev_state: str, new_state: str, restarted: list[str], skipped_limit: list[str]) -> None:
+    """Уведомления только при смене состояния и на событиях (без спама)."""
+    name = record.get("name") or record.get("host") or record["id"]
+    sid = record["id"]
+    if restarted:
+        notification_store.add(
+            level="info", code="auto_restart",
+            title=f"Авто-перезапуск на «{name}»",
+            message="Восстановлены контейнеры: " + ", ".join(restarted) + ".",
+            server_id=sid,
+        )
+    if skipped_limit:
+        notification_store.add(
+            level="danger", code="restart_limit",
+            title=f"Лимит перезапусков на «{name}»",
+            message="Не удаётся стабилизировать: " + ", ".join(skipped_limit) + ". Нужна ручная проверка.",
+            server_id=sid,
+        )
+    if prev_state == new_state:
+        return
+    if new_state == "down":
+        notification_store.add(
+            level="danger", code="node_down",
+            title=f"Узел «{name}» недоступен",
+            message="SSH не отвечает — проверьте сервер.", server_id=sid,
+        )
+    elif new_state == "degraded" and prev_state in ("ok", "unknown", ""):
+        notification_store.add(
+            level="warning", code="node_degraded",
+            title=f"Проблемы на «{name}»",
+            message="Один или несколько контейнеров не работают.", server_id=sid,
+        )
+    elif new_state == "ok" and prev_state in ("degraded", "down"):
+        notification_store.add(
+            level="info", code="node_recovered",
+            title=f"Узел «{name}» восстановлен",
+            message="Все контейнеры снова работают.", server_id=sid,
+        )
+
+
 def check_server(server_id: str, *, auto_restart: bool = True) -> dict:
     record = server_store.get_record(server_id)
     if not record:
@@ -94,6 +135,7 @@ def check_server(server_id: str, *, auto_restart: bool = True) -> dict:
         return {"server_id": server_id, "state": "unknown", "message": "Сервер не найден."}
 
     prev = health_store.get(server_id) or {}
+    prev_state = prev.get("state") or "unknown"
     restarts = dict(prev.get("restarts") or {})
     target = server_store.ssh_target(server_id)
     if not target:
@@ -109,13 +151,15 @@ def check_server(server_id: str, *, auto_restart: bool = True) -> dict:
         )
     except Exception:  # noqa: BLE001
         consecutive = int(prev.get("consecutive_failures") or 0) + 1
-        return health_store.upsert(
+        result = health_store.upsert(
             server_id, state="down", online=False, checked_at=_iso(),
             consecutive_failures=consecutive,
             message="SSH не отвечает (узел недоступен).",
             alerts=[{"level": "danger", "code": "node_down",
                      "message": "Узел недоступен по SSH."}],
         )
+        _notify_transition(record, prev_state, "down", [], [])
+        return result
 
     try:
         containers = _expected_containers(record)
@@ -165,6 +209,7 @@ def check_server(server_id: str, *, auto_restart: bool = True) -> dict:
             message="Все контейнеры работают." if state == "ok" else "Есть проблемы с контейнерами.",
         )
         server_store.update_runtime(server_id, status="online")
+        _notify_transition(record, prev_state, state, restarted, skipped_limit)
         return result
     finally:
         ssh.close()

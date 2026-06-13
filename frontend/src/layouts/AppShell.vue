@@ -21,6 +21,46 @@
           <h1>{{ title }}</h1>
         </div>
         <div class="topbar-actions">
+          <n-popover
+            v-if="isAdmin"
+            trigger="click"
+            placement="bottom-end"
+            :width="340"
+            @update:show="onBellToggle"
+          >
+            <template #trigger>
+              <n-badge :value="notifications.unread" :max="99" :show="notifications.unread > 0">
+                <n-button tertiary circle aria-label="Уведомления">
+                  <template #icon><Bell :size="17" /></template>
+                </n-button>
+              </n-badge>
+            </template>
+            <div class="notif-pop">
+              <div class="notif-head">
+                <span>Уведомления</span>
+                <button
+                  v-if="notifications.unread > 0"
+                  class="notif-readall"
+                  @click="notifications.markRead()"
+                >
+                  Прочитать все
+                </button>
+              </div>
+              <div v-if="!notifications.items.length" class="notif-empty">Пока пусто</div>
+              <ul v-else class="notif-list">
+                <li
+                  v-for="n in notifications.items"
+                  :key="n.id"
+                  class="notif-item"
+                  :class="[`lvl-${n.level}`, { unread: !n.read }]"
+                >
+                  <strong>{{ n.title }}</strong>
+                  <span class="notif-msg">{{ n.message }}</span>
+                  <span class="notif-time">{{ formatTime(n.created_at) }}</span>
+                </li>
+              </ul>
+            </div>
+          </n-popover>
           <n-button tertiary circle :title="themeLabel" aria-label="Сменить тему" @click="toggleTheme">
             <template #icon>
               <Sun v-if="theme.mode === 'dark'" :size="17" />
@@ -41,13 +81,14 @@
 </template>
 
 <script setup lang="ts">
-import { Activity, KeyRound, LayoutDashboard, LogOut, MessagesSquare, Moon, Network, Receipt, Server, Settings, ShieldCheck, Sun, Users } from '@lucide/vue'
-import { NButton } from 'naive-ui'
-import { computed, onMounted } from 'vue'
+import { Activity, Bell, KeyRound, LayoutDashboard, LogOut, MessagesSquare, Moon, Network, Receipt, Server, Settings, ShieldCheck, Sun, Users } from '@lucide/vue'
+import { NBadge, NButton, NPopover } from 'naive-ui'
+import { computed, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 
 import { useAuthStore } from '@/stores/auth'
 import { useIntegrationsStore } from '@/stores/integrations'
+import { useNotificationsStore } from '@/stores/notifications'
 import { usePanelStore } from '@/stores/panel'
 import { usePanelUpdateStore } from '@/stores/panelUpdate'
 import { useThemeStore } from '@/stores/theme'
@@ -63,6 +104,9 @@ const theme = useThemeStore()
 const panel = usePanelStore()
 const panelUpdate = usePanelUpdateStore()
 const integrations = useIntegrationsStore()
+const notifications = useNotificationsStore()
+
+const isAdmin = computed(() => auth.user?.role === 'admin')
 
 type NavItem = {
   to: string
@@ -101,8 +145,25 @@ onMounted(() => {
   void integrations.load()
   if (auth.user?.role === 'admin') {
     void panelUpdate.resume()
+    notifications.startPolling()
   }
 })
+
+onUnmounted(() => {
+  notifications.stopPolling()
+})
+
+function onBellToggle(show: boolean) {
+  if (show && notifications.unread > 0) {
+    void notifications.markRead()
+  }
+}
+
+function formatTime(iso: string): string {
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return ''
+  return d.toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })
+}
 
 function toggleTheme() {
   theme.toggle()
@@ -199,6 +260,82 @@ h1 {
 
 .content {
   padding: 24px;
+}
+
+.notif-pop {
+  display: flex;
+  flex-direction: column;
+  max-height: 420px;
+}
+
+.notif-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 2px 8px;
+  font-weight: 650;
+  font-size: 14px;
+}
+
+.notif-readall {
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--color-accent);
+  font-size: 12px;
+  padding: 0;
+}
+
+.notif-empty {
+  padding: 16px 2px;
+  color: var(--color-dim);
+  font-size: 13px;
+  text-align: center;
+}
+
+.notif-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  display: grid;
+  gap: 6px;
+}
+
+.notif-item {
+  display: grid;
+  gap: 2px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--color-surface-2);
+  border-left: 3px solid var(--color-border);
+  font-size: 13px;
+}
+
+.notif-item.unread {
+  background: var(--color-surface-3, var(--color-surface-2));
+}
+
+.notif-item.lvl-danger {
+  border-left-color: #e5484d;
+}
+
+.notif-item.lvl-warning {
+  border-left-color: #f5a623;
+}
+
+.notif-item.lvl-info {
+  border-left-color: var(--color-accent);
+}
+
+.notif-msg {
+  color: var(--color-muted);
+  font-size: 12px;
+}
+
+.notif-time {
+  color: var(--color-dim);
+  font-size: 11px;
 }
 
 @media (max-width: 840px) {
