@@ -433,6 +433,7 @@ async def protocol_install(
                 server_id,
                 port=payload.port,
                 site_name=payload.site_name,
+                transport=payload.transport,
             )
             record_install(server_id, "xray")
             return ProtocolInstallResult(
@@ -443,6 +444,7 @@ async def protocol_install(
                 client_uuid=result.client_uuid,
                 public_key=result.public_key,
                 short_id=result.short_id,
+                transport=result.transport,
             )
         if protocol_id in ("awg2", "awg_legacy"):
             result = await asyncio.to_thread(

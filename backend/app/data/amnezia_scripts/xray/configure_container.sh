@@ -37,14 +37,13 @@ cat > /opt/amnezia/xray/server.json <<EOF
                     {
                         "id": "$XRAY_CLIENT_ID",
                         "email": "$XRAY_CLIENT_ID",
-                        "level": 0,
-                        "flow": "xtls-rprx-vision"
+                        "level": 0$XRAY_FLOW_FIELD
                     }
                 ],
                 "decryption": "none"
             },
             "streamSettings": {
-                "network": "tcp",
+                "network": "$XRAY_NETWORK",$XRAY_TRANSPORT_BLOCK
                 "security": "reality",
                 "realitySettings": {
                     "dest": "$XRAY_SITE_NAME:443",

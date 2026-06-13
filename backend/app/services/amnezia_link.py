@@ -111,8 +111,12 @@ def build_vless_uri(
     short_id: str,
     name: str,
     fingerprint: str = "chrome",
+    network: str = "tcp",
+    service_name: Optional[str] = None,
+    path: Optional[str] = None,
 ) -> str:
     """VLESS-Reality URI (Amnezia exportController::nativeConfigString / vless::Serialize)."""
+    net = (network or "tcp").lower()
     params: dict[str, str] = {
         "security": "reality",
         "sni": site,
@@ -120,8 +124,17 @@ def build_vless_uri(
         "pbk": public_key,
         "sid": short_id,
     }
-    if flow:
+    # flow (vision) валиден только для tcp/raw.
+    if flow and net in ("tcp", "raw"):
         params["flow"] = flow
+    if net == "grpc":
+        params["type"] = "grpc"
+        if service_name:
+            params["serviceName"] = service_name
+    elif net == "xhttp":
+        params["type"] = "xhttp"
+        if path:
+            params["path"] = path
     query = urlencode(params)
     fragment = quote(name, safe="")
     return f"vless://{client_uuid}@{host}:{port}?{query}#{fragment}"
@@ -138,16 +151,37 @@ def build_xray_native_config(
     short_id: str,
     fingerprint: str = "chrome",
     split_ru: bool = False,
+    network: str = "tcp",
+    service_name: Optional[str] = None,
+    path: Optional[str] = None,
 ) -> str:
     """Полный Xray JSON для AmneziaVPN (xrayConfigurator::buildClientProtocolConfig).
 
     При ``split_ru=True`` добавляется client-side routing: трафик в РФ и приватные
     сети идёт напрямую (freedom), остальное — через прокси (каскад). geoip/geosite
     берутся из бандла AmneziaVPN.
+
+    ``network`` — транспорт (tcp/grpc/xhttp). flow (vision) применяется только к tcp.
     """
+    net = (network or "tcp").lower()
     user: dict = {"id": client_uuid, "encryption": "none"}
-    if flow:
+    if flow and net in ("tcp", "raw"):
         user["flow"] = flow
+    stream_settings: dict = {
+        "network": net,
+        "security": "reality",
+        "realitySettings": {
+            "fingerprint": fingerprint,
+            "serverName": site,
+            "publicKey": public_key,
+            "shortId": short_id,
+            "spiderX": "",
+        },
+    }
+    if net == "grpc":
+        stream_settings["grpcSettings"] = {"serviceName": service_name or "", "multiMode": False}
+    elif net == "xhttp":
+        stream_settings["xhttpSettings"] = {"path": path or "/"}
     proxy_outbound = {
         "protocol": "vless",
         "settings": {
@@ -159,17 +193,7 @@ def build_xray_native_config(
                 }
             ]
         },
-        "streamSettings": {
-            "network": "tcp",
-            "security": "reality",
-            "realitySettings": {
-                "fingerprint": fingerprint,
-                "serverName": site,
-                "publicKey": public_key,
-                "shortId": short_id,
-                "spiderX": "",
-            },
-        },
+        "streamSettings": stream_settings,
     }
     payload: dict = {
         "log": {"loglevel": "error"},

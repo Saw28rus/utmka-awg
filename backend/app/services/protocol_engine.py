@@ -145,10 +145,15 @@ class XrayEngine(ProtocolEngine):
             update=True,
         )
 
-    def install(self, server_id: str, *, port: Optional[int] = None, site_name: Optional[str] = None, **opts):
-        from app.services.xray_install import DEFAULT_PORT, install_xray
+    def install(self, server_id: str, *, port: Optional[int] = None, site_name: Optional[str] = None, transport: Optional[str] = None, **opts):
+        from app.services.xray_install import DEFAULT_PORT, DEFAULT_TRANSPORT, install_xray
 
-        return install_xray(server_id, port=port or DEFAULT_PORT, site_name=site_name)
+        return install_xray(
+            server_id,
+            port=port or DEFAULT_PORT,
+            site_name=site_name,
+            transport=transport or DEFAULT_TRANSPORT,
+        )
 
     def create_client(self, spec: ClientSpec) -> ClientDetail:
         from app.services.xray_client import create_xray_client

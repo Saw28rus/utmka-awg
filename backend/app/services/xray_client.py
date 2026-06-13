@@ -78,7 +78,7 @@ def create_xray_client(
         reality = stream.get("realitySettings") or {}
         site = (reality.get("serverNames") or [None])[0] or reality.get("serverName") or "www.googletagmanager.com"
         port = int(inbound.get("port") or installed.get("port") or 443)
-        flow = _client_flow(inbound)
+        network, flow, service_name, path = transport_from_inbound(inbound)
 
         public_key = read_container_file(ssh, CONTAINER_NAME, PUBLIC_KEY_PATH)
         short_id = read_container_file(ssh, CONTAINER_NAME, SHORT_ID_PATH)
@@ -100,6 +100,9 @@ def create_xray_client(
             public_key=public_key,
             short_id=short_id,
             split_ru=split_ru,
+            network=network,
+            service_name=service_name,
+            path=path,
         )
         vless_uri = build_vless_uri(
             host=client_host,
@@ -110,6 +113,9 @@ def create_xray_client(
             public_key=public_key,
             short_id=short_id,
             name=name,
+            network=network,
+            service_name=service_name,
+            path=path,
         )
 
         want_config = format in {"both", "config", "json", "awg"}
@@ -240,6 +246,16 @@ def _client_flow(inbound: dict) -> str:
     if clients and isinstance(clients[0], dict):
         return clients[0].get("flow") or DEFAULT_FLOW
     return DEFAULT_FLOW
+
+
+def transport_from_inbound(inbound: dict) -> tuple[str, str, Optional[str], Optional[str]]:
+    """(network, flow, service_name, path) из inbound. flow только для tcp/raw."""
+    stream = inbound.get("streamSettings") or {}
+    network = (stream.get("network") or "tcp").lower()
+    service_name = (stream.get("grpcSettings") or {}).get("serviceName")
+    path = (stream.get("xhttpSettings") or {}).get("path")
+    flow = _client_flow(inbound) if network in ("tcp", "raw") else ""
+    return network, flow, service_name, path
 
 
 def _append_client_to_server(ssh, server_config: dict, client_uuid: str, flow: str) -> None:

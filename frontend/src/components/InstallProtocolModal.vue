@@ -24,6 +24,12 @@
           <small>Reality будет имитировать трафик к этому сайту. Как в Amnezia — googletagmanager.com.</small>
         </label>
 
+        <label v-if="protocol?.id === 'xray'" class="field">
+          <span>Транспорт</span>
+          <n-select v-model:value="transport" :options="transportOptions" />
+          <small>{{ transportHint }}</small>
+        </label>
+
         <label v-if="protocol?.id === 'telemt'" class="field">
           <span>Домен для маскировки TLS</span>
           <n-input v-model:value="tlsDomain" placeholder="www.cloudflare.com" />
@@ -46,6 +52,10 @@
           <div v-if="result.site_name">
             <dt>SNI</dt>
             <dd class="mono">{{ result.site_name }}</dd>
+          </div>
+          <div v-if="result.transport">
+            <dt>Транспорт</dt>
+            <dd class="mono">{{ result.transport }}</dd>
           </div>
           <div v-if="result.client_uuid">
             <dt>UUID клиента</dt>
@@ -88,7 +98,7 @@
 
 <script setup lang="ts">
 import { X } from '@lucide/vue'
-import { NButton, NInput, NInputNumber, NModal, useMessage } from 'naive-ui'
+import { NButton, NInput, NInputNumber, NModal, NSelect, useMessage } from 'naive-ui'
 import { computed, ref, watch } from 'vue'
 
 import { api } from '@/api/client'
@@ -110,6 +120,7 @@ type InstallResult = {
   short_id?: string | null
   secret?: string | null
   tg_link?: string | null
+  transport?: string | null
 }
 
 const props = defineProps<{
@@ -129,7 +140,20 @@ const installing = ref(false)
 const port = ref(443)
 const siteName = ref('www.googletagmanager.com')
 const tlsDomain = ref('www.cloudflare.com')
+const transport = ref('tcp')
 const result = ref<InstallResult | null>(null)
+
+const transportOptions = [
+  { label: 'TCP + Vision (рекомендуется)', value: 'tcp' },
+  { label: 'gRPC', value: 'grpc' },
+  { label: 'XHTTP (современный)', value: 'xhttp' },
+]
+
+const transportHint = computed(() => {
+  if (transport.value === 'grpc') return 'gRPC поверх Reality: мультиплексирование, устойчивее за CDN/прокси. Без flow.'
+  if (transport.value === 'xhttp') return 'XHTTP поверх Reality: дробит трафик по HTTP-запросам, новейший транспорт, лучше против анализа трафика.'
+  return 'TCP + XTLS-Vision: классика, максимальная производительность. Совместимо со всеми клиентами.'
+})
 
 const DEFAULT_PORTS: Record<string, number> = {
   xray: 443,
@@ -174,6 +198,7 @@ watch(
       port.value = defaultPort.value
       siteName.value = 'www.googletagmanager.com'
       tlsDomain.value = 'www.cloudflare.com'
+      transport.value = 'tcp'
     }
   }
 )
@@ -192,7 +217,8 @@ async function install() {
       `/servers/${props.serverId}/protocols/${props.protocol.id}/install`,
       {
         port: port.value || defaultPort.value,
-        site_name: site
+        site_name: site,
+        transport: props.protocol.id === 'xray' ? transport.value : undefined
       },
       { timeout: 600_000 }
     )

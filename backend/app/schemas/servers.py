@@ -161,6 +161,7 @@ class ProtocolActionRequest(BaseModel):
 class ProtocolInstallRequest(BaseModel):
     port: int = Field(default=443, ge=1, le=65535)
     site_name: Optional[str] = Field(default=None, max_length=255)
+    transport: Optional[str] = Field(default=None, max_length=16)
 
 
 class ProtocolInstallResult(BaseModel):
@@ -174,6 +175,7 @@ class ProtocolInstallResult(BaseModel):
     short_id: Optional[str] = None
     secret: Optional[str] = None
     tg_link: Optional[str] = None
+    transport: Optional[str] = None
 
 
 class PanelSslStatus(BaseModel):

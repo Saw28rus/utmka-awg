@@ -27,6 +27,8 @@ CONTAINER_NAME = "amnezia-xray"
 DOCKER_FOLDER = "/opt/amnezia/amnezia-xray"
 DEFAULT_SITE = "www.googletagmanager.com"
 DEFAULT_PORT = 443
+DEFAULT_TRANSPORT = "tcp"
+SUPPORTED_TRANSPORTS = ("tcp", "grpc", "xhttp")
 
 
 @dataclass
@@ -38,16 +40,28 @@ class XrayInstallResult:
     client_uuid: Optional[str] = None
     public_key: Optional[str] = None
     short_id: Optional[str] = None
+    transport: str = DEFAULT_TRANSPORT
 
 
 class XrayInstallError(Exception):
     pass
 
 
-def install_xray(server_id: str, *, port: int = DEFAULT_PORT, site_name: Optional[str] = None) -> XrayInstallResult:
+def install_xray(
+    server_id: str,
+    *,
+    port: int = DEFAULT_PORT,
+    site_name: Optional[str] = None,
+    transport: str = DEFAULT_TRANSPORT,
+) -> XrayInstallResult:
     site = (site_name or DEFAULT_SITE).strip()
     if not site:
         raise XrayInstallError("Укажи домен маскировки Reality (SNI).")
+    transport = (transport or DEFAULT_TRANSPORT).lower()
+    if transport not in SUPPORTED_TRANSPORTS:
+        raise XrayInstallError(
+            f"Неподдерживаемый транспорт: {transport}. Доступно: {', '.join(SUPPORTED_TRANSPORTS)}."
+        )
 
     record, target, ssh = connect_target(server_id)
     try:
@@ -60,7 +74,7 @@ def install_xray(server_id: str, *, port: int = DEFAULT_PORT, site_name: Optiona
         if port_busy(ssh, port, proto="tcp"):
             raise XrayInstallError(f"TCP-порт {port} уже занят на сервере.")
 
-        vars_map = _build_vars(target.host, port, site)
+        vars_map = _build_vars(target.host, port, site, transport)
         _prepare_host(ssh, vars_map)
         _upload_dockerfile(ssh, vars_map)
         _build_image(ssh, vars_map)
@@ -70,7 +84,7 @@ def install_xray(server_id: str, *, port: int = DEFAULT_PORT, site_name: Optiona
         _verify_running(ssh)
 
         creds = _read_credentials(ssh)
-        _register_container(server_id, record, port)
+        _register_container(server_id, record, port, transport)
 
         return XrayInstallResult(
             message="Xray (VLESS-Reality) установлен. Подключайся через клиент AmneziaVPN.",
@@ -80,6 +94,7 @@ def install_xray(server_id: str, *, port: int = DEFAULT_PORT, site_name: Optiona
             client_uuid=creds.get("uuid"),
             public_key=creds.get("public_key"),
             short_id=creds.get("short_id"),
+            transport=transport,
         )
     except XrayInstallError as exc:
         if "уже установлен" not in str(exc).lower():
@@ -92,10 +107,37 @@ def install_xray(server_id: str, *, port: int = DEFAULT_PORT, site_name: Optiona
         ssh.close()
 
 
-def _build_vars(host: str, port: int, site: str) -> dict[str, str]:
+def _build_vars(host: str, port: int, site: str, transport: str = DEFAULT_TRANSPORT) -> dict[str, str]:
+    import secrets
+
     vars_map = base_vars(host, CONTAINER_NAME, DOCKER_FOLDER)
     vars_map["$XRAY_SERVER_PORT"] = str(port)
     vars_map["$XRAY_SITE_NAME"] = site
+    vars_map["$XRAY_NETWORK"] = transport
+
+    # flow (xtls-rprx-vision) валиден только для tcp/raw.
+    if transport in ("tcp", "raw"):
+        vars_map["$XRAY_FLOW_FIELD"] = ',\n                        "flow": "xtls-rprx-vision"'
+    else:
+        vars_map["$XRAY_FLOW_FIELD"] = ""
+
+    if transport == "grpc":
+        service_name = secrets.token_hex(6)
+        vars_map["$XRAY_TRANSPORT_BLOCK"] = (
+            '\n                "grpcSettings": {\n'
+            f'                    "serviceName": "{service_name}",\n'
+            '                    "multiMode": false\n'
+            '                },'
+        )
+    elif transport == "xhttp":
+        path = "/" + secrets.token_hex(4)
+        vars_map["$XRAY_TRANSPORT_BLOCK"] = (
+            '\n                "xhttpSettings": {\n'
+            f'                    "path": "{path}"\n'
+            '                },'
+        )
+    else:
+        vars_map["$XRAY_TRANSPORT_BLOCK"] = ""
     return vars_map
 
 
@@ -190,12 +232,12 @@ def _read_credentials(ssh) -> dict[str, str]:
     return {"uuid": uuid_val or None, "public_key": public_key or None, "short_id": short_id or None}
 
 
-def _register_container(server_id: str, record: dict, port: int) -> None:
+def _register_container(server_id: str, record: dict, port: int, transport: str = DEFAULT_TRANSPORT) -> None:
     names = list(record.get("container_names") or [])
     if CONTAINER_NAME not in names:
         names.append(CONTAINER_NAME)
     protocols = dict(record.get("installed_protocols") or {})
-    protocols["xray"] = {"port": port, "container": CONTAINER_NAME}
+    protocols["xray"] = {"port": port, "container": CONTAINER_NAME, "transport": transport}
     server_store.update_runtime(server_id, container_names=names, installed_protocols=protocols)
 
 

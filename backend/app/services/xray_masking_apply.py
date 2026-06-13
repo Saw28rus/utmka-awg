@@ -151,8 +151,13 @@ def set_masking_domain(server_id: str, site: str) -> dict:
         _apply_and_health(ssh, config, snapshot)
 
         port = int(inbound.get("port") or 443)
-        flow = _flow(inbound)
-        reissued = _reissue_clients(ssh, server_id, record, site=site, port=port, flow=flow)
+        from app.services.xray_client import transport_from_inbound
+
+        network, flow, service_name, path = transport_from_inbound(inbound)
+        reissued = _reissue_clients(
+            ssh, server_id, record, site=site, port=port, flow=flow,
+            network=network, service_name=service_name, path=path,
+        )
 
         return {
             "status": "ok",
@@ -198,7 +203,10 @@ def _flow(inbound: dict) -> str:
     return DEFAULT_FLOW
 
 
-def _reissue_clients(ssh, server_id: str, record: dict, *, site: str, port: int, flow: str) -> int:
+def _reissue_clients(
+    ssh, server_id: str, record: dict, *, site: str, port: int, flow: str,
+    network: str = "tcp", service_name=None, path=None,
+) -> int:
     host = record["host"]
     pbk = read_container_file(ssh, CONTAINER_NAME, PUBLIC_KEY_PATH)
     sid = read_container_file(ssh, CONTAINER_NAME, SHORT_ID_PATH)
@@ -226,10 +234,12 @@ def _reissue_clients(ssh, server_id: str, record: dict, *, site: str, port: int,
         native = build_xray_native_config(
             host=c_host, port=c_port, client_uuid=uuid, flow=flow, site=site,
             public_key=pbk, short_id=sid, split_ru=split_ru,
+            network=network, service_name=service_name, path=path,
         )
         uri = build_vless_uri(
             host=c_host, port=c_port, client_uuid=uuid, flow=flow, site=site,
             public_key=pbk, short_id=sid, name=tgt["name"],
+            network=network, service_name=service_name, path=path,
         )
         config_text = uri if tgt["has_config"] else None
         vpn_link = (

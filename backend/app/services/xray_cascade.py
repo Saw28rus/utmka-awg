@@ -427,7 +427,11 @@ def create_xray_cascade_client(
 
 def _exit_profile(ssh) -> dict:
     """Reality-профиль exit для переиздания клиентских конфигов каскада."""
-    from app.services.xray_client import DEFAULT_FLOW, PUBLIC_KEY_PATH, SHORT_ID_PATH
+    from app.services.xray_client import (
+        PUBLIC_KEY_PATH,
+        SHORT_ID_PATH,
+        transport_from_inbound,
+    )
 
     raw = read_container_file(ssh, XRAY_CONTAINER, SERVER_CONFIG_PATH)
     if not raw:
@@ -438,8 +442,7 @@ def _exit_profile(ssh) -> dict:
         reality = (inbound.get("streamSettings") or {}).get("realitySettings") or {}
     except (json.JSONDecodeError, IndexError, KeyError) as exc:
         raise XrayCascadeError("server.json на exit повреждён.") from exc
-    clients = (inbound.get("settings") or {}).get("clients") or []
-    flow = clients[0].get("flow") if clients and isinstance(clients[0], dict) else None
+    network, flow, service_name, path = transport_from_inbound(inbound)
     pbk = read_container_file(ssh, XRAY_CONTAINER, PUBLIC_KEY_PATH)
     sid = read_container_file(ssh, XRAY_CONTAINER, SHORT_ID_PATH)
     if not pbk or not sid:
@@ -448,7 +451,10 @@ def _exit_profile(ssh) -> dict:
         "sni": ((reality.get("serverNames") or [""])[0]) or "",
         "public_key": pbk,
         "short_id": sid,
-        "flow": flow or DEFAULT_FLOW,
+        "flow": flow,
+        "network": network,
+        "service_name": service_name,
+        "path": path,
     }
 
 
@@ -494,12 +500,16 @@ def set_xray_cascade_rules(entry_id: str, enabled: bool) -> dict:
                 flow=profile["flow"], site=profile["sni"],
                 public_key=profile["public_key"], short_id=profile["short_id"],
                 split_ru=enabled,
+                network=profile["network"], service_name=profile["service_name"],
+                path=profile["path"],
             )
             uri = build_vless_uri(
                 host=entry_host, port=relay_port, client_uuid=uuid_val,
                 flow=profile["flow"], site=profile["sni"],
                 public_key=profile["public_key"], short_id=profile["short_id"],
                 name=tgt["name"],
+                network=profile["network"], service_name=profile["service_name"],
+                path=profile["path"],
             )
             config_text = uri if tgt["has_config"] else None
             vpn_link = (
