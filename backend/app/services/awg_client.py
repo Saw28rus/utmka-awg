@@ -16,6 +16,7 @@ from app.services.awg_config import (
     parse_client_names,
     parse_interface,
     parse_peers,
+    remove_client_from_table,
 )
 from app.services.awg_detect import _container_names, _locate_config
 from app.services.client_store import client_store
@@ -149,6 +150,58 @@ def create_awg_client(
         ssh.close()
 
 
+def delete_awg_client(server_id: str, public_key: str) -> bool:
+    """Удаляет peer клиента из конфига AWG на сервере и применяет syncconf.
+
+    Идемпотентно: если peer уже отсутствует — успех. Чистит и [Peer]-блок, и
+    запись в clientsTable. Перед изменением делает бэкап конфига.
+    """
+    if not public_key:
+        return True
+
+    record = server_store.get_record(server_id)
+    target = server_store.ssh_target(server_id)
+    if not record or not target:
+        raise ClientCreateError("Сервер не найден.")
+
+    try:
+        ssh = ssh_exec.connect(
+            host=target.host,
+            port=target.port,
+            username=target.username,
+            password=target.password,
+            key=target.key,
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise ClientCreateError(f"SSH не отвечает: {exc}") from exc
+
+    try:
+        # _parse_blocks/_rebuild живут в awg_enforce, который импортирует этот модуль —
+        # импортируем лениво, чтобы избежать кругового импорта.
+        from app.services.awg_enforce import _parse_blocks, _rebuild
+
+        containers = record.get("container_names") or _container_names(ssh)
+        config_path, container, config_text = _locate_config(ssh, containers)
+        if not container or not config_text.strip():
+            raise ClientCreateError("Не найден конфиг AWG в контейнере.")
+
+        iface = posixpath.splitext(posixpath.basename(config_path))[0]
+        head, blocks_by_pub, order = _parse_blocks(config_text)
+
+        if public_key in blocks_by_pub:
+            del blocks_by_pub[public_key]
+            order.remove(public_key)
+            new_config = _rebuild(head, blocks_by_pub, order)
+            _backup_config(ssh, container, config_path)
+            _overwrite_file(ssh, container, config_path, new_config)
+            _sync_config(ssh, container, iface, config_path)
+
+        _remove_from_clients_table(ssh, container, config_path, public_key)
+        return True
+    finally:
+        ssh.close()
+
+
 def _run_in_container(ssh, container: str, inner: str, timeout: int = 20):
     cmd = f"docker exec {shlex.quote(container)} sh -c {shlex.quote(inner)}"
     return ssh_exec.run(ssh, cmd, timeout=timeout)
@@ -216,6 +269,17 @@ def _update_clients_table(ssh, container: str, config_path: str, public_key: str
     existing = _run_in_container(ssh, container, f"cat {shlex.quote(table_path)} 2>/dev/null || true").stdout
     updated = append_client_to_table(existing, public_key, name)
     _overwrite_file(ssh, container, table_path, updated)
+
+
+def _remove_from_clients_table(ssh, container: str, config_path: str, public_key: str) -> None:
+    """Убирает запись клиента из clientsTable. Пишет файл только если он реально изменился."""
+    table_path = _find_clients_table(ssh, container, config_path)
+    existing = _run_in_container(ssh, container, f"cat {shlex.quote(table_path)} 2>/dev/null || true").stdout
+    if not existing.strip():
+        return
+    updated = remove_client_from_table(existing, public_key)
+    if updated.strip() != existing.strip():
+        _overwrite_file(ssh, container, table_path, updated)
 
 
 def _find_clients_table(ssh, container: str, config_path: str) -> str:

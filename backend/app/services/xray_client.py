@@ -128,6 +128,62 @@ def create_xray_client(
         ssh.close()
 
 
+def delete_xray_client(server_id: str, client_uuid: str) -> bool:
+    """Удаляет клиента (UUID) из server.json Xray на сервере и перезапускает контейнер.
+
+    Идемпотентно: если контейнера нет или UUID уже отсутствует — успех.
+    """
+    if not client_uuid:
+        return True
+
+    record = server_store.get_record(server_id)
+    target = server_store.ssh_target(server_id)
+    if not record or not target:
+        raise ClientCreateError("Сервер не найден.")
+
+    try:
+        ssh = ssh_exec.connect(
+            host=target.host,
+            port=target.port,
+            username=target.username,
+            password=target.password,
+            key=target.key,
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise ClientCreateError(f"SSH не отвечает: {exc}") from exc
+
+    try:
+        if not container_exists(ssh, CONTAINER_NAME):
+            return True
+        if not _container_running(ssh):
+            raise ClientCreateError("Контейнер amnezia-xray не запущен.")
+
+        server_config = _read_server_config(ssh)
+        inbound = server_config["inbounds"][0]
+        settings = inbound.get("settings") or {}
+        clients = list(settings.get("clients") or [])
+        new_clients = [
+            c for c in clients if not (isinstance(c, dict) and c.get("id") == client_uuid)
+        ]
+        if len(new_clients) == len(clients):
+            return True
+
+        settings["clients"] = new_clients
+        inbound["settings"] = settings
+        server_config["inbounds"][0] = inbound
+        ensure_monitoring_config(server_config)
+
+        payload = json.dumps(server_config, ensure_ascii=False, indent=4)
+        script = f"cat > {shlex.quote(SERVER_CONFIG_PATH)} <<'EOF'\n{payload}\nEOF"
+        result = run_container_script(ssh, CONTAINER_NAME, script, timeout=30)
+        if result.exit_code != 0:
+            raise ClientCreateError("Не удалось обновить server.json на сервере.")
+        _restart_xray(ssh)
+        return True
+    finally:
+        ssh.close()
+
+
 def _ensure_xray_registered(server_id: str, record: dict, ssh) -> None:
     if server_store.has_xray(record):
         return

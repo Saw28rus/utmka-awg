@@ -212,6 +212,29 @@ def append_client_to_table(raw_text: str, public_key: str, name: str) -> str:
     return json.dumps(data, ensure_ascii=False, indent=4)
 
 
+def remove_client_from_table(raw_text: str, public_key: str) -> str:
+    """Убирает запись клиента из Amnezia clientsTable по clientId (public_key).
+
+    Идемпотентно: если записи нет или таблица не парсится — возвращает исходный
+    текст без изменений (вызывающий код сам решит, писать ли файл).
+    """
+    text = raw_text.strip()
+    if not text:
+        return raw_text
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        return raw_text
+    if not isinstance(data, list):
+        return raw_text
+    filtered = [
+        item
+        for item in data
+        if not (isinstance(item, dict) and item.get("clientId") == public_key)
+    ]
+    return json.dumps(filtered, ensure_ascii=False, indent=4)
+
+
 def build_peer_block(public_key: str, preshared_key: Optional[str], client_ip: str) -> str:
     lines = ["", "[Peer]", f"PublicKey = {public_key}"]
     if preshared_key:

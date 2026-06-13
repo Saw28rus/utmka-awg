@@ -426,17 +426,52 @@ function formatDateTime(value?: string | null) {
   }
 }
 
+async function deleteClient(force: boolean) {
+  const url = force
+    ? `/clients/${client.value!.id}?force=true`
+    : `/clients/${client.value!.id}`
+  await api.delete(url)
+  message.success(
+    force
+      ? 'Клиент удалён из панели. Peer/UUID на сервере остался — уберите вручную.'
+      : 'Клиент удалён, peer/UUID убран с сервера.'
+  )
+  router.push({ name: 'clients' })
+}
+
+function offerForceDelete() {
+  dialog.error({
+    title: 'Сервер недоступен',
+    content:
+      'Не удалось убрать peer/UUID с сервера. Удалить клиента только из панели? ' +
+      'Запись на сервере останется, её придётся убрать вручную.',
+    positiveText: 'Удалить из панели',
+    negativeText: 'Отмена',
+    onPositiveClick: async () => {
+      try {
+        await deleteClient(true)
+      } catch (error: any) {
+        message.error(error?.response?.data?.detail || 'Не удалось удалить клиента.')
+      }
+    }
+  })
+}
+
 function confirmDelete() {
   if (!client.value) return
   dialog.warning({
     title: 'Удалить клиента?',
-    content: 'Запись будет удалена из панели. Peer на сервере при этом не удаляется автоматически.',
+    content: 'Клиент будет удалён из панели, а его peer/UUID — убран с сервера.',
     positiveText: 'Удалить',
     negativeText: 'Отмена',
     onPositiveClick: async () => {
-      await api.delete(`/clients/${client.value!.id}`)
-      message.success('Клиент удалён.')
-      router.push({ name: 'clients' })
+      try {
+        await deleteClient(false)
+      } catch (error: any) {
+        const detail = error?.response?.data?.detail || 'Не удалось удалить клиента.'
+        message.error(detail)
+        offerForceDelete()
+      }
     }
   })
 }
