@@ -31,6 +31,9 @@
     </div>
 
     <div v-if="status?.message" class="xc-message">{{ status.message }}</div>
+    <div v-if="status?.last_healed_at" class="xc-sub xc-heal">
+      Авто-восстановление relay включено (последнее: {{ formatTime(status.last_healed_at) }}).
+    </div>
 
     <div class="xc-form">
       <label class="xc-field">
@@ -295,6 +298,14 @@ async function createClient() {
   }
 }
 
+function formatTime(iso: string): string {
+  try {
+    return new Date(iso).toLocaleString()
+  } catch {
+    return iso
+  }
+}
+
 async function toggleSplit(value: boolean) {
   busy.value = 'rules'
   try {
@@ -382,6 +393,9 @@ onMounted(async () => {
 .xc-message {
   font-size: 13px;
   opacity: 0.85;
+}
+.xc-heal {
+  color: #4ade80;
 }
 .xc-form {
   display: flex;

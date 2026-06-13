@@ -14,6 +14,24 @@ logger = logging.getLogger("utmka.scheduler")
 
 INVOICE_POLL_SECONDS = 120
 CHAT_RETENTION_SECONDS = 24 * 3600
+XRAY_CASCADE_RECONCILE_SECONDS = 90
+
+
+async def _reconcile_xray_cascades() -> None:
+    try:
+        import asyncio
+
+        from app.services.xray_cascade import reconcile_all_xray_cascades
+
+        result = await asyncio.to_thread(reconcile_all_xray_cascades)
+        if result.get("healed"):
+            logger.info(
+                "xray-cascade reconcile: checked=%s healed=%s",
+                result.get("checked"),
+                result.get("healed"),
+            )
+    except Exception:  # noqa: BLE001
+        logger.exception("Ошибка reconcile Xray-каскадов")
 
 
 async def _chat_retention() -> None:
@@ -71,6 +89,15 @@ def start_scheduler() -> Optional[AsyncIOScheduler]:
         "interval",
         seconds=CHAT_RETENTION_SECONDS,
         id="chat_retention",
+        max_instances=1,
+        coalesce=True,
+        replace_existing=True,
+    )
+    scheduler.add_job(
+        _reconcile_xray_cascades,
+        "interval",
+        seconds=XRAY_CASCADE_RECONCILE_SECONDS,
+        id="xray_cascade_reconcile",
         max_instances=1,
         coalesce=True,
         replace_existing=True,

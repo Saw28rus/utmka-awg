@@ -247,7 +247,7 @@ def xray_cascade_apply(entry_id: str) -> dict:
         entry_ssh.close()
 
     xray_cascade_store.upsert_link(
-        entry_id, state="active",
+        entry_id, state="active", desired="up",
         last_applied_at=datetime.now(timezone.utc).isoformat(),
         message="Xray-каскад активен: клиент → entry → exit.",
     )
@@ -266,7 +266,7 @@ def xray_cascade_rollback(entry_id: str) -> dict:
         ssh_exec.run(entry_ssh, _relay_down_script(relay_port), timeout=30)
     finally:
         entry_ssh.close()
-    xray_cascade_store.upsert_link(entry_id, state="down",
+    xray_cascade_store.upsert_link(entry_id, state="down", desired="down",
                                    message="Relay снят. Каскад выключен.")
     return {"ok": True, "state": "down", "entry_server_id": entry_id,
             "message": "Xray-каскад выключен."}
@@ -277,25 +277,92 @@ def xray_cascade_rollback(entry_id: str) -> dict:
 # ---------------------------------------------------------------------------
 
 
+def _desired_up(link: dict) -> bool:
+    desired = link.get("desired")
+    if desired:
+        return desired == "up"
+    # back-compat: звенья без поля desired — намерение из state.
+    return (link.get("state") or "") == "active"
+
+
+def reconcile_xray_cascade(entry_id: str, *, heal: bool = True) -> dict:
+    """Сверяет relay с намерением и (при heal) поднимает упавший relay.
+
+    Self-healing: если каскад должен быть активен (desired=up), а socat не жив
+    (перезагрузка entry и т.п.) — автоматически перезапускаем relay.
+    """
+    link = xray_cascade_store.get_link(entry_id)
+    if not link or not link.get("relay_port") or not link.get("exit_host"):
+        return {"entry": entry_id, "skipped": True}
+    if not _desired_up(link):
+        return {"entry": entry_id, "skipped": True}
+
+    relay_port = int(link.get("relay_port") or DEFAULT_RELAY_PORT)
+    exit_host = link.get("exit_host")
+    exit_port = int(link.get("exit_port") or DEFAULT_RELAY_PORT)
+
+    try:
+        ssh = _connect(entry_id)
+    except XrayCascadeError:
+        return {"entry": entry_id, "ok": False, "error": "ssh-unreachable"}
+    try:
+        if _relay_alive(ssh, relay_port):
+            if (link.get("state") or "") != "active":
+                xray_cascade_store.upsert_link(entry_id, state="active",
+                                               message="Relay активен.")
+            return {"entry": entry_id, "ok": True, "healed": False, "state": "active"}
+        if not heal:
+            xray_cascade_store.upsert_link(entry_id, state="down",
+                                           message="Relay не обнаружен на entry.")
+            return {"entry": entry_id, "ok": False, "healed": False, "state": "down"}
+        res = ssh_exec.run(ssh, _relay_up_script(relay_port, exit_host, exit_port), timeout=120)
+        healed = res.exit_code == 0 and "OK_RELAY" in res.stdout and _relay_alive(ssh, relay_port)
+        if healed:
+            xray_cascade_store.upsert_link(
+                entry_id, state="active",
+                last_healed_at=datetime.now(timezone.utc).isoformat(),
+                message="Relay восстановлен автоматически (self-heal).",
+            )
+            return {"entry": entry_id, "ok": True, "healed": True, "state": "active"}
+        xray_cascade_store.upsert_link(entry_id, state="down",
+                                       message="Relay упал, авто-восстановление не удалось.")
+        return {"entry": entry_id, "ok": False, "healed": False, "state": "down"}
+    finally:
+        ssh.close()
+
+
+def reconcile_all_xray_cascades() -> dict:
+    """Фоновый проход по всем каскадам с намерением up (планировщик)."""
+    healed = 0
+    checked = 0
+    for link in xray_cascade_store.list_links():
+        if not _desired_up(link):
+            continue
+        entry_id = link.get("entry_server_id")
+        if not entry_id:
+            continue
+        checked += 1
+        try:
+            result = reconcile_xray_cascade(entry_id, heal=True)
+            if result.get("healed"):
+                healed += 1
+        except Exception:  # noqa: BLE001
+            continue
+    return {"checked": checked, "healed": healed}
+
+
 def xray_cascade_status(entry_id: str) -> dict:
     link = xray_cascade_store.get_link(entry_id) or {}
     exit_id = link.get("exit_server_id")
     exit_rec = server_store.get_record(exit_id) if exit_id else None
     state = link.get("state") or "none"
     live_active = False
-    if state == "active" and link.get("relay_port"):
-        try:
-            ssh = _connect(entry_id)
-            try:
-                live_active = _relay_alive(ssh, int(link["relay_port"]))
-            finally:
-                ssh.close()
-        except XrayCascadeError:
-            live_active = False
-        if not live_active:
-            state = "down"
-            xray_cascade_store.upsert_link(entry_id, state="down",
-                                           message="Relay не обнаружен на entry (возможно перезагрузка).")
+    if _desired_up(link) and link.get("relay_port") and link.get("exit_host"):
+        # Открытие страницы — хороший момент для self-heal.
+        result = reconcile_xray_cascade(entry_id, heal=True)
+        live_active = bool(result.get("ok") and result.get("state") == "active")
+        link = xray_cascade_store.get_link(entry_id) or link
+        state = link.get("state") or state
     return {
         "entry_server_id": entry_id,
         "exit_server_id": exit_id,
@@ -308,6 +375,7 @@ def xray_cascade_status(entry_id: str) -> dict:
         "live_active": live_active,
         "last_preflight_ok": link.get("last_preflight_ok", False),
         "last_applied_at": link.get("last_applied_at"),
+        "last_healed_at": link.get("last_healed_at"),
         "message": link.get("message"),
     }
 
