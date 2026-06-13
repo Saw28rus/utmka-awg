@@ -21,6 +21,7 @@ from app.services.cascade_store import cascade_store
 from app.services.client_store import client_store
 from app.services.server_store import server_store
 from app.services.transit_allocator import resolve_profile
+from app.services.xray_cascade_store import xray_cascade_store
 
 
 def _is_awg(protocol: str) -> bool:
@@ -95,6 +96,35 @@ def list_channels() -> list[dict]:
             }
         )
 
+    for link in xray_cascade_store.list_links():
+        entry_id = link.get("entry_server_id")
+        exit_id = link.get("exit_server_id")
+        state = link.get("state") or "none"
+        if state == "none" or not entry_id or not exit_id:
+            continue
+        entry = _server_label(entry_id)
+        if entry["missing"]:
+            continue
+        exit_label = _server_label(exit_id)
+        cid = f"xcascade:{entry_id}"
+        channels.append(
+            {
+                "id": cid,
+                "kind": "cascade",
+                "protocol": "xray",
+                "entry_server_id": entry_id,
+                "entry_name": entry["name"],
+                "entry_host": entry["host"],
+                "exit_server_id": exit_id,
+                "exit_name": exit_label["name"],
+                "exit_host": exit_label["host"],
+                "state": state,
+                "clients": counts.get(cid, 0),
+                "relay_port": link.get("relay_port"),
+                "sni": link.get("sni"),
+            }
+        )
+
     for record in server_store.list_records():
         sid = record["id"]
         for protocol in server_store.client_protocols(record):
@@ -126,9 +156,9 @@ def get_channel(channel_id: str) -> Optional[dict]:
 
 
 def active_cascades_for_server(server_id: str) -> list[dict]:
-    """Активные каскады, где узел — entry или exit (для fail-closed удаления)."""
+    """Активные каскады (AWG + Xray), где узел — entry или exit (fail-closed)."""
     out: list[dict] = []
-    for link in cascade_store.list_links():
+    for link in list(cascade_store.list_links()) + list(xray_cascade_store.list_links()):
         if (link.get("state") or "") != "active":
             continue
         if not link.get("exit_server_id"):

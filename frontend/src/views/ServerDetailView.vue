@@ -732,6 +732,8 @@
             </template>
           </div>
         </details>
+
+        <XrayCascadePanel :server-id="serverId" :server-name="server?.name" />
       </div>
 
       <!-- Правило: разделение трафика РФ / зарубеж -->
@@ -1131,6 +1133,7 @@ import { useRoute, useRouter } from 'vue-router'
 
 import { api } from '@/api/client'
 import AwgMaskingPanel from '@/components/AwgMaskingPanel.vue'
+import XrayCascadePanel from '@/components/XrayCascadePanel.vue'
 import InstallProtocolModal from '@/components/InstallProtocolModal.vue'
 import MetricBar from '@/components/MetricBar.vue'
 import StatusBadge from '@/components/StatusBadge.vue'
