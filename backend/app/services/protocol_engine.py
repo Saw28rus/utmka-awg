@@ -69,6 +69,9 @@ class ProtocolEngine:
     def enforce(self, server_id: str) -> int:
         raise EngineNotSupported(f"{self.id}: enforce не поддерживается движком.")
 
+    def update(self, server_id: str):
+        raise EngineNotSupported(f"{self.id}: обновление не поддерживается движком.")
+
 
 class AwgEngine(ProtocolEngine):
     """AmneziaWG (awg2/awg_legacy). Делегирует в awg_* без смены поведения."""
@@ -85,10 +88,10 @@ class AwgEngine(ProtocolEngine):
             create_client=True,
             delete_client=True,
             enforce=True,
-            masking=(self.id == "awg2"),
-            cascade=True,
-            update=False,
-        )
+                masking=(self.id == "awg2"),
+                cascade=True,
+                update=True,
+            )
 
     def install(self, server_id: str, *, port: Optional[int] = None, **opts):
         from app.services.awg_install import DEFAULT_PORT, install_awg
@@ -118,6 +121,11 @@ class AwgEngine(ProtocolEngine):
         from app.services.awg_enforce import enforce_server_by_id
 
         return enforce_server_by_id(server_id)
+
+    def update(self, server_id: str):
+        from app.services.protocol_update import update_protocol
+
+        return update_protocol(server_id, self.id)
 
 
 class XrayEngine(ProtocolEngine):

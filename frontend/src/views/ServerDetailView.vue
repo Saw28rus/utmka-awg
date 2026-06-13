@@ -232,6 +232,17 @@
                   Стоп
                 </n-button>
                 <n-button
+                  v-if="canUpdate(proto)"
+                  size="tiny"
+                  type="primary"
+                  :loading="isProtoBusy(proto.id, 'update')"
+                  title="Обновить протокол до pinned-версии (снимок → пересборка → пересоздание → health → авто-откат при сбое)"
+                  @click="confirmUpdateProtocol(proto)"
+                >
+                  <template #icon><RefreshCw :size="13" /></template>
+                  Обновить
+                </n-button>
+                <n-button
                   v-if="canSnapshot(proto)"
                   size="tiny"
                   tertiary
@@ -2289,9 +2300,54 @@ async function protoAction(proto: ProtocolInfo, action: 'start' | 'stop' | 'rest
 }
 
 const SNAPSHOT_PROTOCOLS = ['awg2', 'awg_legacy', 'xray']
+const UPDATE_PROTOCOLS = ['awg2', 'awg_legacy']
 
 function canSnapshot(proto: ProtocolInfo) {
   return proto.installed && SNAPSHOT_PROTOCOLS.includes(proto.id)
+}
+
+function canUpdate(proto: ProtocolInfo) {
+  return (
+    proto.installed &&
+    UPDATE_PROTOCOLS.includes(proto.id) &&
+    protocolVersions.value[proto.id]?.up_to_date === false
+  )
+}
+
+function confirmUpdateProtocol(proto: ProtocolInfo) {
+  const v = protocolVersions.value[proto.id]
+  dialog.warning({
+    title: `Обновить ${proto.name} до ${v?.pinned_version || 'новой версии'}?`,
+    content:
+      'Будет снят снимок конфига и ключей, пересобран образ pinned-версии и пересоздан контейнер. ' +
+      'Возможен короткий разрыв соединения у клиентов. При любом сбое — авто-откат на текущую версию. ' +
+      'Ключи и параметры маскировки сохраняются, переподключать клиентов не нужно.',
+    positiveText: 'Обновить',
+    negativeText: 'Отмена',
+    onPositiveClick: () => updateProtocol(proto)
+  })
+}
+
+async function updateProtocol(proto: ProtocolInfo) {
+  protoBusy[proto.id] = 'update'
+  try {
+    const { data } = await api.post(
+      `/servers/${serverId}/protocols/${proto.id}/update`,
+      {},
+      { timeout: 900_000 }
+    )
+    message.success(data.message || 'Протокол обновлён.')
+    await Promise.all([loadOverview(), loadProtocolVersions()])
+  } catch (error: any) {
+    const detail = error?.response?.data?.detail
+    if (detail && typeof detail === 'object') {
+      message.error(detail.message || 'Не удалось обновить протокол.')
+    } else {
+      message.error(detail || 'Не удалось обновить протокол.')
+    }
+  } finally {
+    delete protoBusy[proto.id]
+  }
 }
 
 async function snapshotProtocol(proto: ProtocolInfo) {

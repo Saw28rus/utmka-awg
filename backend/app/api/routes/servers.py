@@ -317,6 +317,38 @@ async def protocol_snapshot(
     return {"status": "ok", "snapshot": snapshot}
 
 
+@router.post("/{server_id}/protocols/{protocol_id}/update")
+async def protocol_update(
+    server_id: str,
+    protocol_id: str,
+    _: CurrentUser = Depends(require_admin),
+) -> dict:
+    """Управляемое обновление протокола до pinned-версии (snapshot→build→recreate→health→rollback)."""
+    if not server_store.get_record(server_id):
+        raise HTTPException(status_code=404, detail="Сервер не найден.")
+    from app.services.protocol_engine import EngineNotSupported
+    from app.services.protocol_update import UpdateError
+
+    try:
+        result = await asyncio.to_thread(get_engine(protocol_id).update, server_id)
+    except EngineNotSupported as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except UpdateError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={"message": str(exc), "rolled_back": exc.rolled_back},
+        )
+    return {
+        "status": "ok",
+        "message": result.message,
+        "container": result.container,
+        "protocol": result.protocol,
+        "from_version": result.from_version,
+        "to_version": result.to_version,
+        "rolled_back": result.rolled_back,
+    }
+
+
 @router.post("/{server_id}/protocols/{protocol_id}/install", response_model=ProtocolInstallResult)
 async def protocol_install(
     server_id: str,
