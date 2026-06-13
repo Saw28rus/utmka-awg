@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import shlex
+import time
 import uuid
 from typing import Optional
 
@@ -129,7 +130,7 @@ def create_xray_client(
 
 
 def delete_xray_client(server_id: str, client_uuid: str) -> bool:
-    """Удаляет клиента (UUID) из server.json Xray на сервере и перезапускает контейнер.
+    """Удаляет клиента (UUID) из server.json Xray и горячо перечитывает конфиг.
 
     Идемпотентно: если контейнера нет или UUID уже отсутствует — успех.
     """
@@ -178,7 +179,7 @@ def delete_xray_client(server_id: str, client_uuid: str) -> bool:
         result = run_container_script(ssh, CONTAINER_NAME, script, timeout=30)
         if result.exit_code != 0:
             raise ClientCreateError("Не удалось обновить server.json на сервере.")
-        _restart_xray(ssh)
+        _reload_xray(ssh)
         return True
     finally:
         ssh.close()
@@ -241,11 +242,39 @@ def _append_client_to_server(ssh, server_config: dict, client_uuid: str, flow: s
     result = run_container_script(ssh, CONTAINER_NAME, script, timeout=30)
     if result.exit_code != 0:
         raise ClientCreateError("Не удалось обновить server.json на сервере.")
+    _reload_xray(ssh)
+
+
+def _xray_running(ssh) -> bool:
+    proc = ssh_exec.run(
+        ssh,
+        f"docker exec {shlex.quote(CONTAINER_NAME)} sh -c "
+        f"'pgrep -x xray >/dev/null && echo ok || echo fail' 2>/dev/null || true",
+        timeout=20,
+    ).stdout.strip()
+    return proc.endswith("ok")
+
+
+def _reload_xray(ssh) -> None:
+    """Перечитать server.json без рестарта контейнера (XR1 — минимум разрывов).
+
+    Перезапускаем ТОЛЬКО процесс xray внутри живого контейнера: сеть и iptables
+    не трогаются, разрыв сокращается с нескольких секунд (full docker restart) до
+    долей секунды. Если процесс не поднялся — fail-safe полный docker restart.
+    """
+    inner = f"killall -KILL xray 2>/dev/null; sleep 1; exec xray -config {shlex.quote(SERVER_CONFIG_PATH)}"
+    reload_cmd = f"docker exec -d {shlex.quote(CONTAINER_NAME)} sh -c {shlex.quote(inner)}"
+    ssh_exec.run(ssh, reload_cmd, timeout=30)
+
+    time.sleep(2)
+    if _xray_running(ssh):
+        return
+    # Процесс не поднялся (например, гонка) — подстраховываемся полным рестартом.
     _restart_xray(ssh)
 
 
 def _restart_xray(ssh) -> None:
-    """Как в Amnezia xrayConfigurator::uploadServerConfigJson — docker restart контейнера."""
+    """Полный docker restart контейнера (fail-safe и совместимость с Amnezia)."""
     cmd = f"docker restart {shlex.quote(CONTAINER_NAME)}"
     result = ssh_exec.run(ssh, cmd, timeout=90)
     if result.exit_code != 0:

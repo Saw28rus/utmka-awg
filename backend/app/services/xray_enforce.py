@@ -8,7 +8,7 @@ import shlex
 from app.services.amnezia_ssh import read_container_file, run_container_script
 from app.services.client_store import client_store
 from app.services.server_store import server_store
-from app.services.xray_client import _restart_xray
+from app.services.xray_client import _reload_xray
 from app.services.xray_server_config import SERVER_CONFIG_PATH, ensure_monitoring_config
 from app.services.xray_install import CONTAINER_NAME
 from app.ssh import exec as ssh_exec
@@ -83,7 +83,7 @@ def enforce_xray_server(ssh, server_id: str) -> int:
         script = f"cat > {shlex.quote(SERVER_CONFIG_PATH)} <<'EOF'\n{payload}\nEOF"
         result = run_container_script(ssh, CONTAINER_NAME, script, timeout=30)
         if result.exit_code == 0:
-            _restart_xray(ssh)
+            _reload_xray(ssh)
 
     for client_id, blocked, peer_block in pending:
         client_store.set_blocked(client_id, blocked, peer_block)
