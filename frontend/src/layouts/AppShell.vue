@@ -41,7 +41,7 @@
 </template>
 
 <script setup lang="ts">
-import { KeyRound, LayoutDashboard, LogOut, MessagesSquare, Moon, Receipt, Server, Settings, ShieldCheck, Sun, Users } from '@lucide/vue'
+import { KeyRound, LayoutDashboard, LogOut, MessagesSquare, Moon, Network, Receipt, Server, Settings, ShieldCheck, Sun, Users } from '@lucide/vue'
 import { NButton } from 'naive-ui'
 import { computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
@@ -75,6 +75,7 @@ type NavItem = {
 const allNav: NavItem[] = [
   { to: '/', label: 'Дашборд', icon: LayoutDashboard, roles: ['admin', 'moderator'] },
   { to: '/servers', label: 'Серверы', icon: Server, roles: ['admin'] },
+  { to: '/channels', label: 'Каналы', icon: Network, roles: ['admin'] },
   { to: '/clients', label: 'Клиенты', icon: KeyRound, roles: ['admin', 'moderator'] },
   { to: '/invoices', label: 'Счета и оплата', icon: Receipt, roles: ['admin', 'moderator'], requires: 'yookassa' },
   { to: '/chat', label: 'Чат', icon: MessagesSquare, roles: ['admin', 'moderator'], requires: 'chat' },

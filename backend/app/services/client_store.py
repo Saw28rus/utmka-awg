@@ -147,6 +147,17 @@ class ClientStore:
             record["endpoint"] = endpoint
         self._persist()
 
+    def channel_index(self) -> list[dict]:
+        """Лёгкий индекс для группировки клиентов по каналам (PA2)."""
+        return [
+            {
+                "id": cid,
+                "server_id": record["server_id"],
+                "protocol": (record.get("protocol") or "awg2"),
+            }
+            for cid, record in self._clients.items()
+        ]
+
     def reissue_targets(self, server_id: str, protocol: str) -> list[dict]:
         """Клиенты для переиздания конфигов (смена маскировки Xray и т.п.)."""
         out: list[dict] = []

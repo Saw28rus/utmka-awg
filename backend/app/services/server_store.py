@@ -109,6 +109,12 @@ class ServerStore:
             return True
         return False
 
+    def list_records(self) -> list[dict]:
+        return list(self._servers.values())
+
+    def client_protocols(self, record: dict) -> list[str]:
+        return self._client_protocols(record)
+
     def _protocols(self, record: dict) -> list[str]:
         result: list[str] = []
         if record.get("awg2_detected") or record.get("awg2_imported"):

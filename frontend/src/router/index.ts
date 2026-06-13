@@ -4,6 +4,7 @@ import { createDiscreteApi } from 'naive-ui'
 import { useAuthStore } from '@/stores/auth'
 import { useIntegrationsStore } from '@/stores/integrations'
 import { usePanelUpdateStore } from '@/stores/panelUpdate'
+import ChannelsView from '@/views/ChannelsView.vue'
 import ChatView from '@/views/ChatView.vue'
 import ClientDetailView from '@/views/ClientDetailView.vue'
 import ClientsView from '@/views/ClientsView.vue'
@@ -25,6 +26,7 @@ export const router = createRouter({
     { path: '/', name: 'dashboard', component: DashboardView, meta: { roles: ['admin', 'moderator'] } },
     { path: '/servers', name: 'servers', component: ServersView, meta: { roles: ['admin'] } },
     { path: '/servers/:id', name: 'server-detail', component: ServerDetailView, meta: { roles: ['admin'] } },
+    { path: '/channels', name: 'channels', component: ChannelsView, meta: { roles: ['admin'] } },
     { path: '/clients', name: 'clients', component: ClientsView, meta: { roles: ['admin', 'moderator'] } },
     { path: '/clients/:id', name: 'client-detail', component: ClientDetailView, meta: { roles: ['admin', 'moderator'] } },
     { path: '/invoices', name: 'invoices', component: InvoicesView, meta: { roles: ['admin', 'moderator'], requires: 'yookassa' } },
