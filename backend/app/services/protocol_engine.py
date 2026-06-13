@@ -5,8 +5,10 @@
 сохраняя поведение 1-в-1. Это фундамент для мульти-протокольных каскадов и
 управляемых обновлений (см. _dev-docs/MULTI_PROTOCOL_RESILIENCE_PLAN.md §3.1).
 
-Шаг 3a: реализован движок AmneziaWG (awg2/awg_legacy). Xray-движок — шаг 3b,
-перевод всех роутов на движок — шаг 3c.
+Шаг 3a: движок AmneziaWG (awg2/awg_legacy).
+Шаг 3b: движок Xray (VLESS-Reality) под тем же контрактом; роуты create/delete
+клиента ходят через get_engine() без ветвления по protocol.
+Шаг 3c (далее): перевод install/enforce-роутов на движок.
 """
 
 from __future__ import annotations
@@ -55,7 +57,7 @@ class ProtocolEngine:
     def capabilities(self) -> EngineCapabilities:
         raise NotImplementedError
 
-    def install(self, server_id: str, *, port: Optional[int] = None):
+    def install(self, server_id: str, *, port: Optional[int] = None, **opts):
         raise EngineNotSupported(f"{self.id}: установка не поддерживается движком.")
 
     def create_client(self, spec: ClientSpec) -> ClientDetail:
@@ -88,7 +90,7 @@ class AwgEngine(ProtocolEngine):
             update=False,
         )
 
-    def install(self, server_id: str, *, port: Optional[int] = None):
+    def install(self, server_id: str, *, port: Optional[int] = None, **opts):
         from app.services.awg_install import DEFAULT_PORT, install_awg
 
         return install_awg(server_id, variant=self.id, port=port or DEFAULT_PORT)
@@ -118,11 +120,62 @@ class AwgEngine(ProtocolEngine):
         return enforce_server_by_id(server_id)
 
 
-# Реестр движков. Xray-движок появится на шаге 3b; пока xray обрабатывается
-# отдельной веткой в роутах, поэтому get_engine для него не вызывается.
+class XrayEngine(ProtocolEngine):
+    """Xray (VLESS-Reality). Делегирует в xray_* без смены поведения."""
+
+    id = "xray"
+
+    def capabilities(self) -> EngineCapabilities:
+        # masking/cascade/update пока не реализованы для Xray (шаги XR2/CX1/UP2).
+        return EngineCapabilities(
+            install=True,
+            create_client=True,
+            delete_client=True,
+            enforce=True,
+            masking=False,
+            cascade=False,
+            update=False,
+        )
+
+    def install(self, server_id: str, *, port: Optional[int] = None, site_name: Optional[str] = None, **opts):
+        from app.services.xray_install import DEFAULT_PORT, install_xray
+
+        return install_xray(server_id, port=port or DEFAULT_PORT, site_name=site_name)
+
+    def create_client(self, spec: ClientSpec) -> ClientDetail:
+        from app.services.xray_client import create_xray_client
+
+        # keepalive у Xray не используется — поведение 1-в-1 со старой веткой.
+        return create_xray_client(
+            spec.server_id,
+            spec.name,
+            format=spec.format,
+            traffic_limit_bytes=spec.traffic_limit_bytes,
+            expires_at=spec.expires_at,
+        )
+
+    def delete_client(self, server_id: str, public_key: str) -> bool:
+        from app.services.xray_client import delete_xray_client
+
+        return delete_xray_client(server_id, public_key)
+
+    def enforce(self, server_id: str) -> int:
+        from app.services.amnezia_ssh import connect_target
+        from app.services.xray_enforce import enforce_xray_server
+
+        try:
+            _record, _target, ssh = connect_target(server_id)
+        except Exception:  # noqa: BLE001
+            return 0
+        try:
+            return enforce_xray_server(ssh, server_id)
+        finally:
+            ssh.close()
+
+
 def get_engine(protocol_id: str) -> ProtocolEngine:
     """Движок по id протокола. Любой не-xray = AmneziaWG (как старая ветка)."""
     pid = (protocol_id or "awg2").lower()
     if pid == "xray":
-        raise EngineNotSupported("Xray-движок ещё не подключён (шаг 3b).")
+        return XrayEngine()
     return AwgEngine("awg_legacy" if pid == "awg_legacy" else "awg2")
