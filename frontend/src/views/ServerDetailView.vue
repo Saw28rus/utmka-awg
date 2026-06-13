@@ -980,6 +980,87 @@
       @installed="onProtocolInstalled"
     />
 
+    <n-modal v-model:show="xrayMaskingVisible">
+      <div class="panel masking-modal">
+        <header class="masking-head">
+          <strong>Маскировка Reality</strong>
+          <StatusBadge
+            v-if="xrayMaskingData"
+            :label="xrayMaskingData.label || 'Неизвестно'"
+            :tone="maskingStatusTone"
+          />
+        </header>
+
+        <div v-if="xrayMaskingLoading" class="masking-loading">
+          <n-spin size="small" />
+          <span>Читаю конфиг Reality…</span>
+        </div>
+
+        <template v-else-if="xrayMaskingData">
+          <div class="masking-grid">
+            <span class="mk-label">Порт</span>
+            <span class="mk-val mono">{{ xrayMaskingData.port ?? '—' }}</span>
+            <span class="mk-label">dest</span>
+            <span class="mk-val mono">
+              {{ xrayMaskingData.dest || '—' }}
+              <template v-if="xrayMaskingData.dest_reachable === true"> (доступен)</template>
+              <template v-else-if="xrayMaskingData.dest_reachable === false"> (не отвечает)</template>
+            </span>
+            <span class="mk-label">SNI</span>
+            <span class="mk-val mono">{{ xrayMaskingData.sni || '—' }}</span>
+            <span class="mk-label">shortId</span>
+            <span class="mk-val mono">{{ xrayMaskingData.short_id_count ?? 0 }} шт.</span>
+            <span class="mk-label">flow</span>
+            <span class="mk-val mono">{{ xrayMaskingData.flow || '—' }}</span>
+            <span class="mk-label">Клиентов</span>
+            <span class="mk-val mono">{{ xrayMaskingData.clients_count ?? 0 }}</span>
+          </div>
+
+          <ul v-if="(xrayMaskingData.critical || []).length" class="masking-issues critical">
+            <li v-for="(c, i) in xrayMaskingData.critical" :key="'c' + i">⚠ {{ c }}</li>
+          </ul>
+          <ul v-if="(xrayMaskingData.notes || []).length" class="masking-issues notes">
+            <li v-for="(n, i) in xrayMaskingData.notes" :key="'n' + i">• {{ n }}</li>
+          </ul>
+
+          <div class="masking-actions">
+            <label class="mk-field-label">Домен маскировки (dest + SNI)</label>
+            <n-input
+              v-model:value="xrayMaskingDomain"
+              placeholder="например, www.microsoft.com"
+              :disabled="xrayMaskingBusy"
+            />
+            <span class="mk-hint">
+              Реальный TLS-сайт (не наш сервер). Смена домена переиздаёт всех Xray-клиентов —
+              им нужно заново импортировать конфиг.
+            </span>
+            <div class="mk-buttons">
+              <n-button
+                type="primary"
+                :loading="xrayMaskingBusy"
+                @click="applyMaskingDomain"
+              >
+                Сменить домен
+              </n-button>
+              <n-button
+                tertiary
+                :loading="xrayMaskingBusy"
+                title="Добавить ещё один shortId (существующие клиенты не затрагиваются)"
+                @click="addShortIdAction"
+              >
+                + shortId
+              </n-button>
+              <n-button quaternary @click="xrayMaskingVisible = false">Закрыть</n-button>
+            </div>
+          </div>
+
+          <p class="mk-disclaimer">
+            Статус — это качество настройки маскировки, а не гарантия обхода DPI.
+          </p>
+        </template>
+      </div>
+    </n-modal>
+
     <n-modal v-model:show="logsVisible">
       <div class="panel logs-modal">
         <header class="logs-head">
@@ -2361,59 +2442,86 @@ async function updateProtocol(proto: ProtocolInfo) {
   }
 }
 
-function renderMaskingDialog(data: any) {
-  const rows: any[] = []
-  const line = (label: string, value: string) =>
-    h('div', { style: 'display:flex;gap:8px;margin:2px 0;' }, [
-      h('span', { style: 'color:var(--color-muted);min-width:120px;' }, label),
-      h('span', { style: 'font-family:monospace;' }, value)
-    ])
-  if (data.port != null) rows.push(line('Порт', String(data.port)))
-  if (data.dest)
-    rows.push(
-      line(
-        'dest',
-        `${data.dest}${
-          data.dest_reachable === true ? ' (доступен)' : data.dest_reachable === false ? ' (не отвечает)' : ''
-        }`
-      )
-    )
-  if (data.sni) rows.push(line('SNI', data.sni))
-  if (data.short_id_count != null) rows.push(line('shortId', `${data.short_id_count} шт.`))
-  if (data.flow) rows.push(line('flow', data.flow))
-  if (data.clients_count != null) rows.push(line('Клиентов', String(data.clients_count)))
-  for (const c of data.critical || []) {
-    rows.push(h('div', { style: 'color:#dc2626;margin-top:4px;' }, `⚠ ${c}`))
+const xrayMaskingVisible = ref(false)
+const xrayMaskingLoading = ref(false)
+const xrayMaskingBusy = ref(false)
+const xrayMaskingData = ref<any>(null)
+const xrayMaskingDomain = ref('')
+
+const maskingStatusTone = computed<'ok' | 'warning' | 'danger' | 'neutral'>(() => {
+  const s = xrayMaskingData.value?.status
+  if (s === 'strong') return 'ok'
+  if (s === 'basic') return 'warning'
+  if (s === 'weak' || s === 'invalid') return 'danger'
+  return 'neutral'
+})
+
+async function loadXrayMasking() {
+  xrayMaskingLoading.value = true
+  try {
+    const { data } = await api.get(`/servers/${serverId}/xray/masking`)
+    xrayMaskingData.value = data
+    xrayMaskingDomain.value = data.sni || data.dest_host || ''
+  } catch (error: any) {
+    message.error(error?.response?.data?.detail || 'Не удалось получить статус маскировки.')
+  } finally {
+    xrayMaskingLoading.value = false
   }
-  for (const n of data.notes || []) {
-    rows.push(h('div', { style: 'color:#d97706;margin-top:4px;' }, `• ${n}`))
-  }
-  if (!(data.critical || []).length && !(data.notes || []).length) {
-    rows.push(h('div', { style: 'color:#16a34a;margin-top:4px;' }, '✓ Замечаний нет'))
-  }
-  rows.push(
-    h(
-      'div',
-      { style: 'color:var(--color-muted);margin-top:8px;font-size:12px;' },
-      'Статус — это качество настройки маскировки, а не гарантия обхода DPI.'
-    )
-  )
-  return h('div', {}, rows)
 }
 
 async function showXrayMasking(proto: ProtocolInfo) {
   protoBusy[proto.id] = 'masking'
   try {
-    const { data } = await api.get(`/servers/${serverId}/xray/masking`)
-    dialog.info({
-      title: `Reality-маскировка — ${data.label || 'статус неизвестен'}`,
-      content: () => renderMaskingDialog(data),
-      positiveText: 'Закрыть'
-    })
-  } catch (error: any) {
-    message.error(error?.response?.data?.detail || 'Не удалось получить статус маскировки.')
+    await loadXrayMasking()
+    xrayMaskingVisible.value = true
   } finally {
     delete protoBusy[proto.id]
+  }
+}
+
+function applyMaskingDomain() {
+  const site = (xrayMaskingDomain.value || '').trim()
+  if (!site) {
+    message.warning('Укажи домен маскировки.')
+    return
+  }
+  dialog.warning({
+    title: `Сменить домен маскировки на ${site}?`,
+    content:
+      'Будет снят снимок конфига, изменён dest/SNI и горячо перечитан Xray. ' +
+      'Все Xray-клиенты будут переизданы (им нужно заново импортировать конфиг). ' +
+      'При сбое — авто-откат на текущие настройки.',
+    positiveText: 'Сменить',
+    negativeText: 'Отмена',
+    onPositiveClick: async () => {
+      xrayMaskingBusy.value = true
+      try {
+        const { data } = await api.post(
+          `/servers/${serverId}/xray/masking/domain`,
+          { site },
+          { timeout: 120_000 }
+        )
+        message.success(data.message || 'Домен маскировки изменён.')
+        await loadXrayMasking()
+      } catch (error: any) {
+        message.error(error?.response?.data?.detail || 'Не удалось сменить домен.')
+      } finally {
+        xrayMaskingBusy.value = false
+      }
+    }
+  })
+}
+
+async function addShortIdAction() {
+  xrayMaskingBusy.value = true
+  try {
+    const { data } = await api.post(`/servers/${serverId}/xray/masking/short-id`, {}, { timeout: 60_000 })
+    message.success(data.message || 'shortId добавлен.')
+    await loadXrayMasking()
+  } catch (error: any) {
+    message.error(error?.response?.data?.detail || 'Не удалось добавить shortId.')
+  } finally {
+    xrayMaskingBusy.value = false
   }
 }
 
@@ -3136,6 +3244,98 @@ function confirmDeleteServer() {
 .meta-chip.warn {
   color: #d97706;
   border-color: rgba(217, 119, 6, 0.45);
+}
+
+.masking-modal {
+  width: min(560px, 92vw);
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.masking-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.masking-loading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--color-muted);
+}
+
+.masking-grid {
+  display: grid;
+  grid-template-columns: 120px 1fr;
+  gap: 4px 10px;
+  align-items: baseline;
+}
+
+.mk-label {
+  color: var(--color-muted);
+  font-size: 13px;
+}
+
+.mk-val {
+  word-break: break-all;
+}
+
+.masking-grid .mono {
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 13px;
+}
+
+.masking-issues {
+  margin: 0;
+  padding-left: 4px;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 13px;
+}
+
+.masking-issues.critical li {
+  color: #dc2626;
+}
+
+.masking-issues.notes li {
+  color: #d97706;
+}
+
+.masking-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  border-top: 1px solid var(--color-border);
+  padding-top: 12px;
+}
+
+.mk-field-label {
+  font-size: 13px;
+  color: var(--color-muted);
+}
+
+.mk-hint {
+  font-size: 12px;
+  color: var(--color-muted);
+}
+
+.mk-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.mk-disclaimer {
+  margin: 0;
+  font-size: 12px;
+  color: var(--color-muted);
 }
 
 .proto-actions {

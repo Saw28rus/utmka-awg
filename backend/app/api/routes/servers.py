@@ -298,6 +298,40 @@ async def xray_masking(
     return await asyncio.to_thread(inspect_xray_masking, server_id)
 
 
+@router.post("/{server_id}/xray/masking/domain")
+async def xray_masking_set_domain(
+    server_id: str,
+    payload: dict,
+    _: CurrentUser = Depends(require_admin),
+) -> dict:
+    """Сменить домен маскировки Reality (dest+SNI) с переизданием клиентов."""
+    if not server_store.get_record(server_id):
+        raise HTTPException(status_code=404, detail="Сервер не найден.")
+    from app.services.xray_masking_apply import MaskingApplyError, set_masking_domain
+
+    site = (payload or {}).get("site") or ""
+    try:
+        return await asyncio.to_thread(set_masking_domain, server_id, site)
+    except MaskingApplyError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@router.post("/{server_id}/xray/masking/short-id")
+async def xray_masking_add_short_id(
+    server_id: str,
+    _: CurrentUser = Depends(require_admin),
+) -> dict:
+    """Добавить новый shortId в Reality (без переиздания клиентов)."""
+    if not server_store.get_record(server_id):
+        raise HTTPException(status_code=404, detail="Сервер не найден.")
+    from app.services.xray_masking_apply import MaskingApplyError, add_short_id
+
+    try:
+        return await asyncio.to_thread(add_short_id, server_id)
+    except MaskingApplyError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
 @router.get("/{server_id}/protocols/{protocol_id}/update-plan")
 async def protocol_update_plan(
     server_id: str,

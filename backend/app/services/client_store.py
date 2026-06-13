@@ -147,6 +147,23 @@ class ClientStore:
             record["endpoint"] = endpoint
         self._persist()
 
+    def reissue_targets(self, server_id: str, protocol: str) -> list[dict]:
+        """Клиенты для переиздания конфигов (смена маскировки Xray и т.п.)."""
+        out: list[dict] = []
+        for cid, record in self._clients.items():
+            if record["server_id"] != server_id or record.get("protocol") != protocol:
+                continue
+            out.append(
+                {
+                    "id": cid,
+                    "name": record.get("name") or "client",
+                    "public_key": record.get("public_key"),
+                    "has_config": bool(record.get("config_text_enc")),
+                    "has_vpn": bool(record.get("vpn_link_enc")),
+                }
+            )
+        return out
+
     def update_limits(
         self,
         client_id: str,
