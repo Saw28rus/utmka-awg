@@ -327,7 +327,12 @@ def _collect_security(ssh, record: dict, server_id: str) -> list[SecurityCheck]:
 
     ufw = (values.get("ufw") or "").lower()
     if ufw == "active":
-        checks.append(SecurityCheck(id="ufw", label="Файрвол UFW", status="ok", value="Активен"))
+        checks.append(
+            SecurityCheck(
+                id="ufw", label="Файрвол UFW", status="ok", value="Активен",
+                actionable=True, control="ufw", enabled=True,
+            )
+        )
     elif ufw == "inactive":
         checks.append(
             SecurityCheck(
@@ -335,7 +340,8 @@ def _collect_security(ssh, record: dict, server_id: str) -> list[SecurityCheck]:
                 label="Файрвол UFW",
                 status="warning",
                 value="Выключен",
-                recommendation="Включи UFW и разреши только порты SSH и VPN — остальное закрой.",
+                recommendation="Включи UFW — панель сама откроет SSH, VPN и нужные порты, чтобы не потерять доступ.",
+                actionable=True, control="ufw", enabled=False,
             )
         )
     else:
@@ -345,13 +351,19 @@ def _collect_security(ssh, record: dict, server_id: str) -> list[SecurityCheck]:
                 label="Файрвол UFW",
                 status="unknown",
                 value="Не установлен",
-                recommendation="Установи ufw (apt install ufw) для базовой защиты портов.",
+                recommendation="Включи UFW — панель установит и настроит его автоматически.",
+                actionable=True, control="ufw", enabled=False,
             )
         )
 
     f2b = (values.get("fail2ban") or "").lower()
     if f2b == "active":
-        checks.append(SecurityCheck(id="fail2ban", label="Fail2ban", status="ok", value="Активен"))
+        checks.append(
+            SecurityCheck(
+                id="fail2ban", label="Fail2ban", status="ok", value="Активен",
+                actionable=True, control="fail2ban", enabled=True,
+            )
+        )
     else:
         checks.append(
             SecurityCheck(
@@ -359,7 +371,8 @@ def _collect_security(ssh, record: dict, server_id: str) -> list[SecurityCheck]:
                 label="Fail2ban",
                 status="warning",
                 value="Не активен",
-                recommendation="Установи fail2ban — защита SSH от перебора паролей.",
+                recommendation="Включи Fail2ban — защита SSH от перебора паролей (твой IP в исключениях).",
+                actionable=True, control="fail2ban", enabled=False,
             )
         )
 
@@ -418,7 +431,10 @@ def _collect_security(ssh, record: dict, server_id: str) -> list[SecurityCheck]:
 
     if (values.get("unattended") or "") == "installed":
         checks.append(
-            SecurityCheck(id="updates", label="Автообновления безопасности", status="ok", value="Включены")
+            SecurityCheck(
+                id="updates", label="Автообновления безопасности", status="ok", value="Включены",
+                actionable=True, control="updates", enabled=True,
+            )
         )
     else:
         checks.append(
@@ -427,7 +443,8 @@ def _collect_security(ssh, record: dict, server_id: str) -> list[SecurityCheck]:
                 label="Автообновления безопасности",
                 status="warning",
                 value="Не настроены",
-                recommendation="Установи unattended-upgrades для автоматических патчей безопасности.",
+                recommendation="Включи автообновления — патчи безопасности без перезагрузки сервера.",
+                actionable=True, control="updates", enabled=False,
             )
         )
 

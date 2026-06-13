@@ -135,6 +135,9 @@ class SecurityCheck(BaseModel):
     status: str = "unknown"  # ok | warning | danger | unknown
     value: str = ""
     recommendation: Optional[str] = None
+    actionable: bool = False  # можно ли включать/выключать из панели
+    control: Optional[str] = None  # имя контрола для /security/action (ufw|fail2ban|updates)
+    enabled: Optional[bool] = None  # текущее состояние (для тумблера)
 
 
 class ServerOverview(BaseModel):
@@ -236,6 +239,24 @@ class PanelHardenResult(BaseModel):
     enabled: bool
     allowed_ips: list[str] = []
     message: str
+
+
+class SecurityActionRequest(BaseModel):
+    control: str  # ufw | fail2ban | updates
+    action: str  # enable | disable
+
+
+class SecurityActionResult(BaseModel):
+    ok: bool
+    control: str
+    enabled: bool
+    message: str
+
+
+class UfwPreviewResult(BaseModel):
+    tcp_ports: list[int] = []
+    udp_ports: list[int] = []
+    ssh_port: int = 22
 
 
 class ChatDomainStatus(BaseModel):

@@ -27,12 +27,15 @@ from app.schemas.servers import (
     ProtocolActionRequest,
     ProtocolInstallRequest,
     ProtocolInstallResult,
+    SecurityActionRequest,
+    SecurityActionResult,
     ServerCreate,
     ServerListItem,
     ServerMetrics,
     ServerMinimal,
     ServerOverview,
     ServerRead,
+    UfwPreviewResult,
 )
 from app.schemas.awg_masking import (
     MaskingApplyRequest,
@@ -77,6 +80,11 @@ from app.services.panel_harden import (
     get_harden_state,
 )
 from app.services.panel_settings_service import PanelSettingsService
+from app.services.server_hardening import (
+    HardeningError,
+    run_action as run_security_action,
+    ufw_preview,
+)
 from app.services.panel_ssl import (
     PanelSslError,
     get_panel_ssl_status,
@@ -541,6 +549,53 @@ async def panel_harden_disable(
         ip=client_ip(request),
     )
     return PanelHardenResult(**result.__dict__)
+
+
+@router.get("/{server_id}/security/ufw-preview", response_model=UfwPreviewResult)
+async def security_ufw_preview(
+    server_id: str, _: CurrentUser = Depends(require_admin)
+) -> UfwPreviewResult:
+    if not server_store.get_record(server_id):
+        raise HTTPException(status_code=404, detail="Сервер не найден.")
+    try:
+        preview = await asyncio.to_thread(ufw_preview, server_id)
+    except HardeningError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return UfwPreviewResult(**preview.__dict__)
+
+
+@router.post("/{server_id}/security/action", response_model=SecurityActionResult)
+async def security_action(
+    server_id: str,
+    payload: SecurityActionRequest,
+    request: Request,
+    admin: CurrentUser = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+) -> SecurityActionResult:
+    if not server_store.get_record(server_id):
+        raise HTTPException(status_code=404, detail="Сервер не найден.")
+    caller = client_ip(request)
+    try:
+        result = await asyncio.to_thread(
+            run_security_action,
+            server_id,
+            payload.control,
+            payload.action,
+            caller_ip=caller,
+        )
+    except HardeningError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    audit = AuditService(db)
+    await audit.log(
+        "security_action",
+        user_id=uuid.UUID(admin.id),
+        user_email=admin.email,
+        target_type="server",
+        target_id=server_id,
+        detail={"control": payload.control, "action": payload.action, "ok": result.ok},
+        ip=caller,
+    )
+    return SecurityActionResult(**result.__dict__)
 
 
 @router.post("/{server_id}/test-ssh")
