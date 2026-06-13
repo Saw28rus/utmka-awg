@@ -15,6 +15,24 @@ logger = logging.getLogger("utmka.scheduler")
 INVOICE_POLL_SECONDS = 120
 CHAT_RETENTION_SECONDS = 24 * 3600
 XRAY_CASCADE_RECONCILE_SECONDS = 90
+HEALTH_CHECK_SECONDS = 120
+
+
+async def _health_check() -> None:
+    try:
+        import asyncio
+
+        from app.services.health import run_health_check_all
+
+        result = await asyncio.to_thread(run_health_check_all, auto_restart=True)
+        if result.get("degraded") or result.get("down") or result.get("restarted"):
+            logger.info(
+                "health: checked=%s degraded=%s down=%s restarted=%s",
+                result.get("checked"), result.get("degraded"),
+                result.get("down"), result.get("restarted"),
+            )
+    except Exception:  # noqa: BLE001
+        logger.exception("Ошибка health-проверки узлов")
 
 
 async def _reconcile_xray_cascades() -> None:
@@ -98,6 +116,15 @@ def start_scheduler() -> Optional[AsyncIOScheduler]:
         "interval",
         seconds=XRAY_CASCADE_RECONCILE_SECONDS,
         id="xray_cascade_reconcile",
+        max_instances=1,
+        coalesce=True,
+        replace_existing=True,
+    )
+    scheduler.add_job(
+        _health_check,
+        "interval",
+        seconds=HEALTH_CHECK_SECONDS,
+        id="node_health_check",
         max_instances=1,
         coalesce=True,
         replace_existing=True,

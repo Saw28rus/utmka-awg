@@ -194,12 +194,14 @@ async def delete_server(server_id: str, _: CurrentUser = Depends(require_admin))
 
     from app.services.cascade_store import cascade_store
     from app.services.xray_cascade_store import xray_cascade_store
+    from app.services.health_store import health_store
 
     metrics_cache.invalidate(server_id)
     forget_node(server_id)
     forget_snapshots(server_id)
     cascade_store.forget_server(server_id)
     xray_cascade_store.forget_server(server_id)
+    health_store.forget(server_id)
     return {"status": "ok"}
 
 
