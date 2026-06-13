@@ -17,12 +17,13 @@ from app.schemas.clients import (
     KeepaliveUpdate,
     TransportReissueResult,
 )
-from app.services.awg_client import ClientCreateError, create_awg_client, delete_awg_client
+from app.services.awg_client import ClientCreateError
 from app.services.awg_transport import apply_keepalive
 from app.services.xray_client import ClientCreateError as XrayClientCreateError
 from app.services.xray_client import create_xray_client, delete_xray_client
 from app.services.awg_enforce import enforce_server_by_id
 from app.services.client_store import client_store
+from app.services.protocol_engine import ClientSpec, get_engine
 from app.services.server_store import server_store
 from app.db.session import get_db
 from app.services.audit_service import AuditService
@@ -65,16 +66,16 @@ async def create_client(
                 expires_at=payload.expires_at,
             )
         else:
-            detail = await asyncio.to_thread(
-                create_awg_client,
-                payload.server_id,
-                payload.name.strip(),
-                protocol,
+            spec = ClientSpec(
+                server_id=payload.server_id,
+                name=payload.name.strip(),
+                protocol=protocol,
                 format=payload.format,
                 traffic_limit_bytes=payload.traffic_limit_bytes,
                 expires_at=payload.expires_at,
                 keepalive=payload.keepalive,
             )
+            detail = await asyncio.to_thread(get_engine(protocol).create_client, spec)
     except (ClientCreateError, XrayClientCreateError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -202,7 +203,9 @@ async def delete_client(
             if protocol == "xray":
                 server_cleaned = await asyncio.to_thread(delete_xray_client, server_id, public_key)
             else:
-                server_cleaned = await asyncio.to_thread(delete_awg_client, server_id, public_key)
+                server_cleaned = await asyncio.to_thread(
+                    get_engine(protocol).delete_client, server_id, public_key
+                )
         except Exception as exc:  # noqa: BLE001
             server_cleaned = False
             cleanup_error = str(exc)
