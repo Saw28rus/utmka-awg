@@ -17,12 +17,13 @@ from app.schemas.clients import (
     KeepaliveUpdate,
     TransportReissueResult,
 )
-from app.services.awg_client import ClientCreateError, create_awg_client
+from app.services.awg_client import ClientCreateError, create_awg_client, delete_awg_client
 from app.services.awg_transport import apply_keepalive
 from app.services.xray_client import ClientCreateError as XrayClientCreateError
-from app.services.xray_client import create_xray_client
+from app.services.xray_client import create_xray_client, delete_xray_client
 from app.services.awg_enforce import enforce_server_by_id
 from app.services.client_store import client_store
+from app.services.server_store import server_store
 from app.db.session import get_db
 from app.services.audit_service import AuditService
 from app.services.traffic_sync import sync_online_traffic
@@ -182,11 +183,46 @@ async def update_client(
 async def delete_client(
     client_id: str,
     request: Request,
+    force: bool = Query(default=False),
     user: CurrentUser = Depends(require_client_manager),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
-    if not client_store.delete(client_id):
+    record = client_store.get_record_raw(client_id)
+    if not record:
         raise HTTPException(status_code=404, detail="Клиент не найден.")
+
+    server_id = record.get("server_id")
+    protocol = (record.get("protocol") or "awg2").lower()
+    public_key = record.get("public_key")
+
+    server_cleaned = True
+    cleanup_error: Optional[str] = None
+    if public_key:
+        try:
+            if protocol == "xray":
+                server_cleaned = await asyncio.to_thread(delete_xray_client, server_id, public_key)
+            else:
+                server_cleaned = await asyncio.to_thread(delete_awg_client, server_id, public_key)
+        except Exception as exc:  # noqa: BLE001
+            server_cleaned = False
+            cleanup_error = str(exc)
+
+    if not server_cleaned and not force:
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                f"Не удалось удалить клиента с сервера: {cleanup_error}. "
+                "Повторите позже или удалите принудительно (force=true) — "
+                "тогда клиент исчезнет из панели, но peer/UUID на сервере останется."
+            ),
+        )
+
+    client_store.delete(client_id)
+    if server_id:
+        server_store.update_runtime(
+            server_id, active_peers=client_store.count_for_server(server_id)
+        )
+
     audit = AuditService(db)
     await audit.log(
         "client_deleted",
@@ -194,6 +230,7 @@ async def delete_client(
         user_email=user.email,
         target_type="client",
         target_id=client_id,
+        detail={"server_cleaned": server_cleaned, "forced": force and not server_cleaned},
         ip=client_ip(request),
     )
-    return {"status": "ok"}
+    return {"status": "ok", "server_cleaned": server_cleaned, "forced": force and not server_cleaned}
