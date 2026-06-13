@@ -205,27 +205,40 @@ def _reissue_clients(ssh, server_id: str, record: dict, *, site: str, port: int,
     if not pbk or not sid:
         return 0
 
+    from app.services.xray_cascade_store import xray_cascade_store
+
     count = 0
     for tgt in client_store.reissue_targets(server_id, "xray"):
         uuid = tgt.get("public_key")
         if not uuid:
             continue
+        # Каскадные клиенты адресованы на entry:relay_port (а не на exit/прямой host).
+        entry_id = tgt.get("channel_entry_id")
+        c_host, c_port, split_ru, descr = host, port, False, record["name"]
+        if entry_id:
+            link = xray_cascade_store.get_link(entry_id)
+            entry_rec = server_store.get_record(entry_id)
+            if link and entry_rec and entry_rec.get("host"):
+                c_host = entry_rec["host"]
+                c_port = int(link.get("relay_port") or port)
+                split_ru = bool(link.get("split_ru"))
+                descr = entry_rec.get("name") or c_host
         native = build_xray_native_config(
-            host=host, port=port, client_uuid=uuid, flow=flow, site=site,
-            public_key=pbk, short_id=sid,
+            host=c_host, port=c_port, client_uuid=uuid, flow=flow, site=site,
+            public_key=pbk, short_id=sid, split_ru=split_ru,
         )
         uri = build_vless_uri(
-            host=host, port=port, client_uuid=uuid, flow=flow, site=site,
+            host=c_host, port=c_port, client_uuid=uuid, flow=flow, site=site,
             public_key=pbk, short_id=sid, name=tgt["name"],
         )
         config_text = uri if tgt["has_config"] else None
         vpn_link = (
-            build_xray_vpn_link(host=host, native_config_json=native, description=record["name"])
+            build_xray_vpn_link(host=c_host, native_config_json=native, description=descr)
             if tgt["has_vpn"]
             else None
         )
         client_store.update_issued_config(
-            tgt["id"], config_text=config_text, vpn_link=vpn_link, endpoint=f"{host}:{port}"
+            tgt["id"], config_text=config_text, vpn_link=vpn_link, endpoint=f"{c_host}:{c_port}"
         )
         count += 1
     return count

@@ -193,6 +193,21 @@ async def xray_cascade_rollback_route(
         raise HTTPException(status_code=400, detail=str(exc))
 
 
+@router.put("/{server_id}/xray-cascade/rules")
+async def xray_cascade_rules_route(
+    server_id: str, payload: dict, _: CurrentUser = Depends(require_admin)
+) -> dict:
+    if not server_store.get_record(server_id):
+        raise HTTPException(status_code=404, detail="Сервер не найден.")
+    from app.services.xray_cascade import XrayCascadeError, set_xray_cascade_rules
+
+    enabled = bool((payload or {}).get("enabled"))
+    try:
+        return await asyncio.to_thread(set_xray_cascade_rules, server_id, enabled)
+    except XrayCascadeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
 @router.post("/{server_id}/xray-cascade/clients")
 async def xray_cascade_create_client_route(
     server_id: str, payload: dict, _: CurrentUser = Depends(require_admin)

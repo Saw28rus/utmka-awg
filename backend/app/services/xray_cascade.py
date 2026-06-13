@@ -303,6 +303,7 @@ def xray_cascade_status(entry_id: str) -> dict:
         "relay_port": link.get("relay_port"),
         "exit_port": link.get("exit_port"),
         "sni": link.get("sni"),
+        "split_ru": bool(link.get("split_ru")),
         "state": state,
         "live_active": live_active,
         "last_preflight_ok": link.get("last_preflight_ok", False),
@@ -350,9 +351,111 @@ def create_xray_cascade_client(
             link_host=entry_host,
             link_port=relay_port,
             channel_entry_id=entry_id,
+            split_ru=bool(link.get("split_ru")),
         )
     except ClientCreateError as exc:
         raise XrayCascadeError(str(exc)) from exc
+
+
+def _exit_profile(ssh) -> dict:
+    """Reality-профиль exit для переиздания клиентских конфигов каскада."""
+    from app.services.xray_client import DEFAULT_FLOW, PUBLIC_KEY_PATH, SHORT_ID_PATH
+
+    raw = read_container_file(ssh, XRAY_CONTAINER, SERVER_CONFIG_PATH)
+    if not raw:
+        raise XrayCascadeError("На exit не найден server.json Xray.")
+    try:
+        data = json.loads(raw)
+        inbound = (data.get("inbounds") or [])[0]
+        reality = (inbound.get("streamSettings") or {}).get("realitySettings") or {}
+    except (json.JSONDecodeError, IndexError, KeyError) as exc:
+        raise XrayCascadeError("server.json на exit повреждён.") from exc
+    clients = (inbound.get("settings") or {}).get("clients") or []
+    flow = clients[0].get("flow") if clients and isinstance(clients[0], dict) else None
+    pbk = read_container_file(ssh, XRAY_CONTAINER, PUBLIC_KEY_PATH)
+    sid = read_container_file(ssh, XRAY_CONTAINER, SHORT_ID_PATH)
+    if not pbk or not sid:
+        raise XrayCascadeError("На exit не найдены Reality-ключи.")
+    return {
+        "sni": ((reality.get("serverNames") or [""])[0]) or "",
+        "public_key": pbk,
+        "short_id": sid,
+        "flow": flow or DEFAULT_FLOW,
+    }
+
+
+def set_xray_cascade_rules(entry_id: str, enabled: bool) -> dict:
+    """Split-правила Xray-каскада: РФ напрямую, остальное через каскад.
+
+    Реализуется client-side routing в конфигах. Переиздаём конфиги всех клиентов
+    каскада (ключи/UUID не трогаем — меняется только выданный конфиг).
+    """
+    link = xray_cascade_store.get_link(entry_id)
+    if not link:
+        raise XrayCascadeError("Xray-каскад для этого узла не настроен.")
+    if (link.get("state") or "") != "active":
+        raise XrayCascadeError("Каскад не активен.")
+    exit_id = link.get("exit_server_id")
+    relay_port = int(link.get("relay_port") or DEFAULT_RELAY_PORT)
+    entry_rec = server_store.get_record(entry_id)
+    if not entry_rec or not entry_rec.get("host"):
+        raise XrayCascadeError("Entry-сервер не найден.")
+    entry_host = entry_rec["host"]
+
+    from app.services.amnezia_link import (
+        build_vless_uri,
+        build_xray_native_config,
+        build_xray_vpn_link,
+    )
+    from app.services.client_store import client_store
+
+    targets = client_store.cascade_reissue_targets(entry_id)
+    reissued = 0
+    if targets:
+        exit_ssh = _connect(exit_id)
+        try:
+            profile = _exit_profile(exit_ssh)
+        finally:
+            exit_ssh.close()
+        for tgt in targets:
+            uuid_val = tgt.get("public_key")
+            if not uuid_val:
+                continue
+            native = build_xray_native_config(
+                host=entry_host, port=relay_port, client_uuid=uuid_val,
+                flow=profile["flow"], site=profile["sni"],
+                public_key=profile["public_key"], short_id=profile["short_id"],
+                split_ru=enabled,
+            )
+            uri = build_vless_uri(
+                host=entry_host, port=relay_port, client_uuid=uuid_val,
+                flow=profile["flow"], site=profile["sni"],
+                public_key=profile["public_key"], short_id=profile["short_id"],
+                name=tgt["name"],
+            )
+            config_text = uri if tgt["has_config"] else None
+            vpn_link = (
+                build_xray_vpn_link(host=entry_host, native_config_json=native,
+                                    description=entry_rec.get("name") or entry_host)
+                if tgt["has_vpn"] else None
+            )
+            client_store.update_issued_config(
+                tgt["id"], config_text=config_text, vpn_link=vpn_link,
+                endpoint=f"{entry_host}:{relay_port}",
+            )
+            reissued += 1
+
+    xray_cascade_store.upsert_link(entry_id, split_ru=bool(enabled))
+    return {
+        "ok": True,
+        "split_ru": bool(enabled),
+        "reissued": reissued,
+        "message": (
+            f"Split включён: РФ напрямую. Переиздано конфигов: {reissued}."
+            if enabled else
+            f"Split выключен: весь трафик через каскад. Переиздано конфигов: {reissued}."
+        ),
+    }
 
 
 def list_xray_cascades() -> list[dict]:

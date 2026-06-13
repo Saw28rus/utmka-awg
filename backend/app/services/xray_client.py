@@ -39,6 +39,7 @@ def create_xray_client(
     link_host: Optional[str] = None,
     link_port: Optional[int] = None,
     channel_entry_id: Optional[str] = None,
+    split_ru: bool = False,
 ) -> ClientDetail:
     """Создаёт VLESS-Reality клиента на сервере ``server_id`` (где живёт UUID).
 
@@ -98,6 +99,7 @@ def create_xray_client(
             site=site,
             public_key=public_key,
             short_id=short_id,
+            split_ru=split_ru,
         )
         vless_uri = build_vless_uri(
             host=client_host,

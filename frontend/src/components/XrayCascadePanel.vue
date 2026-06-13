@@ -107,6 +107,22 @@
       </n-button>
     </div>
 
+    <div v-if="isActive" class="xc-split">
+      <div class="xc-split-text">
+        <h4>Split-правило: РФ напрямую</h4>
+        <span class="xc-sub">
+          Российские сайты/IP идут мимо каскада (быстрее), остальное — через exit.
+          Применяется к конфигам AmneziaVPN.
+        </span>
+      </div>
+      <n-switch
+        :value="splitRu"
+        :loading="busy === 'rules'"
+        :disabled="!!busy"
+        @update:value="toggleSplit"
+      />
+    </div>
+
     <div v-if="isActive" class="xc-clients">
       <div class="xc-clients-head">
         <h4>Выдать клиента в каскад</h4>
@@ -133,7 +149,7 @@
 
 <script setup lang="ts">
 import { AlertTriangle, ArrowRight, CheckCircle2, RefreshCw, XCircle } from '@lucide/vue'
-import { NButton, NInput, NInputNumber, NSelect, useMessage } from 'naive-ui'
+import { NButton, NInput, NInputNumber, NSelect, NSwitch, useMessage } from 'naive-ui'
 import { computed, onMounted, ref } from 'vue'
 
 import { api } from '@/api/client'
@@ -143,7 +159,7 @@ const props = defineProps<{ serverId: string; serverName?: string }>()
 
 const message = useMessage()
 const loading = ref(false)
-const busy = ref<'' | 'preflight' | 'apply' | 'rollback' | 'client'>('')
+const busy = ref<'' | 'preflight' | 'apply' | 'rollback' | 'client' | 'rules'>('')
 const status = ref<any>(null)
 const preflight = ref<any>(null)
 const exitId = ref<string | null>(null)
@@ -161,6 +177,7 @@ const exitOptions = computed(() =>
 )
 
 const isActive = computed(() => status.value?.state === 'active')
+const splitRu = computed(() => !!status.value?.split_ru)
 
 const canApply = computed(
   () => preflight.value?.ok && preflight.value?.entry_server_id === props.serverId,
@@ -273,6 +290,23 @@ async function createClient() {
     message.success('Клиент создан и добавлен в каскад.')
   } catch (error: any) {
     message.error(error?.response?.data?.detail || 'Не удалось создать клиента.')
+  } finally {
+    busy.value = ''
+  }
+}
+
+async function toggleSplit(value: boolean) {
+  busy.value = 'rules'
+  try {
+    const { data } = await api.put(
+      `/servers/${props.serverId}/xray-cascade/rules`,
+      { enabled: value },
+      { timeout: 180_000 },
+    )
+    message.success(data.message || 'Split-правило обновлено.')
+    await loadStatus()
+  } catch (error: any) {
+    message.error(error?.response?.data?.detail || 'Не удалось изменить split-правило.')
   } finally {
     busy.value = ''
   }
@@ -413,6 +447,22 @@ onMounted(async () => {
   display: flex;
   gap: 10px;
   flex-wrap: wrap;
+}
+.xc-split {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding-top: 12px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+.xc-split-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.xc-split-text h4 {
+  margin: 0;
 }
 .xc-clients {
   display: flex;

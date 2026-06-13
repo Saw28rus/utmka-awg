@@ -137,12 +137,41 @@ def build_xray_native_config(
     public_key: str,
     short_id: str,
     fingerprint: str = "chrome",
+    split_ru: bool = False,
 ) -> str:
-    """Полный Xray JSON для AmneziaVPN (xrayConfigurator::buildClientProtocolConfig)."""
+    """Полный Xray JSON для AmneziaVPN (xrayConfigurator::buildClientProtocolConfig).
+
+    При ``split_ru=True`` добавляется client-side routing: трафик в РФ и приватные
+    сети идёт напрямую (freedom), остальное — через прокси (каскад). geoip/geosite
+    берутся из бандла AmneziaVPN.
+    """
     user: dict = {"id": client_uuid, "encryption": "none"}
     if flow:
         user["flow"] = flow
-    payload = {
+    proxy_outbound = {
+        "protocol": "vless",
+        "settings": {
+            "vnext": [
+                {
+                    "address": host,
+                    "port": port,
+                    "users": [user],
+                }
+            ]
+        },
+        "streamSettings": {
+            "network": "tcp",
+            "security": "reality",
+            "realitySettings": {
+                "fingerprint": fingerprint,
+                "serverName": site,
+                "publicKey": public_key,
+                "shortId": short_id,
+                "spiderX": "",
+            },
+        },
+    }
+    payload: dict = {
         "log": {"loglevel": "error"},
         "inbounds": [
             {
@@ -152,32 +181,19 @@ def build_xray_native_config(
                 "settings": {"udp": True},
             }
         ],
-        "outbounds": [
-            {
-                "protocol": "vless",
-                "settings": {
-                    "vnext": [
-                        {
-                            "address": host,
-                            "port": port,
-                            "users": [user],
-                        }
-                    ]
-                },
-                "streamSettings": {
-                    "network": "tcp",
-                    "security": "reality",
-                    "realitySettings": {
-                        "fingerprint": fingerprint,
-                        "serverName": site,
-                        "publicKey": public_key,
-                        "shortId": short_id,
-                        "spiderX": "",
-                    },
-                },
-            }
-        ],
+        "outbounds": [proxy_outbound],
     }
+    if split_ru:
+        proxy_outbound["tag"] = "proxy"
+        payload["outbounds"].append({"protocol": "freedom", "tag": "direct"})
+        payload["routing"] = {
+            "domainStrategy": "AsIs",
+            "rules": [
+                {"type": "field", "outboundTag": "direct", "domain": ["geosite:category-ru"]},
+                {"type": "field", "outboundTag": "direct", "ip": ["geoip:ru", "geoip:private"]},
+                {"type": "field", "outboundTag": "proxy", "network": "tcp,udp"},
+            ],
+        }
     return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
 
 

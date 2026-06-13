@@ -174,6 +174,26 @@ class ClientStore:
                     "public_key": record.get("public_key"),
                     "has_config": bool(record.get("config_text_enc")),
                     "has_vpn": bool(record.get("vpn_link_enc")),
+                    "channel_entry_id": record.get("channel_entry_id"),
+                }
+            )
+        return out
+
+    def cascade_reissue_targets(self, entry_id: str) -> list[dict]:
+        """Клиенты Xray-каскада данного entry (для переиздания при смене split)."""
+        out: list[dict] = []
+        for cid, record in self._clients.items():
+            if (record.get("protocol") or "").lower() != "xray":
+                continue
+            if record.get("channel_entry_id") != entry_id:
+                continue
+            out.append(
+                {
+                    "id": cid,
+                    "name": record.get("name") or "client",
+                    "public_key": record.get("public_key"),
+                    "has_config": bool(record.get("config_text_enc")),
+                    "has_vpn": bool(record.get("vpn_link_enc")),
                 }
             )
         return out
