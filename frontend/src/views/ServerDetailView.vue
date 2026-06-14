@@ -496,9 +496,21 @@
                     </ol>
                     <div class="sec-row">
                       <n-input v-model:value="chatDomain" placeholder="chat.example.com" :disabled="!!chatBusy" />
-                      <n-button type="primary" :loading="!!chatBusy" @click="connectChat">Подключить</n-button>
+                      <n-button type="primary" :loading="chatBusy === 'verify' || chatBusy === 'install'" @click="connectChat">Подключить</n-button>
                     </div>
-                    <p v-if="chatBusy === 'install'" class="sec-note">Выпускаю сертификат и проверяю изоляцию — 1–2 минуты.</p>
+                    <div class="ssl-nodomain">
+                      <span class="ssl-nodomain-or">или без своего домена</span>
+                      <n-button size="small" tertiary :loading="chatBusy === 'auto'" :disabled="!!chatBusy" @click="connectChatAuto">
+                        <template #icon><ShieldCheck :size="14" /></template>
+                        Чат без домена (sslip.io)
+                      </n-button>
+                      <p class="sec-note">
+                        Подключит чат на адрес вида
+                        <span class="mono">chat.{{ chatStatus.server_public_ip || server?.host }}.sslip.io</span>
+                        — тот же IP, но отдельное имя (отличается от домена панели).
+                      </p>
+                    </div>
+                    <p v-if="chatBusy === 'install' || chatBusy === 'auto'" class="sec-note">Выпускаю сертификат и проверяю изоляцию — 1–2 минуты.</p>
                     <p v-if="chatVerifyMessage && !chatVerifyOk" class="ssl-verify warn">{{ chatVerifyMessage }}</p>
                   </template>
                   <p v-if="chatStatus.message" class="ssl-msg warn">{{ chatStatus.message }}</p>
@@ -1460,7 +1472,7 @@ const chatStatus = ref<ChatDomainStatus | null>(null)
 const chatDomain = ref('')
 const chatVerifyMessage = ref('')
 const chatVerifyOk = ref(false)
-const chatBusy = ref<'verify' | 'install' | 'disable' | ''>('')
+const chatBusy = ref<'verify' | 'install' | 'auto' | 'disable' | ''>('')
 const chatIsolation = ref<ChatIsolationCheck[]>([])
 
 const openStep = ref<'' | 'ssl' | 'harden' | 'chat'>('')
@@ -1556,6 +1568,26 @@ async function connectChat() {
   if (!chatVerifyOk.value) return
   await installChatDomain()
   if (chatDone.value) openStep.value = 'chat'
+}
+
+async function connectChatAuto() {
+  chatBusy.value = 'auto'
+  chatIsolation.value = []
+  try {
+    const { data } = await api.post<{ message: string; isolation: ChatIsolationCheck[] }>(
+      `/servers/${serverId}/chat-domain/install-auto`,
+      {},
+      { timeout: 660_000 }
+    )
+    chatIsolation.value = data.isolation
+    message.success(data.message)
+    await loadChatDomainStatus()
+    if (chatDone.value) openStep.value = 'chat'
+  } catch (error: any) {
+    message.error(error?.response?.data?.detail || 'Подключение чат-домена без домена не удалось.')
+  } finally {
+    chatBusy.value = ''
+  }
 }
 
 const cascadeBusy = ref(false)

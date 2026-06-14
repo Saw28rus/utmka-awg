@@ -26,6 +26,7 @@ from app.services.panel_ssl import (
     _render_template,
     _resolve_domain_ips,
     _server_public_ip,
+    magic_domain_for_ip,
 )
 from app.services.server_store import server_store
 from app.ssh import exec as ssh_exec
@@ -258,6 +259,33 @@ def install_chat_domain(server_id: str, domain: str) -> ChatDomainInstallResult:
         )
     finally:
         ssh.close()
+
+
+def chat_magic_domain(public_ip: Optional[str]) -> str:
+    """`chat.<ip>.sslip.io` — отдельное имя на том же IP (отличается от домена панели).
+
+    sslip.io резолвит встроенный IP даже с префиксом, поэтому это валидный
+    отдельный хост для чат-домена без покупки домена.
+    """
+    return f"chat.{magic_domain_for_ip(public_ip)}"
+
+
+def install_chat_domain_auto(server_id: str) -> ChatDomainInstallResult:
+    """Чат-домен без своего домена: `chat.<ip>.sslip.io` + обычный install-флоу."""
+    record = server_store.get_record(server_id)
+    target = server_store.ssh_target(server_id)
+    if not record or not target:
+        raise ChatDomainError("Сервер не найден.")
+    ssh = _connect(target)
+    try:
+        public_ip = _server_public_ip(ssh) or record.get("host")
+    finally:
+        ssh.close()
+    try:
+        domain = chat_magic_domain(public_ip)
+    except PanelSslError as exc:
+        raise ChatDomainError(str(exc))
+    return install_chat_domain(server_id, domain)
 
 
 def disable_chat_domain(server_id: str) -> str:

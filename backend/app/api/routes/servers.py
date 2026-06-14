@@ -70,6 +70,7 @@ from app.services.server_overview import (
     run_protocol_action,
 )
 from app.services.chat_domain import (
+    install_chat_domain_auto,
     ChatDomainError,
     disable_chat_domain,
     get_chat_domain_state,
@@ -636,6 +637,29 @@ async def chat_domain_install(
     except ChatDomainError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
+    await _post_chat_install(db, server_id, result, admin, request)
+    return ChatDomainInstallResult(**result.__dict__)
+
+
+@router.post("/{server_id}/chat-domain/install-auto", response_model=ChatDomainInstallResult)
+async def chat_domain_install_auto(
+    server_id: str,
+    request: Request,
+    admin: CurrentUser = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+) -> ChatDomainInstallResult:
+    if not server_store.get_record(server_id):
+        raise HTTPException(status_code=404, detail="Сервер не найден.")
+    try:
+        result = await asyncio.to_thread(install_chat_domain_auto, server_id)
+    except ChatDomainError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    await _post_chat_install(db, server_id, result, admin, request)
+    return ChatDomainInstallResult(**result.__dict__)
+
+
+async def _post_chat_install(db, server_id, result, admin, request) -> None:
     settings = PanelSettingsService(db)
     await settings.set_many(
         {
@@ -645,8 +669,7 @@ async def chat_domain_install(
             "chat_public_url": result.public_url,
         }
     )
-    audit = AuditService(db)
-    await audit.log(
+    await AuditService(db).log(
         "chat_enabled",
         user_id=uuid.UUID(admin.id),
         user_email=admin.email,
@@ -655,7 +678,6 @@ async def chat_domain_install(
         detail={"domain": result.domain, "public_url": result.public_url},
         ip=client_ip(request),
     )
-    return ChatDomainInstallResult(**result.__dict__)
 
 
 @router.post("/{server_id}/chat-domain/disable")
