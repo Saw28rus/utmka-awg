@@ -35,6 +35,11 @@
       />
     </div>
 
+    <div v-if="healthProblem" class="health-line" :class="`health-${health?.state}`">
+      <AlertTriangle :size="13" />
+      <span class="health-text">{{ healthText }}</span>
+    </div>
+
     <div class="protocols">
       <template v-if="server.protocols.length">
         <span v-for="proto in server.protocols" :key="proto" class="proto-chip">
@@ -74,7 +79,16 @@
         <Clock :size="13" />
         {{ uptimeText }}
       </span>
-      <button class="delete-btn" title="Удалить из панели" @click.prevent.stop="$emit('delete')">
+      <button
+        class="foot-btn health-btn"
+        :class="`health-${health?.state || 'unknown'}`"
+        :title="healthBtnTitle"
+        @click.prevent.stop="$emit('check')"
+      >
+        <n-spin v-if="healthChecking" :size="12" />
+        <Activity v-else :size="14" />
+      </button>
+      <button class="foot-btn delete-btn" title="Удалить из панели" @click.prevent.stop="$emit('delete')">
         <Trash2 :size="14" />
       </button>
     </footer>
@@ -82,7 +96,7 @@
 </template>
 
 <script setup lang="ts">
-import { ArrowDownUp, Clock, Cpu, HardDrive, MemoryStick, Network, ShieldCheck, Trash2, Users, WifiOff } from '@lucide/vue'
+import { Activity, AlertTriangle, ArrowDownUp, Clock, Cpu, HardDrive, MemoryStick, Network, ShieldCheck, Trash2, Users, WifiOff } from '@lucide/vue'
 import { NSpin } from 'naive-ui'
 import { computed } from 'vue'
 import { RouterLink, type RouteLocationRaw } from 'vue-router'
@@ -124,6 +138,13 @@ export type CascadePeerRole = {
   is_active: boolean
 }
 
+export type NodeHealth = {
+  state: 'ok' | 'degraded' | 'down' | 'unknown'
+  containers: Record<string, string>
+  alerts: Array<{ level: string; code: string; message: string }>
+  checked_at?: string | null
+}
+
 const props = defineProps<{
   server: ServerListItem
   to: RouteLocationRaw
@@ -131,9 +152,37 @@ const props = defineProps<{
   metricsLoading?: boolean
   cascadeRole?: CascadePeerRole | null
   roleLabel?: 'entry' | 'exit' | null
+  health?: NodeHealth | null
+  healthChecking?: boolean
 }>()
 
-defineEmits<{ delete: [] }>()
+defineEmits<{ delete: []; check: [] }>()
+
+const healthProblem = computed(
+  () => props.health && (props.health.state === 'degraded' || props.health.state === 'down')
+)
+
+const healthText = computed(() => {
+  const h = props.health
+  if (!h) return ''
+  if (h.state === 'down') return 'Узел недоступен по SSH'
+  const bad = Object.entries(h.containers || {})
+    .filter(([, s]) => s !== 'running' && s !== 'missing')
+    .map(([name, s]) => `${name}: ${s}`)
+  if (bad.length) return bad.join(', ')
+  return h.alerts?.[0]?.message || 'Есть проблемы'
+})
+
+const healthBtnTitle = computed(() => {
+  const h = props.health
+  if (!h || h.state === 'unknown') return 'Проверить здоровье'
+  const map: Record<string, string> = {
+    ok: 'Здоровье: в норме',
+    degraded: 'Здоровье: есть проблемы',
+    down: 'Здоровье: недоступен'
+  }
+  return `${map[h.state] || 'Проверить здоровье'} — нажмите для проверки`
+})
 
 const statusLabel = computed(() => {
   if (props.metricsLoading) return 'проверка'
@@ -309,6 +358,31 @@ const trafficText = computed(() => formatBytes(props.metrics?.total_traffic_byte
   color: var(--color-dim);
 }
 
+.health-line {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  font-size: 12px;
+  background: var(--color-surface-2);
+}
+
+.health-line.health-degraded {
+  color: #fbbf24;
+}
+
+.health-line.health-down {
+  color: #f87171;
+}
+
+.health-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .protocols {
   display: flex;
   flex-wrap: wrap;
@@ -369,8 +443,7 @@ const trafficText = computed(() => formatBytes(props.metrics?.total_traffic_byte
   gap: 5px;
 }
 
-.delete-btn {
-  margin-left: auto;
+.foot-btn {
   display: grid;
   place-items: center;
   width: 28px;
@@ -383,6 +456,26 @@ const trafficText = computed(() => formatBytes(props.metrics?.total_traffic_byte
   transition:
     color 0.15s ease,
     background-color 0.15s ease;
+}
+
+.health-btn {
+  margin-left: auto;
+}
+
+.health-btn.health-ok {
+  color: #4ade80;
+}
+
+.health-btn.health-degraded {
+  color: #fbbf24;
+}
+
+.health-btn.health-down {
+  color: #f87171;
+}
+
+.health-btn:hover {
+  background: var(--color-surface-2);
 }
 
 .delete-btn:hover {

@@ -81,7 +81,7 @@
 </template>
 
 <script setup lang="ts">
-import { Activity, Bell, KeyRound, LayoutDashboard, LogOut, MessagesSquare, Moon, Network, Receipt, Server, Settings, ShieldCheck, Sun, Users, Waypoints } from '@lucide/vue'
+import { Bell, KeyRound, LayoutDashboard, LogOut, MessagesSquare, Moon, Network, Receipt, Server, Settings, ShieldCheck, Sun, Users } from '@lucide/vue'
 import { NBadge, NButton, NPopover } from 'naive-ui'
 import { computed, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
@@ -120,8 +120,6 @@ const allNav: NavItem[] = [
   { to: '/', label: 'Дашборд', icon: LayoutDashboard, roles: ['admin', 'moderator'] },
   { to: '/servers', label: 'Серверы', icon: Server, roles: ['admin'] },
   { to: '/channels', label: 'Каналы', icon: Network, roles: ['admin'] },
-  { to: '/map', label: 'Карта', icon: Waypoints, roles: ['admin'] },
-  { to: '/health', label: 'Здоровье', icon: Activity, roles: ['admin'] },
   { to: '/clients', label: 'Клиенты', icon: KeyRound, roles: ['admin', 'moderator'] },
   { to: '/invoices', label: 'Счета и оплата', icon: Receipt, roles: ['admin', 'moderator'], requires: 'yookassa' },
   { to: '/chat', label: 'Чат', icon: MessagesSquare, roles: ['admin', 'moderator'], requires: 'chat' },

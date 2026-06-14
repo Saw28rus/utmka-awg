@@ -43,8 +43,11 @@
               :metrics="metricFor(item.entry.id) ?? null"
               :metrics-loading="!!metricsLoading[item.entry.id]"
               :cascade-role="cascadeRoleFor(item.entry.id) ?? null"
+              :health="healthFor(item.entry.id)"
+              :health-checking="!!healthChecking[item.entry.id]"
               role-label="entry"
               @delete="confirmDelete(item.entry)"
+              @check="checkHealth(item.entry.id)"
             />
 
             <div class="cascade-link" :class="{ live: item.link.is_active }" aria-hidden="true">
@@ -59,8 +62,11 @@
               :metrics="metricFor(item.exit.id) ?? null"
               :metrics-loading="!!metricsLoading[item.exit.id]"
               :cascade-role="cascadeRoleFor(item.exit.id) ?? null"
+              :health="healthFor(item.exit.id)"
+              :health-checking="!!healthChecking[item.exit.id]"
               role-label="exit"
               @delete="confirmDelete(item.exit)"
+              @check="checkHealth(item.exit.id)"
             />
           </div>
         </div>
@@ -72,7 +78,10 @@
           :metrics="metricFor(item.server.id) ?? null"
           :metrics-loading="!!metricsLoading[item.server.id]"
           :cascade-role="cascadeRoleFor(item.server.id) ?? null"
+          :health="healthFor(item.server.id)"
+          :health-checking="!!healthChecking[item.server.id]"
           @delete="confirmDelete(item.server)"
+          @check="checkHealth(item.server.id)"
         />
       </template>
     </div>
@@ -97,7 +106,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { api } from '@/api/client'
 import AddServerWizard from '@/components/AddServerWizard.vue'
 import EmptyState from '@/components/EmptyState.vue'
-import ServerListCard, { type ServerListItem, type ServerMetrics } from '@/components/ServerListCard.vue'
+import ServerListCard, { type NodeHealth, type ServerListItem, type ServerMetrics } from '@/components/ServerListCard.vue'
 import StatusBadge from '@/components/StatusBadge.vue'
 import AppShell from '@/layouts/AppShell.vue'
 import { labelCascadeState, toneCascadeState } from '@/utils/cascadeLabels'
@@ -134,6 +143,16 @@ const servers = ref<ServerListItem[]>([])
 const cascadeLinks = ref<CascadeLinkSummary[]>([])
 const metrics = reactive<Record<string, ServerMetrics>>({})
 const metricsLoading = reactive<Record<string, boolean>>({})
+const health = reactive<Record<string, NodeHealth>>({})
+const healthChecking = reactive<Record<string, boolean>>({})
+
+type HealthNodeApi = {
+  server_id: string
+  state: NodeHealth['state']
+  containers: Record<string, string>
+  alerts: Array<{ level: string; code: string; message: string }>
+  checked_at: string | null
+}
 
 const cascadePeerMap = computed(() => {
   const map = new Map<string, CascadePeerRole>()
@@ -210,6 +229,50 @@ async function loadCascadeLinks(live = false) {
   }
 }
 
+async function loadHealth() {
+  try {
+    const { data } = await api.get<HealthNodeApi[]>('/health/nodes')
+    for (const node of data) {
+      health[node.server_id] = {
+        state: node.state,
+        containers: node.containers || {},
+        alerts: node.alerts || [],
+        checked_at: node.checked_at
+      }
+    }
+  } catch {
+    /* health-движок недоступен на старой версии */
+  }
+}
+
+async function checkHealth(serverId: string) {
+  healthChecking[serverId] = true
+  try {
+    const { data } = await api.post<HealthNodeApi>(
+      `/health/nodes/${serverId}/check`,
+      {},
+      { timeout: 60_000 }
+    )
+    health[serverId] = {
+      state: data.state,
+      containers: data.containers || {},
+      alerts: data.alerts || [],
+      checked_at: data.checked_at
+    }
+    if (data.state === 'ok') message.success('Узел в норме.')
+    else if (data.state === 'degraded') message.warning('Есть проблемы с контейнерами.')
+    else if (data.state === 'down') message.error('Узел недоступен по SSH.')
+  } catch (error: any) {
+    message.error(error?.response?.data?.detail || 'Не удалось проверить узел.')
+  } finally {
+    healthChecking[serverId] = false
+  }
+}
+
+function healthFor(serverId: string): NodeHealth | null {
+  return health[serverId] ?? null
+}
+
 function applyMetricsBatch(items: ServerMetrics[]) {
   for (const item of items) {
     const serverId = item.server_id
@@ -226,7 +289,8 @@ async function loadServers(opts: { refresh?: boolean; liveCascade?: boolean } = 
 
   const [{ data }] = await Promise.all([
     api.get<ServerListItem[]>('/servers'),
-    loadCascadeLinks(liveCascade)
+    loadCascadeLinks(liveCascade),
+    loadHealth()
   ])
   servers.value = data
 

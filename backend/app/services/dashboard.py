@@ -34,62 +34,6 @@ def get_dashboard_summary() -> dict:
     }
 
 
-def get_dashboard_overview() -> dict:
-    """OBS2: лёгкий встроенный дашборд — нагрузка узлов + сводка каналов.
-
-    Использует кэш метрик (без принудительного SSH-обновления) + health_store +
-    channel_store. Принцип Калашникова: работает из коробки, без внешних сервисов.
-    """
-    from app.services.channel_store import list_channels
-    from app.services.health_store import health_store
-    from app.services.metrics import get_all_server_metrics
-
-    summary = get_dashboard_summary()
-    metrics = get_all_server_metrics(refresh=False)
-
-    nodes: list[dict] = []
-    for m in metrics:
-        h = health_store.get(m.server_id) or {}
-        record = server_store.get_record(m.server_id)
-        nodes.append(
-            {
-                "server_id": m.server_id,
-                "name": (record or {}).get("name") or m.server_id,
-                "host": (record or {}).get("host"),
-                "online": m.online,
-                "health": h.get("state") or ("ok" if m.online else "down"),
-                "cpu_percent": m.cpu_percent,
-                "mem_used_bytes": m.mem_used_bytes,
-                "mem_total_bytes": m.mem_total_bytes,
-                "disk_used_bytes": m.disk_used_bytes,
-                "disk_total_bytes": m.disk_total_bytes,
-                "uptime_seconds": m.uptime_seconds,
-                "active_peers": m.active_peers,
-                "traffic_bytes": m.total_traffic_bytes,
-            }
-        )
-    nodes.sort(key=lambda n: (n["name"] or "").lower())
-
-    channels = list_channels()
-    channel_summary = {
-        "total": len(channels),
-        "direct": sum(1 for c in channels if c["kind"] == "direct"),
-        "cascade": sum(1 for c in channels if c["kind"] == "cascade"),
-        "awg": sum(1 for c in channels if (c.get("protocol") or "").startswith("awg")),
-        "xray": sum(1 for c in channels if c.get("protocol") == "xray"),
-    }
-
-    return {
-        "summary": summary,
-        "nodes": nodes,
-        "channels": channel_summary,
-        "health": {
-            "degraded": sum(1 for n in nodes if n["health"] == "degraded"),
-            "down": sum(1 for n in nodes if n["health"] == "down"),
-        },
-    }
-
-
 def _client_recently_online(last_handshake_at: Optional[str]) -> bool:
     if not last_handshake_at:
         return False
