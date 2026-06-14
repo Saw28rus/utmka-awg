@@ -12,6 +12,8 @@ from app.schemas.clients import (
     ClientCreate,
     ClientDetail,
     ClientExportRequest,
+    ClientImportRequest,
+    ClientImportResult,
     ClientListItem,
     ClientTrafficSnapshot,
     ClientUpdate,
@@ -106,6 +108,48 @@ async def export_clients(
         "count": len(exported),
         "clients": exported,
     }
+
+
+@router.post("/import", response_model=ClientImportResult)
+async def import_clients(
+    payload: ClientImportRequest,
+    request: Request,
+    user: CurrentUser = Depends(require_client_manager),
+    db: AsyncSession = Depends(get_db),
+) -> ClientImportResult:
+    """UX1: импорт клиентов из JSON-бандла (парный к export).
+
+    Пересоздаёт клиентов через движок (новые ключи) на исходном или указанном
+    сервере. dry_run=true — только план и конфликты, без изменений.
+    """
+    from app.services.client_import import run_import
+
+    try:
+        result = await asyncio.to_thread(
+            run_import,
+            payload.bundle,
+            target_server_id=payload.target_server_id,
+            dry_run=payload.dry_run,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    if not payload.dry_run:
+        await AuditService(db).log(
+            "clients_imported",
+            user_id=uuid.UUID(user.id),
+            user_email=user.email,
+            target_type="client",
+            target_id=payload.target_server_id or "bundle",
+            detail={
+                "created": result.to_create,
+                "skipped": result.to_skip,
+                "errors": result.errors,
+                "total": result.total,
+            },
+            ip=client_ip(request),
+        )
+    return result
 
 
 @router.post("", response_model=ClientDetail)

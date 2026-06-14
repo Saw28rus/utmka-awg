@@ -23,6 +23,31 @@ class ClientExportRequest(BaseModel):
     include_qr: bool = True
 
 
+class ClientImportRequest(BaseModel):
+    bundle: dict
+    target_server_id: Optional[str] = None
+    dry_run: bool = True
+
+
+class ClientImportItem(BaseModel):
+    name: str
+    source_server_id: Optional[str] = None
+    target_server_id: Optional[str] = None
+    protocol: str = "awg2"
+    action: str  # create | skip | error
+    reason: Optional[str] = None
+    client_id: Optional[str] = None
+
+
+class ClientImportResult(BaseModel):
+    dry_run: bool
+    total: int = 0
+    to_create: int = 0
+    to_skip: int = 0
+    errors: int = 0
+    items: list[ClientImportItem] = []
+
+
 class KeepaliveUpdate(BaseModel):
     keepalive: int = Field(ge=0, le=120)
 

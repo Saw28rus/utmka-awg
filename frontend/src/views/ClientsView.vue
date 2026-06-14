@@ -28,6 +28,9 @@
           >
             <template #icon><Download :size="16" /></template>
           </n-button>
+          <n-button tertiary circle title="Импорт клиентов" @click="showImport = true">
+            <template #icon><Upload :size="16" /></template>
+          </n-button>
           <n-button type="primary" circle title="Добавить клиента" @click="showAddClient = true">
             <template #icon><Plus :size="16" /></template>
           </n-button>
@@ -132,11 +135,12 @@
       @saved="onClientSaved"
     />
     <ExportClientsModal v-model:show="showExport" />
+    <ImportClientsModal v-model:show="showImport" @imported="refreshClients" />
   </AppShell>
 </template>
 
 <script setup lang="ts">
-import { Download, Pencil, Plus, RefreshCw } from '@lucide/vue'
+import { Download, Pencil, Plus, RefreshCw, Upload } from '@lucide/vue'
 import { NButton, NSwitch, useMessage } from 'naive-ui'
 import { onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
@@ -145,6 +149,7 @@ import { api } from '@/api/client'
 import AddClientModal from '@/components/AddClientModal.vue'
 import EditClientLimitsModal, { type ClientLimitsSource } from '@/components/EditClientLimitsModal.vue'
 import ExportClientsModal from '@/components/ExportClientsModal.vue'
+import ImportClientsModal from '@/components/ImportClientsModal.vue'
 import EmptyState from '@/components/EmptyState.vue'
 import StatusBadge from '@/components/StatusBadge.vue'
 import {
@@ -180,6 +185,7 @@ const loading = ref(false)
 const togglingId = ref<string | null>(null)
 const showAddClient = ref(false)
 const showExport = ref(false)
+const showImport = ref(false)
 const editVisible = ref(false)
 const editClient = ref<ClientLimitsSource | null>(null)
 const clients = ref<ClientListItem[]>([])
