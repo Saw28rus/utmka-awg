@@ -21,6 +21,29 @@ MASK_STATUS_INVALID = "invalid"
 MASK_STATUS_UNKNOWN = "unknown"
 
 
+class RotationPolicy(BaseModel):
+    """RES1 — политика авто-ротации маскировки (per-server)."""
+
+    enabled: bool = False
+    preset: str = "balance"
+    interval_days: int = 14
+    window_start: int = 3
+    window_end: int = 6
+    trigger_on_dpi: bool = True
+    last_rotated_at: Optional[str] = None
+    last_status: Optional[str] = None
+    last_error: Optional[str] = None
+
+
+class RotationPolicyUpdate(BaseModel):
+    enabled: Optional[bool] = None
+    preset: Optional[str] = None
+    interval_days: Optional[int] = None
+    window_start: Optional[int] = None
+    window_end: Optional[int] = None
+    trigger_on_dpi: Optional[bool] = None
+
+
 class MaskingWarning(BaseModel):
     level: str  # info | warning | danger
     code: str

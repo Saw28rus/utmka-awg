@@ -46,6 +46,8 @@ from app.schemas.awg_masking import (
     MaskingResponse,
     MaskingRollbackRequest,
     MaskingSnapshotInfo,
+    RotationPolicy,
+    RotationPolicyUpdate,
 )
 from app.services.audit_service import AuditService
 from app.services.awg_detect import run_awg_detect
@@ -204,9 +206,11 @@ async def delete_server(server_id: str, _: CurrentUser = Depends(require_admin))
     health_store.forget(server_id)
     from app.services.dpi_store import dpi_store
     from app.services.notification_store import notification_store
+    from app.services.rotation_policy_store import rotation_policy_store
 
     notification_store.forget_server(server_id)
     dpi_store.forget_server(server_id)
+    rotation_policy_store.forget_server(server_id)
     return {"status": "ok"}
 
 
@@ -891,6 +895,85 @@ async def awg_endpoint_apply(
         target_type="server",
         target_id=server_id,
         detail={"endpoint_host": (payload.endpoint_host or "").strip() or None, "reissued": result.reissued},
+    )
+    return result
+
+
+@router.get("/{server_id}/awg/masking/rotation", response_model=RotationPolicy)
+async def awg_rotation_get(
+    server_id: str, _: CurrentUser = Depends(require_admin)
+) -> RotationPolicy:
+    if not server_store.get_record(server_id):
+        raise HTTPException(status_code=404, detail="Сервер не найден.")
+    from app.services.rotation_policy_store import rotation_policy_store
+
+    return RotationPolicy(**rotation_policy_store.get(server_id))
+
+
+@router.put("/{server_id}/awg/masking/rotation", response_model=RotationPolicy)
+async def awg_rotation_set(
+    server_id: str,
+    payload: RotationPolicyUpdate,
+    admin: CurrentUser = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+) -> RotationPolicy:
+    if not server_store.get_record(server_id):
+        raise HTTPException(status_code=404, detail="Сервер не найден.")
+    from app.services.awg_masking_apply import PRESETS
+    from app.services.rotation_policy_store import rotation_policy_store
+
+    changes = payload.model_dump(exclude_unset=True)
+    if "preset" in changes and changes["preset"] not in PRESETS:
+        raise HTTPException(status_code=400, detail="Неизвестный пресет.")
+    if "interval_days" in changes and not (1 <= int(changes["interval_days"]) <= 90):
+        raise HTTPException(status_code=400, detail="Интервал должен быть 1–90 дней.")
+    for hk in ("window_start", "window_end"):
+        if hk in changes and not (0 <= int(changes[hk]) <= 23):
+            raise HTTPException(status_code=400, detail="Час окна — 0–23.")
+    policy = rotation_policy_store.set(server_id, **changes)
+    await AuditService(db).log(
+        "masking_rotation_policy",
+        user_id=uuid.UUID(admin.id),
+        user_email=admin.email,
+        target_type="server",
+        target_id=server_id,
+        detail=changes,
+    )
+    return RotationPolicy(**policy)
+
+
+@router.post("/{server_id}/awg/masking/rotation/run", response_model=MaskingApplyResponse)
+async def awg_rotation_run(
+    server_id: str,
+    admin: CurrentUser = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+) -> MaskingApplyResponse:
+    if not server_store.get_record(server_id):
+        raise HTTPException(status_code=404, detail="Сервер не найден.")
+    from datetime import datetime, timezone
+
+    from app.services.awg_masking_apply import PRESETS, generate_params
+    from app.services.rotation_policy_store import rotation_policy_store
+
+    preset = rotation_policy_store.get(server_id).get("preset") or "balance"
+    if preset not in PRESETS:
+        preset = "balance"
+    params = generate_params(preset)
+    result = await asyncio.to_thread(apply_rotation, server_id, preset, params)
+    now_iso = datetime.now(timezone.utc).isoformat()
+    rotation_policy_store.mark_rotated(
+        server_id,
+        when=now_iso,
+        status="ok" if result.ok else "failed",
+        error=None if result.ok else result.error,
+    )
+    await AuditService(db).log(
+        "masking_rotation_manual",
+        user_id=uuid.UUID(admin.id),
+        user_email=admin.email,
+        target_type="server",
+        target_id=server_id,
+        detail={"preset": preset, "ok": result.ok, "reissued": result.reissued, "error": result.error},
     )
     return result
 

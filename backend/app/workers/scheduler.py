@@ -17,6 +17,7 @@ CHAT_RETENTION_SECONDS = 24 * 3600
 XRAY_CASCADE_RECONCILE_SECONDS = 90
 HEALTH_CHECK_SECONDS = 120
 DPI_SAMPLE_SECONDS = 300
+ROTATION_CHECK_SECONDS = 3600
 
 
 async def _health_check() -> None:
@@ -47,6 +48,22 @@ async def _sample_dpi() -> None:
             logger.info("dpi: checked=%s degraded=%s", result.get("checked"), result.get("degraded"))
     except Exception:  # noqa: BLE001
         logger.exception("Ошибка сбора DPI-трендов")
+
+
+async def _run_rotations() -> None:
+    try:
+        import asyncio
+
+        from app.services.rotation_runner import run_due_rotations
+
+        result = await asyncio.to_thread(run_due_rotations)
+        if result.get("rotated") or result.get("failed"):
+            logger.info(
+                "rotation: checked=%s rotated=%s failed=%s",
+                result.get("checked"), result.get("rotated"), result.get("failed"),
+            )
+    except Exception:  # noqa: BLE001
+        logger.exception("Ошибка авто-ротации маскировки")
 
 
 async def _reconcile_xray_cascades() -> None:
@@ -148,6 +165,15 @@ def start_scheduler() -> Optional[AsyncIOScheduler]:
         "interval",
         seconds=DPI_SAMPLE_SECONDS,
         id="dpi_sample",
+        max_instances=1,
+        coalesce=True,
+        replace_existing=True,
+    )
+    scheduler.add_job(
+        _run_rotations,
+        "interval",
+        seconds=ROTATION_CHECK_SECONDS,
+        id="masking_rotation",
         max_instances=1,
         coalesce=True,
         replace_existing=True,

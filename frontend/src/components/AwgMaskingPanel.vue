@@ -171,6 +171,92 @@
       </div>
     </div>
 
+    <div v-if="rotationAvailable" class="panel block auto-rotation">
+      <div class="masking-head">
+        <div class="masking-title">
+          <h3>Авто-ротация маскировки</h3>
+          <StatusBadge
+            :label="policy.enabled ? 'Включена' : 'Выключена'"
+            :tone="policy.enabled ? 'ok' : 'neutral'"
+            :pulse="false"
+          />
+        </div>
+        <n-switch v-model:value="policy.enabled" :loading="policyLoading" @update:value="savePolicy" />
+      </div>
+      <p class="masking-hint">
+        Панель сама обновит параметры обфускации (snapshot → применение → health-проверка →
+        авто-откат при сбое). <b>Важно:</b> после ротации старые клиентские конфиги и QR перестают
+        работать — клиенту нужно переимпортировать конфиг. Поэтому функция включается осознанно.
+      </p>
+
+      <div class="rotation-grid">
+        <label class="rot-field">
+          <span class="param-label">Пресет</span>
+          <n-select
+            v-model:value="policy.preset"
+            size="small"
+            :options="presetOptions"
+            :disabled="!policy.enabled || policyLoading"
+            @update:value="savePolicy"
+          />
+        </label>
+        <label class="rot-field">
+          <span class="param-label">Интервал, дней</span>
+          <n-input-number
+            v-model:value="policy.interval_days"
+            size="small"
+            :min="1"
+            :max="90"
+            :disabled="!policy.enabled || policyLoading"
+            @update:value="savePolicy"
+          />
+        </label>
+        <label class="rot-field">
+          <span class="param-label">Окно (UTC) с</span>
+          <n-input-number
+            v-model:value="policy.window_start"
+            size="small"
+            :min="0"
+            :max="23"
+            :disabled="!policy.enabled || policyLoading"
+            @update:value="savePolicy"
+          />
+        </label>
+        <label class="rot-field">
+          <span class="param-label">по</span>
+          <n-input-number
+            v-model:value="policy.window_end"
+            size="small"
+            :min="0"
+            :max="23"
+            :disabled="!policy.enabled || policyLoading"
+            @update:value="savePolicy"
+          />
+        </label>
+      </div>
+
+      <label class="rot-toggle">
+        <n-switch
+          v-model:value="policy.trigger_on_dpi"
+          size="small"
+          :disabled="!policy.enabled || policyLoading"
+          @update:value="savePolicy"
+        />
+        <span>
+          Аварийная ротация по сигналу DPI (OBS3): если маскировку начали резать — ротировать сразу,
+          игнорируя окно обслуживания.
+        </span>
+      </label>
+
+      <div class="rotation-actions">
+        <n-button size="small" tertiary :loading="runLoading" :disabled="applyLoading" @click="confirmRunNow">
+          <template #icon><RefreshCw :size="15" /></template>
+          Ротировать сейчас
+        </n-button>
+        <span v-if="policyStatusText" class="rotation-age">{{ policyStatusText }}</span>
+      </div>
+    </div>
+
     <div class="panel block fallback">
       <div class="masking-head">
         <div class="masking-title">
@@ -255,8 +341,8 @@
 
 <script setup lang="ts">
 import { AlertTriangle, CheckCircle2, Dices, Info, LifeBuoy, RefreshCw, ShieldCheck, Undo2, XCircle } from '@lucide/vue'
-import { NButton, NInput, NSpin, useDialog, useMessage } from 'naive-ui'
-import { computed, onMounted, ref } from 'vue'
+import { NButton, NInput, NInputNumber, NSelect, NSpin, NSwitch, useDialog, useMessage } from 'naive-ui'
+import { computed, onMounted, reactive, ref } from 'vue'
 
 import { api } from '@/api/client'
 import StatusBadge from '@/components/StatusBadge.vue'
@@ -343,6 +429,18 @@ type MaskingApplyResult = {
 
 type SnapshotInfo = { id: string; created_at: string; label: string; preset: string | null }
 
+type RotationPolicy = {
+  enabled: boolean
+  preset: string
+  interval_days: number
+  window_start: number
+  window_end: number
+  trigger_on_dpi: boolean
+  last_rotated_at: string | null
+  last_status: string | null
+  last_error: string | null
+}
+
 const rotatedKeys = ['Jc', 'Jmin', 'Jmax', 'S1', 'S2', 'S3', 'S4', 'H1', 'H2', 'H3', 'H4']
 
 const message = useMessage()
@@ -360,6 +458,20 @@ const rollbackLoading = ref(false)
 const applyResult = ref<MaskingApplyResult | null>(null)
 const endpointHost = ref('')
 const endpointLoading = ref(false)
+
+const policy = reactive<RotationPolicy>({
+  enabled: false,
+  preset: 'balance',
+  interval_days: 14,
+  window_start: 3,
+  window_end: 6,
+  trigger_on_dpi: true,
+  last_rotated_at: null,
+  last_status: null,
+  last_error: null
+})
+const policyLoading = ref(false)
+const runLoading = ref(false)
 
 const state = computed(() => data.value?.state ?? null)
 const warnings = computed(() => data.value?.warnings ?? [])
@@ -416,6 +528,19 @@ const rotationAgeText = computed(() => {
   return `Последняя ротация маскировки: ${days} дн. назад.`
 })
 
+const presetOptions = computed(() =>
+  presets.value.map((p) => ({ label: p.label, value: p.id }))
+)
+
+const policyStatusText = computed(() => {
+  if (!policy.last_rotated_at) return 'Авто-ротаций ещё не было.'
+  const when = new Date(policy.last_rotated_at).toLocaleString('ru-RU')
+  if (policy.last_status === 'ok') return `Последняя ротация: ${when} — успешно.`
+  if (policy.last_status === 'rolled_back') return `Последняя ротация: ${when} — откат (${policy.last_error || 'сбой'}).`
+  if (policy.last_status === 'failed') return `Последняя ротация: ${when} — ошибка (${policy.last_error || 'сбой'}).`
+  return `Последняя ротация: ${when}.`
+})
+
 function warnIcon(level: string) {
   if (level === 'info') return Info
   return AlertTriangle
@@ -462,6 +587,80 @@ async function loadRotationMeta() {
     endpointHost.value = server.endpoint_host ?? ''
   } catch {
     /* endpoint prefill необязателен */
+  }
+}
+
+async function loadPolicy() {
+  try {
+    const { data: p } = await api.get<RotationPolicy>(
+      `/servers/${props.serverId}/awg/masking/rotation`
+    )
+    Object.assign(policy, p)
+  } catch {
+    /* секция авто-ротации использует дефолты */
+  }
+}
+
+async function savePolicy() {
+  policyLoading.value = true
+  try {
+    const { data: p } = await api.put<RotationPolicy>(
+      `/servers/${props.serverId}/awg/masking/rotation`,
+      {
+        enabled: policy.enabled,
+        preset: policy.preset,
+        interval_days: policy.interval_days,
+        window_start: policy.window_start,
+        window_end: policy.window_end,
+        trigger_on_dpi: policy.trigger_on_dpi
+      }
+    )
+    Object.assign(policy, p)
+  } catch (err: any) {
+    message.error(err?.response?.data?.detail || 'Не удалось сохранить настройки авто-ротации.')
+    void loadPolicy()
+  } finally {
+    policyLoading.value = false
+  }
+}
+
+function confirmRunNow() {
+  dialog.warning({
+    title: 'Ротировать маскировку сейчас?',
+    content:
+      'Параметры обфускации сменятся немедленно. Клиенты потеряют связь до переимпорта новых ' +
+      'конфигов. Будет создан snapshot, при сбое выполнится авто-откат.',
+    positiveText: 'Ротировать',
+    negativeText: 'Отмена',
+    onPositiveClick: () => {
+      void runNow()
+    }
+  })
+}
+
+async function runNow() {
+  runLoading.value = true
+  applyResult.value = null
+  try {
+    const { data: resp } = await api.post<MaskingApplyResult>(
+      `/servers/${props.serverId}/awg/masking/rotation/run`,
+      {}
+    )
+    applyResult.value = resp
+    if (resp.ok) {
+      message.success(`Ротация выполнена. Перевыпущено конфигов: ${resp.reissued}.`)
+      if (resp.masking) data.value = resp.masking
+      void loadRotationMeta()
+    } else {
+      message.error(resp.error || 'Ротация не удалась.')
+      void load(true)
+    }
+  } catch {
+    message.error('Ротация не удалась — проверьте состояние сервера.')
+    void load(true)
+  } finally {
+    runLoading.value = false
+    void loadPolicy()
   }
 }
 
@@ -588,6 +787,7 @@ function reload() {
 onMounted(() => {
   void load(false)
   void loadRotationMeta()
+  void loadPolicy()
 })
 </script>
 
@@ -864,6 +1064,33 @@ onMounted(() => {
   display: flex;
   gap: 10px;
   margin-top: 12px;
+}
+
+.auto-rotation {
+  margin-top: 16px;
+}
+
+.rotation-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.rot-field {
+  display: grid;
+  gap: 4px;
+}
+
+.rot-toggle {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin-bottom: 14px;
+  font-size: 13px;
+  color: var(--color-muted);
+  line-height: 1.4;
+  cursor: pointer;
 }
 
 .endpoint {
