@@ -16,6 +16,7 @@ INVOICE_POLL_SECONDS = 120
 CHAT_RETENTION_SECONDS = 24 * 3600
 XRAY_CASCADE_RECONCILE_SECONDS = 90
 HEALTH_CHECK_SECONDS = 120
+DPI_SAMPLE_SECONDS = 300
 
 
 async def _health_check() -> None:
@@ -33,6 +34,19 @@ async def _health_check() -> None:
             )
     except Exception:  # noqa: BLE001
         logger.exception("Ошибка health-проверки узлов")
+
+
+async def _sample_dpi() -> None:
+    try:
+        import asyncio
+
+        from app.services.dpi_stats import sample_all
+
+        result = await asyncio.to_thread(sample_all)
+        if result.get("degraded"):
+            logger.info("dpi: checked=%s degraded=%s", result.get("checked"), result.get("degraded"))
+    except Exception:  # noqa: BLE001
+        logger.exception("Ошибка сбора DPI-трендов")
 
 
 async def _reconcile_xray_cascades() -> None:
@@ -125,6 +139,15 @@ def start_scheduler() -> Optional[AsyncIOScheduler]:
         "interval",
         seconds=HEALTH_CHECK_SECONDS,
         id="node_health_check",
+        max_instances=1,
+        coalesce=True,
+        replace_existing=True,
+    )
+    scheduler.add_job(
+        _sample_dpi,
+        "interval",
+        seconds=DPI_SAMPLE_SECONDS,
+        id="dpi_sample",
         max_instances=1,
         coalesce=True,
         replace_existing=True,

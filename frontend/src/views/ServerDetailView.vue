@@ -107,6 +107,8 @@
             </div>
           </div>
 
+          <DpiTrendCard :server-id="serverId" />
+
           <div class="panel block">
             <h3>Система</h3>
             <dl class="kv">
@@ -1135,6 +1137,7 @@ import { api } from '@/api/client'
 import AwgMaskingPanel from '@/components/AwgMaskingPanel.vue'
 import XrayCascadePanel from '@/components/XrayCascadePanel.vue'
 import InstallProtocolModal from '@/components/InstallProtocolModal.vue'
+import DpiTrendCard from '@/components/DpiTrendCard.vue'
 import MetricBar from '@/components/MetricBar.vue'
 import StatusBadge from '@/components/StatusBadge.vue'
 import AppShell from '@/layouts/AppShell.vue'

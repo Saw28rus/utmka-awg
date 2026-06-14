@@ -202,9 +202,11 @@ async def delete_server(server_id: str, _: CurrentUser = Depends(require_admin))
     cascade_store.forget_server(server_id)
     xray_cascade_store.forget_server(server_id)
     health_store.forget(server_id)
+    from app.services.dpi_store import dpi_store
     from app.services.notification_store import notification_store
 
     notification_store.forget_server(server_id)
+    dpi_store.forget_server(server_id)
     return {"status": "ok"}
 
 
