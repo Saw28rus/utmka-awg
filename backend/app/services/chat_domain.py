@@ -17,7 +17,10 @@ from typing import Optional
 from app.services.panel_harden import CHAIN as HARDEN_CHAIN
 from app.services.panel_ssl import (
     CERT_DIR,
+    PANEL_HTTPS_INTERNAL,
+    STREAM_CONF,
     WEBROOT,
+    XRAY_LOCAL_PORT,
     PanelSslError,
     _cert_expiry,
     _connect,
@@ -36,6 +39,9 @@ CHAT_NGINX_SITE_ENABLED = "/etc/nginx/sites-enabled/utmka-chat"
 CHAT_ROOT = "/opt/utmka-awg/chat-frontend"
 CHAT_UPSTREAM = "http://127.0.0.1:8080"
 CHAT_BACKUP_ROOT = "/opt/utmka/chat-ssl-backup"
+# Когда :443 занят SNI-passthrough (Xray), чат-vhost слушает локальный порт,
+# а stream-блок маршрутизирует чат-SNI сюда (по аналогии с панелью на 8443).
+CHAT_HTTPS_INTERNAL = 8444
 
 # Временная страница до CH2 (реальный mini-app). Создаётся, только если каталога нет.
 PLACEHOLDER_HTML = """<!doctype html>
@@ -162,12 +168,6 @@ def verify_chat_domain(server_id: str, domain: str) -> ChatDomainVerifyResult:
             f"chat.{panel_domain}"
         )
 
-    if (record.get("panel_ssl") or {}).get("xray_passthrough"):
-        raise ChatDomainError(
-            "На :443 настроен SNI passthrough для Xray — подключение чат-домена в этой схеме "
-            "пока не поддерживается (нужно добавить домен в stream-маршрутизацию). Сделаем по запросу."
-        )
-
     ssh = _connect(target)
     try:
         if (record.get("panel_ssl") or {}).get("status") != "active":
@@ -217,10 +217,24 @@ def install_chat_domain(server_id: str, domain: str) -> ChatDomainInstallResult:
     if not record or not target:
         raise ChatDomainError("Сервер не найден.")
 
+    panel_ssl = record.get("panel_ssl") or {}
+    passthrough = bool(panel_ssl.get("xray_passthrough"))
+    panel_domain = (panel_ssl.get("domain") or "").lower()
+    if passthrough and not panel_domain:
+        raise ChatDomainError(
+            "На :443 включён passthrough Xray, но домен панели не определён — "
+            "переустановите HTTPS панели и повторите."
+        )
+
     ssh = _connect(target)
     try:
         backup_dir = f"{CHAT_BACKUP_ROOT}/{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}"
-        script = _build_install_script(domain=domain, backup_dir=backup_dir)
+        script = _build_install_script(
+            domain=domain,
+            backup_dir=backup_dir,
+            passthrough=passthrough,
+            panel_domain=panel_domain,
+        )
         result = ssh_exec.run(ssh, f"bash -s <<'UTMKA_CHAT_EOF'\n{script}\nUTMKA_CHAT_EOF", timeout=600)
         output = (result.stdout + "\n" + result.stderr).strip()
         if result.exit_code != 0 or "UTMKA_CHAT_OK" not in output:
@@ -230,7 +244,7 @@ def install_chat_domain(server_id: str, domain: str) -> ChatDomainInstallResult:
         isolation = _isolation_checks(ssh, domain)
         failed = [c for c in isolation if not c["ok"]]
         if failed:
-            _remove_vhost(ssh)
+            _remove_vhost(ssh, passthrough=passthrough, panel_domain=panel_domain)
             labels = "; ".join(c["label"] for c in failed)
             raise ChatDomainError(
                 f"Проверка изоляции не пройдена ({labels}) — vhost чата отключён, всё откатил."
@@ -294,9 +308,13 @@ def disable_chat_domain(server_id: str) -> str:
     if not record or not target:
         raise ChatDomainError("Сервер не найден.")
 
+    panel_ssl = record.get("panel_ssl") or {}
+    passthrough = bool(panel_ssl.get("xray_passthrough"))
+    panel_domain = (panel_ssl.get("domain") or "").lower()
+
     ssh = _connect(target)
     try:
-        _remove_vhost(ssh)
+        _remove_vhost(ssh, passthrough=passthrough, panel_domain=panel_domain)
         stored = dict(record.get("chat_domain") or {})
         stored.update({"enabled": False, "ssl_status": "disabled", "public_url": None})
         server_store.update_runtime(server_id, chat_domain=stored)
@@ -323,7 +341,22 @@ def _harden_active(ssh) -> bool:
     )
 
 
-def _remove_vhost(ssh) -> None:
+def _remove_vhost(ssh, *, passthrough: bool = False, panel_domain: str = "") -> None:
+    if passthrough and panel_domain:
+        # Снимаем чат-vhost и возвращаем stream-маршрутизацию к «панель + Xray».
+        panel_stream = _render_template(
+            "nginx-stream-xray.conf",
+            DOMAIN=panel_domain,
+            XRAY_LOCAL_PORT=str(XRAY_LOCAL_PORT),
+        )
+        script = f"""rm -f {shlex.quote(CHAT_NGINX_SITE_ENABLED)} || true
+cat > {shlex.quote(STREAM_CONF)} <<'UTMKA_STREAM_EOF'
+{panel_stream}
+UTMKA_STREAM_EOF
+nginx -t && systemctl reload nginx || true
+"""
+        ssh_exec.run(ssh, f"sudo bash -s <<'UTMKA_RM_EOF'\n{script}UTMKA_RM_EOF", timeout=60)
+        return
     ssh_exec.run(
         ssh,
         f"sudo sh -c 'rm -f {shlex.quote(CHAT_NGINX_SITE_ENABLED)} && nginx -t && systemctl reload nginx' "
@@ -348,7 +381,9 @@ def _isolation_checks(ssh, domain: str) -> list[dict]:
     return results
 
 
-def _build_install_script(*, domain: str, backup_dir: str) -> str:
+def _build_install_script(
+    *, domain: str, backup_dir: str, passthrough: bool = False, panel_domain: str = ""
+) -> str:
     http_initial = _render_template("nginx-chat-http-initial.conf", DOMAIN=domain, WEBROOT=WEBROOT)
     https_final = _render_template(
         "nginx-chat-https.conf",
@@ -361,17 +396,51 @@ def _build_install_script(*, domain: str, backup_dir: str) -> str:
     )
     placeholder = PLACEHOLDER_HTML
 
+    # При passthrough :443 принадлежит stream-блоку: чат-vhost слушает локальный
+    # порт, а SNI чата маршрутизируется в него (панель и Xray остаются как были).
+    stream_block = ""
+    listen_fix = ""
+    restore_stream = ""
+    if passthrough:
+        combined_stream = _render_template(
+            "nginx-stream-xray-chat.conf",
+            DOMAIN=panel_domain,
+            CHAT_DOMAIN=domain,
+            PANEL_PORT=str(PANEL_HTTPS_INTERNAL),
+            CHAT_PORT=str(CHAT_HTTPS_INTERNAL),
+            XRAY_LOCAL_PORT=str(XRAY_LOCAL_PORT),
+        )
+        panel_only_stream = _render_template(
+            "nginx-stream-xray.conf",
+            DOMAIN=panel_domain,
+            XRAY_LOCAL_PORT=str(XRAY_LOCAL_PORT),
+        )
+        listen_fix = (
+            f"sed -i 's/listen 443 ssl/listen {CHAT_HTTPS_INTERNAL} ssl/g' {shlex.quote(CHAT_NGINX_SITE)}\n"
+            f"sed -i 's/listen \\[::\\]:443 ssl/listen [::]:{CHAT_HTTPS_INTERNAL} ssl/g' {shlex.quote(CHAT_NGINX_SITE)}\n"
+        )
+        stream_block = f"""cat > {shlex.quote(STREAM_CONF)} <<'CHAT_STREAM_EOF'
+{combined_stream}
+CHAT_STREAM_EOF
+"""
+        # При откате вернуть stream к «панель + Xray», чтобы панель/VPN не легли.
+        restore_stream = f"""cat > {shlex.quote(STREAM_CONF)} <<'CHAT_STREAM_RESTORE_EOF'
+{panel_only_stream}
+CHAT_STREAM_RESTORE_EOF
+"""
+
     return f"""set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
 
 mkdir -p {shlex.quote(backup_dir)} {shlex.quote(WEBROOT)} {shlex.quote(CHAT_ROOT)}
 cp -a /etc/nginx/sites-available {shlex.quote(backup_dir)}/ 2>/dev/null || true
 cp -a /etc/nginx/sites-enabled {shlex.quote(backup_dir)}/ 2>/dev/null || true
+cp -a /etc/nginx/stream.d {shlex.quote(backup_dir)}/ 2>/dev/null || true
 
 # Если nginx сломается на любом шаге — вернуть как было
 restore() {{
   rm -f {shlex.quote(CHAT_NGINX_SITE_ENABLED)} {shlex.quote(CHAT_NGINX_SITE)}
-  nginx -t && systemctl reload nginx || true
+{restore_stream}  nginx -t && systemctl reload nginx || true
 }}
 trap restore ERR
 
@@ -400,7 +469,8 @@ fi
 cat > {shlex.quote(CHAT_NGINX_SITE)} <<'CHAT_HTTPS_EOF'
 {https_final}
 CHAT_HTTPS_EOF
-nginx -t
+{listen_fix}# Шаг 4: при passthrough — SNI чата → локальный порт чат-vhost
+{stream_block}nginx -t
 systemctl reload nginx
 
 echo UTMKA_CHAT_OK domain={domain}
