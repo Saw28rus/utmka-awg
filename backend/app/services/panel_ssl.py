@@ -263,6 +263,49 @@ def install_panel_ssl(server_id: str, domain: str, *, email: Optional[str] = Non
         ssh.close()
 
 
+SSLIP_SUFFIX = "sslip.io"
+
+
+def magic_domain_for_ip(public_ip: Optional[str]) -> str:
+    """`<ip>.sslip.io` — публичный wildcard-DNS, который резолвится в этот IP.
+
+    Позволяет выпустить доверенный Let's Encrypt-сертификат без своего домена.
+    Поддерживаем только IPv4 (sslip.io умеет и dashed-форму, но dotted достаточно).
+    """
+    ip = (public_ip or "").strip()
+    try:
+        addr = ipaddress.ip_address(ip)
+    except ValueError:
+        raise PanelSslError("Не удалось определить публичный IP сервера для sslip.io.") from None
+    if addr.version != 4:
+        raise PanelSslError("HTTPS без домена (sslip.io) поддерживает только IPv4.")
+    if addr.is_private or addr.is_loopback:
+        raise PanelSslError(
+            f"IP сервера ({ip}) приватный — sslip.io требует публичный IPv4."
+        )
+    return f"{ip}.{SSLIP_SUFFIX}"
+
+
+def resolve_magic_domain(server_id: str) -> str:
+    """Определяет публичный IP сервера и возвращает его sslip.io-домен."""
+    record = server_store.get_record(server_id)
+    target = server_store.ssh_target(server_id)
+    if not record or not target:
+        raise PanelSslError("Сервер не найден.")
+    ssh = _connect(target)
+    try:
+        public_ip = _server_public_ip(ssh) or record.get("host")
+    finally:
+        ssh.close()
+    return magic_domain_for_ip(public_ip)
+
+
+def install_panel_ssl_auto(server_id: str, *, email: Optional[str] = None) -> PanelSslInstallResult:
+    """HTTPS без своего домена: домен `<ip>.sslip.io` + обычный Let's Encrypt-флоу."""
+    domain = resolve_magic_domain(server_id)
+    return install_panel_ssl(server_id, domain, email=email)
+
+
 def rollback_panel_ssl(server_id: str) -> str:
     record = server_store.get_record(server_id)
     stored = (record or {}).get("panel_ssl") or {}

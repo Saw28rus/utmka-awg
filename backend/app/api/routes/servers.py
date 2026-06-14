@@ -19,6 +19,7 @@ from app.schemas.servers import (
     PanelHardenApplyRequest,
     PanelHardenResult,
     PanelHardenStatus,
+    PanelSslAutoInstallRequest,
     PanelSslInstallRequest,
     PanelSslInstallResult,
     PanelSslStatus,
@@ -91,6 +92,7 @@ from app.services.panel_ssl import (
     PanelSslError,
     get_panel_ssl_status,
     install_panel_ssl,
+    install_panel_ssl_auto,
     rollback_panel_ssl,
     verify_panel_domain,
 )
@@ -552,6 +554,25 @@ async def panel_ssl_install(
             install_panel_ssl,
             server_id,
             payload.domain,
+            email=payload.email,
+        )
+    except PanelSslError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return PanelSslInstallResult(**result.__dict__)
+
+
+@router.post("/{server_id}/panel-ssl/install-auto", response_model=PanelSslInstallResult)
+async def panel_ssl_install_auto(
+    server_id: str,
+    payload: PanelSslAutoInstallRequest,
+    _: CurrentUser = Depends(require_admin),
+) -> PanelSslInstallResult:
+    if not server_store.get_record(server_id):
+        raise HTTPException(status_code=404, detail="Сервер не найден.")
+    try:
+        result = await asyncio.to_thread(
+            install_panel_ssl_auto,
+            server_id,
             email=payload.email,
         )
     except PanelSslError as exc:

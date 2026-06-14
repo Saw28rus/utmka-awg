@@ -212,6 +212,10 @@ class PanelSslInstallRequest(BaseModel):
     email: Optional[str] = Field(default=None, max_length=255)
 
 
+class PanelSslAutoInstallRequest(BaseModel):
+    email: Optional[str] = Field(default=None, max_length=255)
+
+
 class PanelSslInstallResult(BaseModel):
     ok: bool
     domain: str

@@ -358,9 +358,21 @@
                   </ol>
                   <div class="sec-row">
                     <n-input v-model:value="sslDomain" placeholder="panel.example.com" :disabled="!!sslBusy" />
-                    <n-button type="primary" :loading="!!sslBusy" @click="connectSsl">Подключить</n-button>
+                    <n-button type="primary" :loading="sslBusy === 'verify' || sslBusy === 'install'" @click="connectSsl">Подключить</n-button>
                   </div>
-                  <p v-if="sslBusy === 'install'" class="sec-note">Выпускаю сертификат — обычно 1–2 минуты. Не закрывайте страницу.</p>
+                  <div class="ssl-nodomain">
+                    <span class="ssl-nodomain-or">или без своего домена</span>
+                    <n-button size="small" tertiary :loading="sslBusy === 'auto'" :disabled="!!sslBusy" @click="connectSslAuto">
+                      <template #icon><ShieldCheck :size="14" /></template>
+                      HTTPS без домена (sslip.io)
+                    </n-button>
+                    <p class="sec-note">
+                      Выпустит доверенный сертификат на адрес вида
+                      <span class="mono">{{ server?.host }}.sslip.io</span> — это бесплатный публичный DNS,
+                      который сам резолвится в IP сервера. Нужны открытые порты 80/443.
+                    </p>
+                  </div>
+                  <p v-if="sslBusy === 'install' || sslBusy === 'auto'" class="sec-note">Выпускаю сертификат — обычно 1–2 минуты. Не закрывайте страницу.</p>
                   <p v-if="sslVerifyMessage && !sslVerifyOk" class="ssl-verify warn">{{ sslVerifyMessage }}</p>
                   <p v-if="sslStatus && !sslStatus.panel_detected" class="ssl-msg warn">
                     Панель на VPS не найдена. Сначала установите её: <span class="mono">scripts/install-panel.sh</span>
@@ -1436,7 +1448,7 @@ const sslDomain = ref('')
 const sslEmail = ref('')
 const sslVerifyMessage = ref('')
 const sslVerifyOk = ref(false)
-const sslBusy = ref<'verify' | 'install' | 'rollback' | ''>('')
+const sslBusy = ref<'verify' | 'install' | 'auto' | 'rollback' | ''>('')
 
 const hardenLoading = ref(false)
 const hardenStatus = ref<PanelHardenStatus | null>(null)
@@ -1519,6 +1531,24 @@ async function connectSsl() {
   if (!sslVerifyOk.value) return
   await installSsl()
   pickOpenStep()
+}
+
+async function connectSslAuto() {
+  sslBusy.value = 'auto'
+  try {
+    const { data } = await api.post(
+      `/servers/${serverId}/panel-ssl/install-auto`,
+      { email: sslEmail.value.trim() || null },
+      { timeout: 660_000 }
+    )
+    message.success(data.message)
+    await Promise.all([loadSslStatus(), loadOverview(), loadHardenStatus()])
+    pickOpenStep()
+  } catch (error: any) {
+    message.error(error?.response?.data?.detail || 'Установка HTTPS без домена не удалась.')
+  } finally {
+    sslBusy.value = ''
+  }
 }
 
 async function connectChat() {
@@ -3498,6 +3528,22 @@ function confirmDeleteServer() {
 
 .sec-note.sec-warn {
   color: var(--color-warning);
+}
+
+.ssl-nodomain {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px dashed var(--color-border);
+  max-width: 480px;
+}
+
+.ssl-nodomain-or {
+  font-size: 12px;
+  color: var(--color-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
 }
 
 .sec-audit-head {
