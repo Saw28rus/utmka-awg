@@ -24,6 +24,10 @@ WEBROOT = "/var/www/utmka-acme"
 NGINX_SITE = "/etc/nginx/sites-available/utmka-panel"
 NGINX_SITE_ENABLED = "/etc/nginx/sites-enabled/utmka-panel"
 STREAM_CONF = "/etc/nginx/stream.d/utmka-xray.conf"
+# Дублируется в app.services.chat_domain (там источник правды для чат-vhost);
+# здесь нужно, чтобы переустановка панели сохраняла маршрут чата при passthrough.
+CHAT_NGINX_SITE = "/etc/nginx/sites-available/utmka-chat"
+CHAT_HTTPS_INTERNAL = 8444
 SSL_BACKUP_ROOT = "/opt/utmka/ssl-backup"
 CERT_DIR = "/etc/letsencrypt/live"
 
@@ -222,12 +226,15 @@ def install_panel_ssl(server_id: str, domain: str, *, email: Optional[str] = Non
     ssh = _connect(target)
     try:
         backup_dir = f"{SSL_BACKUP_ROOT}/{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}"
+        chat_stored = record.get("chat_domain") or {}
+        chat_domain = (chat_stored.get("domain") or "").lower() if chat_stored.get("enabled") else ""
         script = _build_install_script(
             domain=domain,
             email=email or "",
             backup_dir=backup_dir,
             xray_on_443=verify.xray_on_443,
             public_ip=verify.server_public_ip or record.get("host"),
+            chat_domain=chat_domain,
         )
         result = ssh_exec.run(ssh, f"bash -s <<'UTMKA_SSL_EOF'\n{script}\nUTMKA_SSL_EOF", timeout=600)
         output = (result.stdout + "\n" + result.stderr).strip()
@@ -503,6 +510,7 @@ def _build_install_script(
     backup_dir: str,
     xray_on_443: bool,
     public_ip: str,
+    chat_domain: str = "",
 ) -> str:
     http_initial_conf = _render_template(
         "nginx-panel-http-initial.conf",
@@ -524,12 +532,39 @@ def _build_install_script(
         CERT_PRIVKEY=f"{CERT_DIR}/{domain}/privkey.pem",
     )
     stream_conf = ""
-    if xray_on_443:
-        stream_conf = _render_template(
-            "nginx-stream-xray.conf",
-            DOMAIN=domain,
-            XRAY_LOCAL_PORT=str(XRAY_LOCAL_PORT),
+    chat_fix_pt = ""    # passthrough-ветка: чат-vhost → локальный порт 8444
+    chat_fix_plain = ""  # без passthrough: чат-vhost обратно на :443 (SNI рядом с панелью)
+    qchat = shlex.quote(CHAT_NGINX_SITE)
+    if chat_domain:
+        # Нормализуем listen → :443, чтобы переход между режимами был идемпотентным.
+        _to_443 = (
+            f"  sed -i 's/listen {CHAT_HTTPS_INTERNAL} ssl/listen 443 ssl/g' {qchat}\n"
+            f"  sed -i 's/listen \\[::\\]:{CHAT_HTTPS_INTERNAL} ssl/listen [::]:443 ssl/g' {qchat}\n"
         )
+        _to_8444 = (
+            f"  sed -i 's/listen 443 ssl/listen {CHAT_HTTPS_INTERNAL} ssl/g' {qchat}\n"
+            f"  sed -i 's/listen \\[::\\]:443 ssl/listen [::]:{CHAT_HTTPS_INTERNAL} ssl/g' {qchat}\n"
+        )
+        chat_fix_pt = f"if [ -f {qchat} ]; then\n{_to_443}{_to_8444}fi\n"
+        chat_fix_plain = f"if [ -f {qchat} ]; then\n{_to_443}fi\n"
+
+    if xray_on_443:
+        if chat_domain:
+            # Сохраняем включённый чат-домен в SNI-карте: панель→8443, чат→8444, default→Xray.
+            stream_conf = _render_template(
+                "nginx-stream-xray-chat.conf",
+                DOMAIN=domain,
+                CHAT_DOMAIN=chat_domain,
+                PANEL_PORT=str(PANEL_HTTPS_INTERNAL),
+                CHAT_PORT=str(CHAT_HTTPS_INTERNAL),
+                XRAY_LOCAL_PORT=str(XRAY_LOCAL_PORT),
+            )
+        else:
+            stream_conf = _render_template(
+                "nginx-stream-xray.conf",
+                DOMAIN=domain,
+                XRAY_LOCAL_PORT=str(XRAY_LOCAL_PORT),
+            )
 
     email_flag = f"-m {shlex.quote(email)}" if email else "--register-unsafely-without-email"
 
@@ -596,7 +631,7 @@ if [ "$XRAY_MOVED" = "1" ]; then
 cat > {shlex.quote(STREAM_CONF)} <<'NGINX_STREAM_EOF'
 {stream_conf}
 NGINX_STREAM_EOF
-fi
+{chat_fix_pt}fi
 
 nginx -t
 systemctl enable nginx
@@ -620,7 +655,7 @@ cat > {shlex.quote(NGINX_SITE)} <<'NGINX_HTTPS_EOF'
 
 {https_conf}
 NGINX_HTTPS_EOF
-fi
+{chat_fix_plain}fi
 
 nginx -t
 systemctl reload nginx
