@@ -343,10 +343,48 @@ h1 {
     display: none;
   }
 
+  .brand,
+  .nav-link {
+    justify-content: center;
+    padding: 0;
+  }
+
+  .sidebar {
+    padding: 16px 8px;
+  }
+
   .content,
   .topbar {
     padding-left: 16px;
     padding-right: 16px;
+  }
+}
+
+@media (max-width: 560px) {
+  .topbar {
+    padding-top: 10px;
+    padding-bottom: 10px;
+    gap: 10px;
+  }
+
+  .eyebrow {
+    display: none;
+  }
+
+  h1 {
+    font-size: 17px;
+  }
+
+  .topbar-actions {
+    gap: 4px;
+  }
+
+  .content {
+    padding: 14px;
+  }
+
+  .notif-pop {
+    max-height: 60vh;
   }
 }
 </style>

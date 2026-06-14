@@ -185,6 +185,7 @@ function escapeHtml(s: string): string {
 
 .export-actions {
   display: flex;
+  flex-wrap: wrap;
   gap: 10px;
   justify-content: flex-end;
 }
