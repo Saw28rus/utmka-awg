@@ -120,6 +120,8 @@ async def list_servers_minimal(
             host=s.host,
             status=s.status,
             protocols=s.protocols,
+            awg2_imported=s.awg2_imported,
+            client_protocols=s.client_protocols,
         )
         for s in server_store.list()
     ]

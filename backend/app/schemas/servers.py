@@ -69,6 +69,8 @@ class ServerMinimal(BaseModel):
     host: str
     status: str
     protocols: list[str] = []
+    awg2_imported: bool = False
+    client_protocols: list[str] = []
 
 
 class DetectCheck(BaseModel):
