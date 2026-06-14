@@ -76,19 +76,17 @@
           :key="t.id"
           type="button"
           class="chat-thread"
-          :class="{ active: t.id === activeThreadId }"
+          :class="{ active: t.id === activeThreadId, unread: t.unread_count > 0 }"
           @click="selectThread(t.id)"
         >
           <div class="chat-thread-top">
             <span class="chat-thread-name">
-              <span
-                v-if="t.last_sender === 'client' && t.status !== 'resolved'"
-                class="chat-thread-dot"
-                title="Ожидает ответа"
-              ></span>
               {{ t.display_name || t.username }}
             </span>
-            <span v-if="t.status === 'resolved'" class="chat-thread-resolved">решён</span>
+            <span v-if="t.unread_count > 0" class="chat-thread-unread">
+              {{ t.unread_count > 99 ? '99+' : t.unread_count }}
+            </span>
+            <span v-else-if="t.status === 'resolved'" class="chat-thread-resolved">решён</span>
           </div>
           <div class="chat-thread-preview">
             <template v-if="t.last_preview">
@@ -451,12 +449,15 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import { api } from '@/api/client'
 import AppShell from '@/layouts/AppShell.vue'
 import { useAuthStore } from '@/stores/auth'
+import { useChatUnreadStore } from '@/stores/chatUnread'
 
 type ChatStatus = {
   enabled: boolean
   domain: string | null
   public_url: string | null
   moderator_access: boolean
+  unread_messages?: number
+  unread_threads?: number
 }
 
 type ThreadRow = {
@@ -473,6 +474,7 @@ type ThreadRow = {
   chat_user_id: string | null
   last_preview: string | null
   last_sender: string | null
+  unread_count: number
 }
 
 type FolderRow = { id: string; name: string; color: string | null; sort_order: number; count: number }
@@ -512,6 +514,7 @@ type InvoiceRow = {
 const message = useMessage()
 const dialog = useDialog()
 const auth = useAuthStore()
+const chatUnread = useChatUnreadStore()
 const isAdmin = computed(() => auth.user?.role === 'admin')
 
 const status = ref<ChatStatus | null>(null)
@@ -725,6 +728,8 @@ async function loadStatus() {
   try {
     const { data } = await api.get<ChatStatus>('/chat/admin/status')
     status.value = data
+    chatUnread.unread = data.unread_messages || 0
+    chatUnread.threads = data.unread_threads || 0
   } catch {
     status.value = null
   }
@@ -735,6 +740,7 @@ async function loadThreads() {
   try {
     const { data } = await api.get<ThreadRow[]>('/chat/admin/threads')
     threads.value = data
+    void chatUnread.refresh()
   } catch {
     /* поллинг — не шумим */
   } finally {
@@ -810,6 +816,7 @@ async function selectThread(id: string) {
     )
     messages.value = data.messages
     scrollToBottom()
+    await loadThreads()
   } catch {
     message.error('Не удалось загрузить сообщения.')
   } finally {
@@ -828,6 +835,7 @@ async function pollMessages() {
     if (data.messages.length) {
       messages.value.push(...data.messages)
       scrollToBottom()
+      void loadThreads()
     }
   } catch {
     /* поллинг — не шумим */
@@ -1211,14 +1219,26 @@ async function copyCredentials() {
   font-size: 13.5px;
 }
 
-.chat-thread-dot {
-  display: inline-block;
-  width: 8px;
-  height: 8px;
-  margin-right: 5px;
-  border-radius: 50%;
-  background: var(--color-primary, #63e2b7);
-  vertical-align: middle;
+.chat-thread.unread {
+  background: color-mix(in srgb, var(--color-accent) 10%, transparent);
+}
+
+.chat-thread.unread .chat-thread-name {
+  font-weight: 700;
+}
+
+.chat-thread-unread {
+  flex-shrink: 0;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: #e88080;
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 18px;
+  text-align: center;
 }
 
 .chat-thread-resolved {

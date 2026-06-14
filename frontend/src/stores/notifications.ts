@@ -48,7 +48,7 @@ export const useNotificationsStore = defineStore('notifications', {
       void this.load()
       this.pollTimer = setInterval(() => {
         void this.load()
-      }, 30000)
+      }, 15_000)
     },
 
     stopPolling() {

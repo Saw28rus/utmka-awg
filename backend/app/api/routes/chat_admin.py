@@ -100,6 +100,9 @@ async def chat_status(
     settings_svc = PanelSettingsService(db)
     enabled = (await settings_svc.get("chat_enabled")) == "true"
     counts = await ChatService(db).counts() if enabled else {"users": 0, "threads": 0}
+    unread_messages = unread_threads = 0
+    if enabled:
+        unread_messages, unread_threads = await ChatService(db).total_unread()
     return ChatStatusRead(
         enabled=enabled,
         domain=await settings_svc.get("chat_domain") or None,
@@ -107,6 +110,8 @@ async def chat_status(
         moderator_access=(await settings_svc.get("chat_moderator_access")) != "false",
         users=counts["users"],
         threads=counts["threads"],
+        unread_messages=unread_messages,
+        unread_threads=unread_threads,
     )
 
 
@@ -360,6 +365,10 @@ async def chat_thread_messages(
         raise HTTPException(status_code=404, detail="Диалог не найден.")
     messages = await svc.list_messages(thread.id, after_id=after_id, limit=limit)
     att_map = await svc.attachments_map([m.attachment_id for m in messages if m.attachment_id])
+    if after_id == 0:
+        await svc.mark_thread_read_to_latest(thread.id)
+    elif messages:
+        await svc.mark_thread_read(thread, max(m.id for m in messages))
     return ChatMessagesPage(
         messages=[_msg_read(m, att_map) for m in messages], thread_status=thread.status
     )

@@ -10,6 +10,9 @@
         <RouterLink v-for="item in visibleNav" :key="item.to" :to="item.to" class="nav-link">
           <component :is="item.icon" :size="18" />
           <span>{{ item.label }}</span>
+          <span v-if="item.to === '/chat' && chatUnread.unread > 0" class="nav-badge">
+            {{ chatUnread.unread > 99 ? '99+' : chatUnread.unread }}
+          </span>
         </RouterLink>
       </nav>
     </aside>
@@ -87,6 +90,7 @@ import { computed, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 
 import { useAuthStore } from '@/stores/auth'
+import { useChatUnreadStore } from '@/stores/chatUnread'
 import { useIntegrationsStore } from '@/stores/integrations'
 import { useNotificationsStore } from '@/stores/notifications'
 import { usePanelStore } from '@/stores/panel'
@@ -105,8 +109,13 @@ const panel = usePanelStore()
 const panelUpdate = usePanelUpdateStore()
 const integrations = useIntegrationsStore()
 const notifications = useNotificationsStore()
+const chatUnread = useChatUnreadStore()
 
 const isAdmin = computed(() => auth.user?.role === 'admin')
+const hasChatAccess = computed(() => {
+  const role = auth.user?.role
+  return role === 'admin' || role === 'moderator'
+})
 
 type NavItem = {
   to: string
@@ -139,9 +148,12 @@ const visibleNav = computed(() => {
 
 const themeLabel = computed(() => (theme.mode === 'dark' ? 'Светлая тема' : 'Тёмная тема'))
 
-onMounted(() => {
+onMounted(async () => {
   panel.loadPublicName()
-  void integrations.load()
+  await integrations.load()
+  if (integrations.chatEnabled && hasChatAccess.value) {
+    chatUnread.startPolling()
+  }
   if (auth.user?.role === 'admin') {
     void panelUpdate.resume()
     notifications.startPolling()
@@ -150,6 +162,7 @@ onMounted(() => {
 
 onUnmounted(() => {
   notifications.stopPolling()
+  chatUnread.stopPolling()
 })
 
 function onBellToggle(show: boolean) {
@@ -218,6 +231,21 @@ function logout() {
   border-radius: 7px;
   color: var(--color-muted);
   font-size: 14px;
+}
+
+.nav-badge {
+  margin-left: auto;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: #e88080;
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 18px;
+  text-align: center;
+  flex-shrink: 0;
 }
 
 .nav-link.router-link-active {

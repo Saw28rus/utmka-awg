@@ -284,6 +284,16 @@ async def chat_send(
         msg = await svc.send_message(thread, "client", payload.body)
     except ChatServiceError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+    from app.services.notification_store import notification_store
+
+    label = (user.display_name or user.username).strip()
+    preview = msg.body.replace("\n", " ").strip()[:120]
+    notification_store.add(
+        level="info",
+        code="chat_message",
+        title="Новое сообщение в чате",
+        message=f"{label}: {preview}",
+    )
     return _msg_read(msg)
 
 

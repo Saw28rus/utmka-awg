@@ -260,6 +260,57 @@ class ChatService:
         )
         return list(rows.scalars().all())
 
+    async def mark_thread_read(self, thread: ChatThread, up_to_message_id: int) -> None:
+        if up_to_message_id <= (thread.admin_last_read_message_id or 0):
+            return
+        thread.admin_last_read_message_id = up_to_message_id
+        await self.session.commit()
+
+    async def mark_thread_read_to_latest(self, thread_id: uuid.UUID) -> None:
+        max_id = await self.session.scalar(
+            select(func.max(ChatMessage.id)).where(
+                ChatMessage.thread_id == thread_id,
+                ChatMessage.deleted_at.is_(None),
+            )
+        )
+        if not max_id:
+            return
+        thread = await self.get_thread(thread_id)
+        if thread:
+            await self.mark_thread_read(thread, int(max_id))
+
+    async def unread_count_for_thread(self, thread: ChatThread) -> int:
+        last_read = thread.admin_last_read_message_id or 0
+        count = await self.session.scalar(
+            select(func.count())
+            .select_from(ChatMessage)
+            .where(
+                ChatMessage.thread_id == thread.id,
+                ChatMessage.id > last_read,
+                ChatMessage.sender_type == "client",
+                ChatMessage.deleted_at.is_(None),
+            )
+        )
+        return int(count or 0)
+
+    async def total_unread(self) -> tuple[int, int]:
+        """(непрочитанные сообщения от клиентов, диалоги с непрочитанным)."""
+        rows = await self.session.execute(
+            select(ChatThread.id, func.count())
+            .join(
+                ChatMessage,
+                (ChatMessage.thread_id == ChatThread.id)
+                & (ChatMessage.id > ChatThread.admin_last_read_message_id)
+                & (ChatMessage.sender_type == "client")
+                & ChatMessage.deleted_at.is_(None),
+            )
+            .group_by(ChatThread.id)
+        )
+        per_thread = rows.all()
+        messages = sum(int(cnt) for _, cnt in per_thread)
+        threads = len(per_thread)
+        return messages, threads
+
     async def send_message(
         self,
         thread: ChatThread,
@@ -411,6 +462,7 @@ class ChatService:
                 .limit(1)
             )
             preview = preview_rows.first()
+            unread_count = await self.unread_count_for_thread(thread)
             result.append(
                 {
                     "id": str(thread.id),
@@ -428,6 +480,7 @@ class ChatService:
                     "chat_user_id": str(user.id),
                     "last_preview": (preview[0][:80] if preview else None),
                     "last_sender": (preview[1] if preview else None),
+                    "unread_count": unread_count,
                 }
             )
         return result

@@ -111,6 +111,8 @@ class ChatStatusRead(BaseModel):
     moderator_access: bool = True
     users: int = 0
     threads: int = 0
+    unread_messages: int = 0
+    unread_threads: int = 0
 
 
 class ChatUserRead(BaseModel):
@@ -176,6 +178,7 @@ class ChatThreadRead(BaseModel):
     chat_user_id: Optional[str] = None
     last_preview: Optional[str] = None
     last_sender: Optional[str] = None
+    unread_count: int = 0
 
 
 class ChatThreadStatusRequest(BaseModel):
