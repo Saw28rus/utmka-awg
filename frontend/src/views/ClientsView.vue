@@ -19,6 +19,15 @@
           >
             <template #icon><RefreshCw :size="16" /></template>
           </n-button>
+          <n-button
+            v-if="clients.length"
+            tertiary
+            circle
+            title="Экспорт клиентов"
+            @click="showExport = true"
+          >
+            <template #icon><Download :size="16" /></template>
+          </n-button>
           <n-button type="primary" circle title="Добавить клиента" @click="showAddClient = true">
             <template #icon><Plus :size="16" /></template>
           </n-button>
@@ -122,11 +131,12 @@
       :client="editClient"
       @saved="onClientSaved"
     />
+    <ExportClientsModal v-model:show="showExport" />
   </AppShell>
 </template>
 
 <script setup lang="ts">
-import { Pencil, Plus, RefreshCw } from '@lucide/vue'
+import { Download, Pencil, Plus, RefreshCw } from '@lucide/vue'
 import { NButton, NSwitch, useMessage } from 'naive-ui'
 import { onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
@@ -134,6 +144,7 @@ import { useRouter } from 'vue-router'
 import { api } from '@/api/client'
 import AddClientModal from '@/components/AddClientModal.vue'
 import EditClientLimitsModal, { type ClientLimitsSource } from '@/components/EditClientLimitsModal.vue'
+import ExportClientsModal from '@/components/ExportClientsModal.vue'
 import EmptyState from '@/components/EmptyState.vue'
 import StatusBadge from '@/components/StatusBadge.vue'
 import {
@@ -168,6 +179,7 @@ const message = useMessage()
 const loading = ref(false)
 const togglingId = ref<string | null>(null)
 const showAddClient = ref(false)
+const showExport = ref(false)
 const editVisible = ref(false)
 const editClient = ref<ClientLimitsSource | null>(null)
 const clients = ref<ClientListItem[]>([])

@@ -11,6 +11,7 @@ from app.schemas.auth import CurrentUser
 from app.schemas.clients import (
     ClientCreate,
     ClientDetail,
+    ClientExportRequest,
     ClientListItem,
     ClientTrafficSnapshot,
     ClientUpdate,
@@ -44,6 +45,67 @@ async def list_clients(
 async def sync_traffic(_: CurrentUser = Depends(require_client_manager)) -> list[ClientTrafficSnapshot]:
     """Лёгкое обновление трафика для онлайн-клиентов (без полных метрик сервера)."""
     return await asyncio.to_thread(sync_online_traffic)
+
+
+@router.post("/export")
+async def export_clients(
+    payload: ClientExportRequest,
+    request: Request,
+    user: CurrentUser = Depends(require_client_manager),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """UX1: экспорт клиентов (конфиги/ссылки/QR) для бэкапа и массовой раздачи.
+
+    Содержит чувствительные данные (приватные ключи AWG в конфиге) — только для
+    менеджеров клиентов и с записью в audit.
+    """
+    from datetime import datetime, timezone
+
+    items = client_store.list_all(server_id=payload.server_id)
+    wanted = set(payload.ids) if payload.ids else None
+
+    exported: list[dict] = []
+    for item in items:
+        if wanted is not None and item.id not in wanted:
+            continue
+        detail = client_store.get_detail(item.id)
+        if not detail:
+            continue
+        entry = {
+            "id": detail.id,
+            "name": detail.name,
+            "server_id": detail.server_id,
+            "server_name": detail.server_name,
+            "protocol": detail.protocol,
+            "client_ip": detail.client_ip,
+            "endpoint": detail.endpoint,
+            "config_text": detail.config_text,
+            "vpn_link": detail.vpn_link,
+            "traffic_limit_bytes": detail.traffic_limit_bytes,
+            "expires_at": detail.expires_at,
+            "created_at": detail.created_at,
+            "keepalive": detail.keepalive,
+        }
+        if payload.include_qr:
+            entry["qr_awg"] = detail.qr_awg
+            entry["qr_vpn"] = detail.qr_vpn
+        exported.append(entry)
+
+    await AuditService(db).log(
+        "clients_exported",
+        user_id=uuid.UUID(user.id),
+        user_email=user.email,
+        target_type="client",
+        target_id=payload.server_id or "all",
+        detail={"count": len(exported), "include_qr": payload.include_qr},
+        ip=client_ip(request),
+    )
+    return {
+        "version": 1,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "count": len(exported),
+        "clients": exported,
+    }
 
 
 @router.post("", response_model=ClientDetail)

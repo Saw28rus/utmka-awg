@@ -17,6 +17,12 @@ class ClientCreate(BaseModel):
     billing_period_months: int = Field(default=1, ge=1, le=12)
 
 
+class ClientExportRequest(BaseModel):
+    server_id: Optional[str] = None
+    ids: Optional[list[str]] = None
+    include_qr: bool = True
+
+
 class KeepaliveUpdate(BaseModel):
     keepalive: int = Field(ge=0, le=120)
 
