@@ -243,6 +243,13 @@ if ! git checkout -f "tags/${TARGET_TAG}"; then
   exit 2
 fi
 
+# Запекаем реальную версию в образ (VERSION-файл в репо не бампается вручную).
+# Делаем ДО сборки, чтобы backend показывал корректную «текущую версию».
+if [ -f "$INSTALL_DIR/backend/app/VERSION" ]; then
+  printf '%s\n' "${TARGET_TAG#v}" > "$INSTALL_DIR/backend/app/VERSION" || true
+  log "VERSION → ${TARGET_TAG#v}"
+fi
+
 state "running" 52 "Сборка контейнеров"
 log "docker compose build"
 if ! docker compose -f "$COMPOSE_FILE" build; then

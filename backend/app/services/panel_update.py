@@ -74,9 +74,40 @@ def _read_git_commit(base: Path) -> Optional[str]:
     return ref[:12]
 
 
+def _read_deployed_tag(base: Path) -> Optional[str]:
+    """Релиз-тег, на который сейчас выкачен код на хосте (после update — detached на теге).
+
+    Источник правды для «текущей версии»: статичный VERSION-файл в репозитории не
+    бампается на каждый релиз, поэтому реальную версию берём из git-тега развёрнутого
+    коммита. Бэкенд-контейнер монтирует INSTALL_DIR и содержит git.
+    """
+    if not (base / ".git").exists():
+        return None
+    git_bin = shutil.which("git") or "/usr/bin/git"
+    try:
+        res = subprocess.run(
+            [git_bin, "-C", str(base), "tag", "--points-at", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except Exception:  # noqa: BLE001
+        return None
+    if res.returncode != 0:
+        return None
+    tags = [t.strip() for t in res.stdout.splitlines() if t.strip()]
+    return _pick_latest_tag(tags)
+
+
 def read_local_version() -> str:
+    # 1) Реальный релиз-тег развёрнутого кода (самый точный).
+    tag = _read_deployed_tag(INSTALL_DIR)
+    if tag:
+        return tag
+    # 2) Статичный VERSION-файл (fallback для dev/чистого клона).
     if PANEL_VERSION_FILE.exists():
         return PANEL_VERSION_FILE.read_text(encoding="utf-8").strip()
+    # 3) Короткий commit.
     deployed = _read_git_commit(INSTALL_DIR)
     return deployed or "unknown"
 
