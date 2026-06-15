@@ -19,7 +19,7 @@ from datetime import datetime, timezone
 from typing import Optional
 from uuid import uuid4
 
-from app.core.crypto import encrypt
+from app.core.crypto import decrypt, encrypt
 from app.services.persistence import read_json, write_json
 from app.services.protocol_versions import CONTAINERS, pinned
 
@@ -136,6 +136,26 @@ def list_snapshots(server_id: str, protocol: str) -> list[dict]:
 def latest_snapshot(server_id: str, protocol: str) -> Optional[dict]:
     items = list_snapshots(server_id, protocol)
     return items[0] if items else None
+
+
+def get_snapshot_blob(server_id: str, protocol: str, snapshot_id: Optional[str] = None) -> Optional[str]:
+    """Расшифрованный base64-архив (tar.gz) конфига/ключей протокола.
+
+    Возвращает None, если снапшота нет. Используется при восстановлении узла
+    на другой VPS (Entry Replacement) — содержит server keys + peers + маскировку.
+    """
+    data = _read()
+    items = data.get(_key(server_id, protocol)) or []
+    if not items:
+        return None
+    entry = None
+    if snapshot_id:
+        entry = next((e for e in items if e.get("id") == snapshot_id), None)
+    else:
+        entry = items[0]
+    if not entry:
+        return None
+    return decrypt(entry.get("data") or None)
 
 
 def forget_node(server_id: str) -> None:

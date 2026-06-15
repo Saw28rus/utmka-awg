@@ -18,6 +18,9 @@ XRAY_CASCADE_RECONCILE_SECONDS = 90
 HEALTH_CHECK_SECONDS = 120
 DPI_SAMPLE_SECONDS = 300
 ROTATION_CHECK_SECONDS = 3600
+# Авто-снапшот AWG2-входов: чтобы к моменту аварии был свежий слепок ключей
+# для «Замены Входа» (RES2a). Read-only docker exec tar, сервису не вредит.
+ENTRY_SNAPSHOT_SECONDS = 12 * 3600
 
 
 async def _health_check() -> None:
@@ -100,6 +103,40 @@ async def _chat_retention() -> None:
     except Exception:  # noqa: BLE001
         logger.exception("Ошибка retention чата")
 
+async def _snapshot_entries() -> None:
+    """Снять свежий слепок AWG2-входов каскадов (для disaster-recovery входа)."""
+    try:
+        import asyncio
+
+        from app.services.cascade_store import cascade_store
+        from app.services.protocol_backup import snapshot_protocol
+        from app.services.server_store import server_store
+
+        entry_ids = {
+            link.get("entry_server_id")
+            for link in cascade_store.list_links()
+            if link.get("entry_server_id")
+        }
+        done = 0
+        for sid in entry_ids:
+            rec = server_store.get_record(sid)
+            if not rec:
+                continue
+            has_awg2 = rec.get("awg2_imported") or (rec.get("installed_protocols") or {}).get("awg2")
+            if not has_awg2:
+                continue
+            try:
+                await asyncio.to_thread(snapshot_protocol, sid, "awg2")
+                done += 1
+            except Exception:  # noqa: BLE001
+                # узел недоступен — не критично, попробуем в следующий раз
+                continue
+        if done:
+            logger.info("entry snapshot: captured %s entry node(s)", done)
+    except Exception:  # noqa: BLE001
+        logger.exception("Ошибка авто-снапшота входов")
+
+
 _scheduler: Optional[AsyncIOScheduler] = None
 
 
@@ -174,6 +211,15 @@ def start_scheduler() -> Optional[AsyncIOScheduler]:
         "interval",
         seconds=ROTATION_CHECK_SECONDS,
         id="masking_rotation",
+        max_instances=1,
+        coalesce=True,
+        replace_existing=True,
+    )
+    scheduler.add_job(
+        _snapshot_entries,
+        "interval",
+        seconds=ENTRY_SNAPSHOT_SECONDS,
+        id="entry_snapshot",
         max_instances=1,
         coalesce=True,
         replace_existing=True,

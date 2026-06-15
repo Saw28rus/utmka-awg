@@ -10,6 +10,7 @@ from app.api.routes import (
     clients,
     dashboard,
     dpi,
+    entry_replacement,
     health,
     health_nodes,
     invoices,
@@ -29,6 +30,7 @@ api_router.include_router(auth.router, prefix="/auth", tags=["auth"])
 api_router.include_router(dashboard.router, prefix="/dashboard", tags=["dashboard"])
 api_router.include_router(servers.router, prefix="/servers", tags=["servers"])
 api_router.include_router(cascade.router, prefix="/servers", tags=["cascade"])
+api_router.include_router(entry_replacement.router, prefix="/servers", tags=["entry-replacement"])
 api_router.include_router(clients.router, prefix="/clients", tags=["clients"])
 api_router.include_router(channels.router, prefix="/channels", tags=["channels"])
 api_router.include_router(invoices.router, prefix="/invoices", tags=["invoices"])
