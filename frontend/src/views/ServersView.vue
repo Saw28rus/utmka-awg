@@ -48,6 +48,7 @@
               role-label="entry"
               @delete="confirmDelete(item.entry)"
               @check="checkHealth(item.entry.id)"
+              @replace-entry="openReplaceEntry(item.entry)"
             />
 
             <div class="cascade-link" :class="{ live: item.link.is_active }" aria-hidden="true">
@@ -94,6 +95,13 @@
     </div>
 
     <AddServerWizard v-model:show="showAddServer" @created="onServerCreated" />
+
+    <ReplaceEntryModal
+      v-model:show="replaceVisible"
+      :server-id="replaceServerId"
+      :server-name="replaceServerName"
+      @replaced="onEntryReplaced"
+    />
   </AppShell>
 </template>
 
@@ -106,6 +114,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { api } from '@/api/client'
 import AddServerWizard from '@/components/AddServerWizard.vue'
 import EmptyState from '@/components/EmptyState.vue'
+import ReplaceEntryModal from '@/components/ReplaceEntryModal.vue'
 import ServerListCard, { type NodeHealth, type ServerListItem, type ServerMetrics } from '@/components/ServerListCard.vue'
 import StatusBadge from '@/components/StatusBadge.vue'
 import AppShell from '@/layouts/AppShell.vue'
@@ -139,6 +148,9 @@ const message = useMessage()
 
 const showAddServer = ref(false)
 const refreshing = ref(false)
+const replaceVisible = ref(false)
+const replaceServerId = ref('')
+const replaceServerName = ref('')
 const servers = ref<ServerListItem[]>([])
 const cascadeLinks = ref<CascadeLinkSummary[]>([])
 const metrics = reactive<Record<string, ServerMetrics>>({})
@@ -352,6 +364,16 @@ async function refreshAll() {
 
 function onServerCreated() {
   void loadServers()
+}
+
+function openReplaceEntry(server: ServerListItem) {
+  replaceServerId.value = server.id
+  replaceServerName.value = server.name
+  replaceVisible.value = true
+}
+
+function onEntryReplaced() {
+  void loadServers({ refresh: true, liveCascade: true })
 }
 
 function cascadeRoleFor(serverId: string): CascadePeerRole | undefined {

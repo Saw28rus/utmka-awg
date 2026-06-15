@@ -3,16 +3,35 @@
     <div class="panel replace-modal">
       <header class="modal-head">
         <div>
-          <h3>Заменить вход</h3>
-          <p>
-            Поднимаем новый сервер 1-в-1 как старый вход (те же ключи, peers, маскировка, порт).
-            Клиентам конфиги менять не нужно — меняется только IP и A-запись домена.
+          <h3>{{ stage === 'intro' ? 'Замена входного сервера' : 'Заменить вход' }}</h3>
+          <p v-if="stage !== 'intro'">
+            Новый VPS с теми же ключами, peers и маскировкой. Клиентам конфиги менять не нужно.
           </p>
         </div>
         <n-button circle tertiary size="small" @click="close">
           <template #icon><X :size="15" /></template>
         </n-button>
       </header>
+
+      <!-- ШАГ 0: краткое объяснение -->
+      <div v-if="stage === 'intro'" class="intro">
+        <div class="intro-icon">
+          <ArrowRightLeft :size="28" />
+        </div>
+        <p class="intro-lead">
+          Если входной сервер заблокировали или он недоступен — поднимите новый VPS
+          <strong>без перевыпуска конфигов клиентам</strong>.
+        </p>
+        <ol class="intro-steps">
+          <li>Вводите IP и SSH нового <strong>чистого</strong> сервера</li>
+          <li>Панель развернёт на нём копию входа (ключи, peers, маскировка, порт)</li>
+          <li>Меняете <strong>A-запись домена</strong> у регистратора на новый IP</li>
+          <li>Нажимаете «Активировать» — клиенты снова работают на старых конфигах</li>
+        </ol>
+        <p class="hint intro-note">
+          Старый вход не трогается, пока вы не активируете замену. При любой ошибке новый сервер очищается автоматически.
+        </p>
+      </div>
 
       <!-- ШАГ 1: ввод данных нового VPS -->
       <div v-if="stage === 'form'" class="form">
@@ -113,9 +132,12 @@
       </div>
 
       <footer class="modal-foot">
-        <n-button v-if="stage !== 'active'" tertiary :disabled="busy" @click="onCancel">
+        <n-button v-if="stage !== 'active' && stage !== 'intro'" tertiary :disabled="busy" @click="onCancel">
           {{ stage === 'form' ? 'Отмена' : 'Прервать замену' }}
         </n-button>
+
+        <n-button v-if="stage === 'intro'" tertiary @click="close">Отмена</n-button>
+        <n-button v-if="stage === 'intro'" type="primary" @click="stage = 'form'">Я понял, продолжить</n-button>
 
         <n-button v-if="stage === 'form'" type="primary" :loading="busy" @click="runPreflight">
           Проверить сервер
@@ -156,7 +178,7 @@
 </template>
 
 <script setup lang="ts">
-import { X } from '@lucide/vue'
+import { ArrowRightLeft, X } from '@lucide/vue'
 import {
   NButton,
   NInput,
@@ -190,7 +212,7 @@ type Replacement = {
   steps?: Array<{ name: string; status: string; detail?: string | null }>
 }
 
-type Stage = 'form' | 'preflight' | 'provisioning' | 'waiting' | 'ready' | 'active'
+type Stage = 'intro' | 'form' | 'preflight' | 'provisioning' | 'waiting' | 'ready' | 'active'
 
 const props = defineProps<{
   show: boolean
@@ -206,7 +228,7 @@ const emit = defineEmits<{
 const message = useMessage()
 const dialog = useDialog()
 const visible = ref(props.show)
-const stage = ref<Stage>('form')
+const stage = ref<Stage>('intro')
 const busy = ref(false)
 const activating = ref(false)
 const rec = ref<Replacement | null>(null)
@@ -403,7 +425,7 @@ function close() {
 }
 
 function reset() {
-  stage.value = 'form'
+  stage.value = 'intro'
   busy.value = false
   activating.value = false
   rec.value = null
@@ -427,7 +449,7 @@ watch(
         startPolling()
       } else {
         rec.value = null
-        stage.value = 'form'
+        stage.value = 'intro'
       }
     } else {
       stopPolling()
@@ -583,5 +605,50 @@ onUnmounted(stopPolling)
   display: flex;
   justify-content: flex-end;
   gap: 8px;
+}
+
+.intro {
+  display: grid;
+  gap: 14px;
+}
+
+.intro-icon {
+  display: grid;
+  place-items: center;
+  width: 52px;
+  height: 52px;
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--color-accent) 14%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-accent) 35%, transparent);
+  color: var(--color-accent);
+}
+
+.intro-lead {
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.55;
+  color: var(--color-text);
+}
+
+.intro-steps {
+  margin: 0;
+  padding-left: 20px;
+  display: grid;
+  gap: 8px;
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--color-muted);
+}
+
+.intro-steps strong {
+  color: var(--color-text);
+  font-weight: 600;
+}
+
+.intro-note {
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: var(--color-surface-2);
+  border: 1px solid var(--color-border);
 }
 </style>

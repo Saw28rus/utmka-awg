@@ -66,6 +66,17 @@
       </div>
     </div>
 
+    <button
+      v-if="roleLabel === 'entry'"
+      type="button"
+      class="replace-entry-btn"
+      title="Быстрая замена входного сервера без перевыпуска конфигов"
+      @click.prevent.stop="$emit('replace-entry')"
+    >
+      <ArrowRightLeft :size="15" />
+      <span>Заменить вход</span>
+    </button>
+
     <footer class="card-foot">
       <span class="foot-item">
         <Users :size="13" />
@@ -96,7 +107,7 @@
 </template>
 
 <script setup lang="ts">
-import { Activity, AlertTriangle, ArrowDownUp, Clock, Cpu, HardDrive, MemoryStick, Network, ShieldCheck, Trash2, Users, WifiOff } from '@lucide/vue'
+import { Activity, AlertTriangle, ArrowDownUp, ArrowRightLeft, Clock, Cpu, HardDrive, MemoryStick, Network, ShieldCheck, Trash2, Users, WifiOff } from '@lucide/vue'
 import { NSpin } from 'naive-ui'
 import { computed } from 'vue'
 import { RouterLink, type RouteLocationRaw } from 'vue-router'
@@ -156,7 +167,7 @@ const props = defineProps<{
   healthChecking?: boolean
 }>()
 
-defineEmits<{ delete: []; check: [] }>()
+defineEmits<{ delete: []; check: []; 'replace-entry': [] }>()
 
 const healthProblem = computed(
   () => props.health && (props.health.state === 'degraded' || props.health.state === 'down')
@@ -481,5 +492,43 @@ const trafficText = computed(() => formatBytes(props.metrics?.total_traffic_byte
 .delete-btn:hover {
   color: var(--color-danger);
   background: var(--color-accent-soft);
+}
+
+.replace-entry-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+  padding: 9px 14px;
+  border-radius: 10px;
+  border: 1px solid color-mix(in srgb, #e8a040 45%, transparent);
+  background: linear-gradient(
+    135deg,
+    color-mix(in srgb, #e8a040 16%, transparent),
+    color-mix(in srgb, var(--color-accent) 10%, transparent)
+  );
+  color: #f0c070;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition:
+    border-color 0.15s ease,
+    background 0.15s ease,
+    transform 0.1s ease;
+}
+
+.replace-entry-btn:hover {
+  border-color: color-mix(in srgb, #e8a040 70%, transparent);
+  background: linear-gradient(
+    135deg,
+    color-mix(in srgb, #e8a040 24%, transparent),
+    color-mix(in srgb, var(--color-accent) 16%, transparent)
+  );
+  transform: translateY(-1px);
+}
+
+.replace-entry-btn:active {
+  transform: translateY(0);
 }
 </style>

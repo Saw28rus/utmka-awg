@@ -661,16 +661,6 @@
           <div v-if="cascadeApplyResult && !cascadeApplyBusy" class="cascade-result-banner" :class="cascadeApplyResult.ok ? 'ok' : 'warn'">
             {{ cascadeApplyResult.message }}
           </div>
-
-          <div v-if="canReplaceEntry" class="replace-entry-row">
-            <div class="replace-entry-text">
-              <strong>Заблокировали вход?</strong>
-              <span>Перенесите вход на новый VPS без перевыпуска клиентских конфигов.</span>
-            </div>
-            <n-button tertiary size="small" @click="replaceVisible = true">
-              Заменить вход
-            </n-button>
-          </div>
         </div>
 
         <!-- Настройка (свёрнута, когда каскад уже работает) -->
@@ -1018,13 +1008,6 @@
       @installed="onProtocolInstalled"
     />
 
-    <ReplaceEntryModal
-      v-model:show="replaceVisible"
-      :server-id="serverId"
-      :server-name="server?.name"
-      @replaced="reloadServer"
-    />
-
     <n-modal v-model:show="xrayMaskingVisible">
       <div class="panel masking-modal">
         <header class="masking-head">
@@ -1178,7 +1161,6 @@ import { api } from '@/api/client'
 import AwgMaskingPanel from '@/components/AwgMaskingPanel.vue'
 import XrayCascadePanel from '@/components/XrayCascadePanel.vue'
 import InstallProtocolModal from '@/components/InstallProtocolModal.vue'
-import ReplaceEntryModal from '@/components/ReplaceEntryModal.vue'
 import DpiTrendCard from '@/components/DpiTrendCard.vue'
 import MetricBar from '@/components/MetricBar.vue'
 import StatusBadge from '@/components/StatusBadge.vue'
@@ -1468,13 +1450,6 @@ const containerBusy = reactive<Record<string, boolean>>({})
 
 const installVisible = ref(false)
 const installProtocol = ref<ProtocolInfo | null>(null)
-
-const replaceVisible = ref(false)
-const canReplaceEntry = computed(() => {
-  const s = server.value
-  if (!s) return false
-  return Boolean(s.awg2_imported || (s.client_protocols || []).includes('awg2'))
-})
 
 const logsVisible = ref(false)
 const logsLoading = ref(false)
@@ -1800,18 +1775,6 @@ function applyTabFromQuery() {
   const tab = route.query.tab
   if (typeof tab === 'string' && tabs.value.some((t) => t.id === tab)) {
     activeTab.value = tab as DetailTab
-  }
-}
-
-async function reloadServer() {
-  try {
-    const { data } = await api.get<ServerRead>(`/servers/${serverId}`)
-    server.value = data
-    void loadMetrics(true)
-    void loadCascadeLinks()
-    if (activeTab.value === 'cascade') void loadCascadeStatus()
-  } catch {
-    /* ignore */
   }
 }
 
@@ -3977,30 +3940,6 @@ function confirmDeleteServer() {
   border: 1px solid var(--color-warning, #e5a000);
   background: rgba(229, 160, 0, 0.08);
   color: var(--color-warning, #e5a000);
-}
-
-.replace-entry-row {
-  margin-top: 14px;
-  padding-top: 14px;
-  border-top: 1px solid var(--color-border);
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.replace-entry-text {
-  display: grid;
-  gap: 2px;
-  font-size: 12px;
-}
-
-.replace-entry-text strong {
-  font-size: 13px;
-}
-
-.replace-entry-text span {
-  color: var(--color-muted);
 }
 
 .cascade-setup {
