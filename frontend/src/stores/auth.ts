@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 
-import { api } from '@/api/client'
+import { ACCESS_KEY, REFRESH_KEY, api, clearSession } from '@/api/client'
 
 type User = {
   id: string
@@ -14,7 +14,7 @@ type User = {
 export const useAuthStore = defineStore('auth', {
   state: () => ({
     user: null as User | null,
-    accessToken: localStorage.getItem('utmka_access_token')
+    accessToken: localStorage.getItem(ACCESS_KEY)
   }),
   getters: {
     isAuthenticated: (state) => Boolean(state.accessToken)
@@ -23,7 +23,8 @@ export const useAuthStore = defineStore('auth', {
     async login(email: string, password: string) {
       const { data } = await api.post('/auth/login', { email, password })
       this.accessToken = data.access_token
-      localStorage.setItem('utmka_access_token', data.access_token)
+      localStorage.setItem(ACCESS_KEY, data.access_token)
+      localStorage.setItem(REFRESH_KEY, data.refresh_token)
       await this.loadMe()
     },
     async loadMe() {
@@ -35,7 +36,7 @@ export const useAuthStore = defineStore('auth', {
     logout() {
       this.user = null
       this.accessToken = null
-      localStorage.removeItem('utmka_access_token')
+      clearSession()
     }
   }
 })

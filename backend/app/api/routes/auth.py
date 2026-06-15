@@ -2,15 +2,21 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.deps import client_ip, get_current_user
-from app.core.security import create_access_token
+from app.core.security import create_access_token, create_refresh_token, decode_token
 from app.db.session import get_db
-from app.schemas.auth import ChangePasswordRequest, CurrentUser, LoginRequest, TokenPair
+from app.schemas.auth import ChangePasswordRequest, CurrentUser, LoginRequest, RefreshRequest, TokenPair
 from app.schemas.settings import ThemeUpdateRequest
 from app.services.audit_service import AuditService
+from app.services.panel_settings_service import PanelSettingsService
 from app.services.user_service import UserService, user_to_current
 
 
 router = APIRouter()
+
+
+async def _session_ttl(db: AsyncSession) -> tuple[int, int]:
+    settings = await PanelSettingsService(db).get_all()
+    return settings["access_token_minutes"], settings["refresh_token_days"]
 
 
 @router.post("/login", response_model=TokenPair)
@@ -40,22 +46,54 @@ async def login(
         user_email=user.email,
         ip=client_ip(request),
     )
-    access_token = create_access_token(user.email, {"role": user.role})
-    refresh_token = create_access_token(user.email, {"role": user.role, "type": "refresh"})
+    access_min, refresh_days = await _session_ttl(db)
+    access_token = create_access_token(
+        user.email, {"role": user.role}, expires_minutes=access_min
+    )
+    refresh_token = create_refresh_token(
+        user.email, {"role": user.role}, expires_days=refresh_days
+    )
     return TokenPair(access_token=access_token, refresh_token=refresh_token)
 
 
 @router.post("/refresh", response_model=TokenPair)
 async def refresh(
-    user: CurrentUser = Depends(get_current_user),
+    payload: RefreshRequest,
     db: AsyncSession = Depends(get_db),
 ) -> TokenPair:
+    try:
+        token_payload = decode_token(payload.refresh_token)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Сессия истекла, войдите заново.",
+        ) from exc
+
+    if token_payload.get("type") != "refresh":
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Сессия истекла, войдите заново.",
+        )
+
+    email = token_payload.get("sub")
+    if not email:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Сессия истекла, войдите заново.",
+        )
+
     users = UserService(db)
-    db_user = await users.get_by_email(user.email)
+    db_user = await users.get_by_email(email)
     if not db_user or not db_user.is_active:
         raise HTTPException(status_code=401, detail="Учётная запись недоступна.")
-    access_token = create_access_token(db_user.email, {"role": db_user.role})
-    refresh_token = create_access_token(db_user.email, {"role": db_user.role, "type": "refresh"})
+
+    access_min, refresh_days = await _session_ttl(db)
+    access_token = create_access_token(
+        db_user.email, {"role": db_user.role}, expires_minutes=access_min
+    )
+    refresh_token = create_refresh_token(
+        db_user.email, {"role": db_user.role}, expires_days=refresh_days
+    )
     return TokenPair(access_token=access_token, refresh_token=refresh_token)
 
 
