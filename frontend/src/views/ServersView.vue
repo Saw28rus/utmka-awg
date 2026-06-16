@@ -10,6 +10,10 @@
           <template #icon><RefreshCw :size="16" /></template>
           Обновить
         </n-button>
+        <n-button tertiary @click="migrateVisible = true">
+          <template #icon><ServerCog :size="16" /></template>
+          Мигрировать узел
+        </n-button>
         <n-button type="primary" @click="showAddServer = true">
           <template #icon><Plus :size="16" /></template>
           Добавить сервер
@@ -102,11 +106,13 @@
       :server-name="replaceServerName"
       @replaced="onEntryReplaced"
     />
+
+    <MigrateNodeModal v-model:show="migrateVisible" @migrated="onNodeMigrated" />
   </AppShell>
 </template>
 
 <script setup lang="ts">
-import { ArrowRight, Network, Plus, RefreshCw } from '@lucide/vue'
+import { ArrowRight, Network, Plus, RefreshCw, ServerCog } from '@lucide/vue'
 import { NButton, useDialog, useMessage } from 'naive-ui'
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
@@ -114,6 +120,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { api } from '@/api/client'
 import AddServerWizard from '@/components/AddServerWizard.vue'
 import EmptyState from '@/components/EmptyState.vue'
+import MigrateNodeModal from '@/components/MigrateNodeModal.vue'
 import ReplaceEntryModal from '@/components/ReplaceEntryModal.vue'
 import ServerListCard, { type NodeHealth, type ServerListItem, type ServerMetrics } from '@/components/ServerListCard.vue'
 import StatusBadge from '@/components/StatusBadge.vue'
@@ -151,6 +158,7 @@ const refreshing = ref(false)
 const replaceVisible = ref(false)
 const replaceServerId = ref('')
 const replaceServerName = ref('')
+const migrateVisible = ref(false)
 const servers = ref<ServerListItem[]>([])
 const cascadeLinks = ref<CascadeLinkSummary[]>([])
 const metrics = reactive<Record<string, ServerMetrics>>({})
@@ -373,6 +381,10 @@ function openReplaceEntry(server: ServerListItem) {
 }
 
 function onEntryReplaced() {
+  void loadServers({ refresh: true, liveCascade: true })
+}
+
+function onNodeMigrated() {
   void loadServers({ refresh: true, liveCascade: true })
 }
 

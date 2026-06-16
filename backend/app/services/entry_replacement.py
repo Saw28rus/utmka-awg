@@ -234,6 +234,19 @@ def preflight(
     if not (old.get("awg2_imported") or (old.get("installed_protocols") or {}).get("awg2")):
         raise EntryReplacementError("На этом сервере нет AWG2 — заменять нечего.")
 
+    # Предохранитель (NODE_MIGRATION_PLAN §5.0): если на узле установлена панель
+    # (co-located), AWG-only замена «угонит» домен и оставит панель на старом
+    # сервере → она станет недоступна. Нужна полная миграция узла.
+    from app.services.panel_role import is_panel_node
+
+    if is_panel_node(old_entry_id):
+        raise EntryReplacementError(
+            "На этом сервере установлена панель управления. Простая «замена входа» "
+            "перенесёт только VPN и заберёт домен, а панель останется на старом сервере "
+            "и станет недоступна. Используйте «Полную миграцию узла» — она переносит "
+            "VPN, панель, базу и все данные на новый сервер целиком."
+        )
+
     if ER.has_open(old_entry_id):
         cur = ER.get(old_entry_id)
         # повторный preflight перетирает draft, но не активную провизию

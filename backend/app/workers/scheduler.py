@@ -12,9 +12,23 @@ from app.services.invoice_service import InvoiceService
 
 logger = logging.getLogger("utmka.scheduler")
 
+
+def _suspended() -> bool:
+    """В режиме standby (идёт миграция узла) фоновые джобы не должны действовать."""
+    try:
+        from app.services.panel_role import is_standby
+
+        return is_standby()
+    except Exception:  # noqa: BLE001
+        return False
+
+
 INVOICE_POLL_SECONDS = 120
 CHAT_RETENTION_SECONDS = 24 * 3600
 XRAY_CASCADE_RECONCILE_SECONDS = 90
+# Самолечение AWG-каскада: правила каскада (policy-routing, транзит в netns)
+# не персистентны и слетают при перезагрузке entry. Фоновый проход переподнимает.
+CASCADE_RECONCILE_SECONDS = 90
 HEALTH_CHECK_SECONDS = 120
 DPI_SAMPLE_SECONDS = 300
 ROTATION_CHECK_SECONDS = 3600
@@ -24,6 +38,8 @@ ENTRY_SNAPSHOT_SECONDS = 12 * 3600
 
 
 async def _health_check() -> None:
+    if _suspended():
+        return
     try:
         import asyncio
 
@@ -41,6 +57,8 @@ async def _health_check() -> None:
 
 
 async def _sample_dpi() -> None:
+    if _suspended():
+        return
     try:
         import asyncio
 
@@ -54,6 +72,8 @@ async def _sample_dpi() -> None:
 
 
 async def _run_rotations() -> None:
+    if _suspended():
+        return
     try:
         import asyncio
 
@@ -70,6 +90,8 @@ async def _run_rotations() -> None:
 
 
 async def _reconcile_xray_cascades() -> None:
+    if _suspended():
+        return
     try:
         import asyncio
 
@@ -86,7 +108,29 @@ async def _reconcile_xray_cascades() -> None:
         logger.exception("Ошибка reconcile Xray-каскадов")
 
 
+async def _reconcile_cascades() -> None:
+    if _suspended():
+        return
+    try:
+        import asyncio
+
+        from app.services.cascade import reconcile_all_cascades
+
+        result = await asyncio.to_thread(reconcile_all_cascades)
+        if result.get("healed") or result.get("failed"):
+            logger.info(
+                "cascade reconcile: checked=%s healed=%s failed=%s",
+                result.get("checked"),
+                result.get("healed"),
+                result.get("failed"),
+            )
+    except Exception:  # noqa: BLE001
+        logger.exception("Ошибка reconcile AWG-каскадов")
+
+
 async def _chat_retention() -> None:
+    if _suspended():
+        return
     try:
         from app.services.chat_service import ChatService
         from app.services.panel_settings_service import PanelSettingsService
@@ -105,6 +149,8 @@ async def _chat_retention() -> None:
 
 async def _snapshot_entries() -> None:
     """Снять свежий слепок AWG2-входов каскадов (для disaster-recovery входа)."""
+    if _suspended():
+        return
     try:
         import asyncio
 
@@ -141,6 +187,8 @@ _scheduler: Optional[AsyncIOScheduler] = None
 
 
 async def _poll_invoices() -> None:
+    if _suspended():
+        return
     try:
         async with AsyncSessionLocal() as session:
             svc = InvoiceService(session)
@@ -160,6 +208,18 @@ def start_scheduler() -> Optional[AsyncIOScheduler]:
     global _scheduler
     if _scheduler is not None:
         return _scheduler
+
+    # Anti-split-brain: в режиме ожидания (идёт миграция узла) планировщик не
+    # трогает узлы и не плодит фоновых действий — этим занимается активная панель.
+    try:
+        from app.services.panel_role import is_standby
+
+        if is_standby():
+            logger.info("Scheduler НЕ запущен: панель в режиме standby (миграция узла)")
+            return None
+    except Exception:  # noqa: BLE001
+        logger.exception("Не удалось определить роль панели — стартую планировщик по умолчанию")
+
     scheduler = AsyncIOScheduler(timezone="UTC")
     scheduler.add_job(
         _poll_invoices,
@@ -184,6 +244,15 @@ def start_scheduler() -> Optional[AsyncIOScheduler]:
         "interval",
         seconds=XRAY_CASCADE_RECONCILE_SECONDS,
         id="xray_cascade_reconcile",
+        max_instances=1,
+        coalesce=True,
+        replace_existing=True,
+    )
+    scheduler.add_job(
+        _reconcile_cascades,
+        "interval",
+        seconds=CASCADE_RECONCILE_SECONDS,
+        id="cascade_reconcile",
         max_instances=1,
         coalesce=True,
         replace_existing=True,

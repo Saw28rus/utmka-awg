@@ -196,6 +196,71 @@ def reconcile_cascade_state(entry_server_id: str, link: dict) -> tuple[str, bool
     return stored, False
 
 
+def reconcile_all_cascades() -> dict:
+    """Фоновое самолечение AWG-каскадов: переподнимает те, что должны работать,
+    но слетели (типично — после перезагрузки entry-сервера; правила caскада
+    не персистентны). Вызывается планировщиком, по образцу Xray-reconcile.
+
+    Лечим только связи с намерением «up» (state active/down) и пройденным
+    preflight. Узел недоступен → тихо пропускаем (попробуем в следующий раз).
+    """
+    import logging
+
+    logger = logging.getLogger("utmka.cascade")
+    healed = 0
+    checked = 0
+    failed = 0
+
+    for link in cascade_store.list_links():
+        exit_id = link.get("exit_server_id")
+        entry_id = link.get("entry_server_id")
+        if not exit_id or not entry_id:
+            continue
+        state = link.get("state") or "none"
+        # «Намерение up»: каскад был включён (active) или помечен down (слетел).
+        if state not in ("active", "down"):
+            continue
+        if not link.get("last_preflight_ok"):
+            continue
+
+        checked += 1
+        live = probe_cascade_live(entry_id)
+        if live["active"]:
+            if state != "active":
+                cascade_store.upsert_link(entry_id, state="active", message="Каскад работает на сервере.")
+            continue
+
+        # Каскад должен работать, но не обнаружен. Узел может быть и недоступен —
+        # тогда apply_cascade честно упадёт на SSH, и мы просто попробуем позже.
+        try:
+            from app.services.cascade_apply import apply_cascade
+
+            apply_cascade(entry_id)
+            healed += 1
+            logger.info("cascade reconcile: healed entry=%s", entry_id)
+            try:
+                from app.services.notification_store import notification_store
+
+                entry_rec = server_store.get_record(entry_id) or {}
+                notification_store.add(
+                    level="warning",
+                    code="cascade_self_healed",
+                    title="Каскад переподнят автоматически",
+                    message=(
+                        f"Каскад на входе «{entry_rec.get('name') or entry_id}» слетел "
+                        f"(вероятно, перезагрузка сервера) и был автоматически восстановлен."
+                    ),
+                )
+            except Exception:  # noqa: BLE001
+                pass
+        except Exception as exc:  # noqa: BLE001
+            failed += 1
+            logger.debug("cascade reconcile: entry=%s не вылечен: %s", entry_id, exc)
+            continue
+
+    return {"checked": checked, "healed": healed, "failed": failed}
+
+
 def _client_subnet_from_addr(addr: Optional[str]) -> Optional[str]:
     """`10.8.1.1/24` -> `10.8.1.0/24`."""
     if not addr:

@@ -1,154 +1,374 @@
-import hashlib
+"""Примитивы резервного копирования/восстановления панели по SSH.
+
+Используются полной миграцией узла (NODE_MIGRATION_PLAN.md, фаза 2): перенос
+Postgres (логический дамп), тома panel_data, файла .env и сертификатов между
+старым и новым сервером. Бинарные артефакты гоняем через SFTP (без base64),
+складывая во временные файлы на узлах.
+
+Каждый примитив идемпотентен и сам определяет имена контейнеров (compose даёт
+их по шаблону <project>-<service>-1, но мы ищем по подстроке, чтобы не зависеть
+от имени проекта).
+"""
+
+from __future__ import annotations
+
 import io
-import json
-import shutil
-import uuid
-import zipfile
-from datetime import datetime, timezone
+import logging
+import shlex
+import subprocess
+import tarfile
 from pathlib import Path
-from typing import Any
+from typing import Optional
 
-from sqlalchemy import delete, select
-from sqlalchemy.ext.asyncio import AsyncSession
+import paramiko
 
-from app.models.panel_settings import PanelSetting
-from app.models.user import User
-from app.services.persistence import DATA_DIR, write_json
+from app.services.panel_role import REMOTE_PANEL_DIR
+from app.ssh import exec as ssh_exec
 
-BACKUP_VERSION = "1.0"
+logger = logging.getLogger("utmka.panel_backup")
 
+LOCAL_DATA_DIR = Path("/app/data")
 
-def _sha256(data: bytes) -> str:
-    return hashlib.sha256(data).hexdigest()
+DB_NAME = "utmka_awg"
+DB_USER = "utmka"
 
-
-def _snapshot_dir(prefix: str) -> Path:
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
-    path = DATA_DIR / "backups" / f"{prefix}-{stamp}"
-    path.mkdir(parents=True, exist_ok=True)
-    return path
+_TMP_PG = "/tmp/utmka_migrate_pg.dump"
+_TMP_DATA = "/tmp/utmka_migrate_paneldata.tgz"
+_TMP_GENERIC = "/tmp/utmka_migrate_path.tgz"
 
 
-def _copy_json_data(target: Path) -> list[str]:
-    copied: list[str] = []
-    for src in DATA_DIR.glob("*.json"):
-        dest = target / src.name
-        shutil.copy2(src, dest)
-        copied.append(src.name)
-    return copied
+class PanelBackupError(Exception):
+    pass
 
 
-async def create_backup_zip(session: AsyncSession, include_secrets: bool = False) -> bytes:
-    users = (await session.execute(select(User))).scalars().all()
-    settings = (await session.execute(select(PanelSetting))).scalars().all()
-
-    users_payload = [
-        {
-            "id": str(u.id),
-            "email": u.email,
-            "password_hash": u.password_hash,
-            "name": u.name,
-            "role": u.role,
-            "is_active": u.is_active,
-            "theme": u.theme,
-        }
-        for u in users
-    ]
-    settings_payload = {s.key: s.value for s in settings}
-
-    buffer = io.BytesIO()
-    checksums: dict[str, str] = {}
-    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as zf:
-        for json_file in DATA_DIR.glob("*.json"):
-            data = json_file.read_bytes()
-            zf.writestr(f"data/{json_file.name}", data)
-            checksums[f"data/{json_file.name}"] = _sha256(data)
-
-        users_bytes = json.dumps(users_payload, ensure_ascii=False, indent=2).encode()
-        zf.writestr("postgres/users.json", users_bytes)
-        checksums["postgres/users.json"] = _sha256(users_bytes)
-
-        settings_bytes = json.dumps(settings_payload, ensure_ascii=False, indent=2).encode()
-        zf.writestr("postgres/panel_settings.json", settings_bytes)
-        checksums["postgres/panel_settings.json"] = _sha256(settings_bytes)
-
-        if include_secrets:
-            env_path = Path("/host/utmka-awg/.env")
-            if env_path.exists():
-                env_data = env_path.read_bytes()
-                zf.writestr("secrets/.env", env_data)
-                checksums["secrets/.env"] = _sha256(env_data)
-
-        manifest = {
-            "version": BACKUP_VERSION,
-            "created_at": datetime.now(timezone.utc).isoformat(),
-            "checksums": checksums,
-        }
-        manifest_bytes = json.dumps(manifest, ensure_ascii=False, indent=2).encode()
-        zf.writestr("manifest.json", manifest_bytes)
-
-    return buffer.getvalue()
+# --------------------------------------------------------------------------- #
+# Низкоуровневое: контейнеры, SFTP, проверка результата
+# --------------------------------------------------------------------------- #
 
 
-def _validate_manifest(zf: zipfile.ZipFile) -> dict[str, Any]:
-    if "manifest.json" not in zf.namelist():
-        raise ValueError("В архиве нет manifest.json.")
-    manifest = json.loads(zf.read("manifest.json"))
-    version = manifest.get("version", "")
-    if not str(version).startswith("1."):
-        raise ValueError(f"Несовместимая версия бэкапа: {version}")
-    checksums = manifest.get("checksums", {})
-    for name, expected in checksums.items():
-        if name not in zf.namelist():
-            raise ValueError(f"В архиве отсутствует файл: {name}")
-        actual = _sha256(zf.read(name))
-        if actual != expected:
-            raise ValueError(f"Повреждённый файл в архиве: {name}")
-    return manifest
+def _check(res: ssh_exec.CommandResult, what: str) -> ssh_exec.CommandResult:
+    if res.exit_code != 0:
+        detail = (res.stderr or res.stdout or "").strip()
+        raise PanelBackupError(f"{what}: {detail or f'код {res.exit_code}'}")
+    return res
 
 
-async def restore_backup_zip(session: AsyncSession, payload: bytes) -> str:
-    snapshot = _snapshot_dir("pre-restore")
-    _copy_json_data(snapshot)
+def detect_container(ssh: paramiko.SSHClient, pattern: str) -> str:
+    """Имя запущенного контейнера, чьё имя содержит pattern (postgres/backend/...)."""
+    res = ssh_exec.run(
+        ssh,
+        "docker ps --format '{{.Names}}' | grep -m1 " + shlex.quote(pattern) + " || true",
+        timeout=20,
+    )
+    name = (res.stdout or "").strip().splitlines()
+    if not name or not name[0].strip():
+        raise PanelBackupError(f"Контейнер «{pattern}» не найден на сервере.")
+    return name[0].strip()
 
+
+def _sftp_read(ssh: paramiko.SSHClient, remote_path: str) -> bytes:
+    sftp = ssh.open_sftp()
     try:
-        with zipfile.ZipFile(io.BytesIO(payload)) as zf:
-            _validate_manifest(zf)
-            for name in zf.namelist():
-                if name.startswith("data/") and name.endswith(".json"):
-                    dest_name = Path(name).name
-                    write_json(dest_name, json.loads(zf.read(name)))
+        with sftp.open(remote_path, "rb") as fh:
+            fh.prefetch()
+            return fh.read()
+    finally:
+        sftp.close()
 
-            if "postgres/users.json" in zf.namelist():
-                users_data = json.loads(zf.read("postgres/users.json"))
-                await session.execute(delete(User))
-                for row in users_data:
-                    session.add(
-                        User(
-                            id=uuid.UUID(row["id"]),
-                            email=row["email"],
-                            password_hash=row["password_hash"],
-                            name=row["name"],
-                            role=row["role"],
-                            is_active=row["is_active"],
-                            theme=row.get("theme", "dark"),
-                        )
-                    )
 
-            if "postgres/panel_settings.json" in zf.namelist():
-                settings_data = json.loads(zf.read("postgres/panel_settings.json"))
-                await session.execute(delete(PanelSetting))
-                for key, value in settings_data.items():
-                    session.add(PanelSetting(key=key, value=value))
+def _sftp_write(ssh: paramiko.SSHClient, remote_path: str, data: bytes, *, mode: Optional[int] = None) -> None:
+    sftp = ssh.open_sftp()
+    try:
+        with sftp.open(remote_path, "wb") as fh:
+            fh.write(data)
+        if mode is not None:
+            sftp.chmod(remote_path, mode)
+    finally:
+        sftp.close()
 
-            await session.commit()
-    except Exception:
-        await session.rollback()
-        for snap_file in snapshot.glob("*.json"):
-            try:
-                write_json(snap_file.name, json.loads(snap_file.read_text(encoding="utf-8")))
-            except (json.JSONDecodeError, OSError):
+
+def _rm(ssh: paramiko.SSHClient, path: str) -> None:
+    try:
+        ssh_exec.run(ssh, f"rm -f {shlex.quote(path)}", timeout=15)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+# --------------------------------------------------------------------------- #
+# Postgres (логический дамп / восстановление)
+# --------------------------------------------------------------------------- #
+
+
+def dump_postgres(ssh: paramiko.SSHClient) -> bytes:
+    """Снять логический дамп БД панели (custom format). Read-only для сервиса."""
+    pg = detect_container(ssh, "postgres")
+    _rm(ssh, _TMP_PG)
+    _check(
+        ssh_exec.run(
+            ssh,
+            f"docker exec {shlex.quote(pg)} pg_dump -Fc -U {DB_USER} -d {DB_NAME} "
+            f"> {shlex.quote(_TMP_PG)}",
+            timeout=300,
+        ),
+        "pg_dump",
+    )
+    try:
+        data = _sftp_read(ssh, _TMP_PG)
+    finally:
+        _rm(ssh, _TMP_PG)
+    if not data:
+        raise PanelBackupError("pg_dump вернул пустой дамп.")
+    logger.info("pg_dump: %d байт с контейнера %s", len(data), pg)
+    return data
+
+
+def restore_postgres(ssh: paramiko.SSHClient, dump: bytes, *, stop_backend: bool = True) -> None:
+    """Восстановить БД из дампа на целевом сервере (drop+create+pg_restore).
+
+    На время восстановления backend останавливается (release connections),
+    затем поднимается обратно.
+    """
+    if not dump:
+        raise PanelBackupError("Пустой дамп — нечего восстанавливать.")
+    pg = detect_container(ssh, "postgres")
+    backend = None
+    if stop_backend:
+        try:
+            backend = detect_container(ssh, "backend")
+        except PanelBackupError:
+            backend = None
+
+    _sftp_write(ssh, _TMP_PG, dump)
+    try:
+        if backend:
+            ssh_exec.run(ssh, f"docker stop {shlex.quote(backend)}", timeout=60)
+
+        # Разорвать активные соединения и пересоздать БД.
+        ssh_exec.run(
+            ssh,
+            f"docker exec {shlex.quote(pg)} psql -U {DB_USER} -d postgres -c "
+            + shlex.quote(
+                f"SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
+                f"WHERE datname='{DB_NAME}' AND pid<>pg_backend_pid();"
+            ),
+            timeout=60,
+        )
+        _check(
+            ssh_exec.run(
+                ssh,
+                f"docker exec {shlex.quote(pg)} psql -U {DB_USER} -d postgres -c "
+                + shlex.quote(f"DROP DATABASE IF EXISTS {DB_NAME};"),
+                timeout=60,
+            ),
+            "drop database",
+        )
+        _check(
+            ssh_exec.run(
+                ssh,
+                f"docker exec {shlex.quote(pg)} psql -U {DB_USER} -d postgres -c "
+                + shlex.quote(f"CREATE DATABASE {DB_NAME} OWNER {DB_USER};"),
+                timeout=60,
+            ),
+            "create database",
+        )
+        # pg_restore может вернуть !=0 на некритичных warning'ах — проверяем фатальные.
+        res = ssh_exec.run(
+            ssh,
+            f"cat {shlex.quote(_TMP_PG)} | docker exec -i {shlex.quote(pg)} "
+            f"pg_restore -U {DB_USER} -d {DB_NAME} --no-owner --no-acl",
+            timeout=300,
+        )
+        if res.exit_code != 0 and "error" in (res.stderr or "").lower():
+            # отличаем фатальную ошибку от warning'ов
+            fatal = [ln for ln in res.stderr.splitlines() if "error:" in ln.lower()]
+            if fatal:
+                raise PanelBackupError("pg_restore: " + "; ".join(fatal[:3]))
+    finally:
+        if backend:
+            ssh_exec.run(ssh, f"docker start {shlex.quote(backend)}", timeout=60)
+        _rm(ssh, _TMP_PG)
+    logger.info("pg_restore: БД %s восстановлена на %s", DB_NAME, pg)
+
+
+# --------------------------------------------------------------------------- #
+# panel_data (том JSON-стораджей: servers, clients, cascade, …)
+# --------------------------------------------------------------------------- #
+
+
+def dump_panel_data(ssh: paramiko.SSHClient) -> bytes:
+    """tar тома panel_data (через backend-контейнер: /app/data)."""
+    backend = detect_container(ssh, "backend")
+    _rm(ssh, _TMP_DATA)
+    _check(
+        ssh_exec.run(
+            ssh,
+            f"docker exec {shlex.quote(backend)} sh -c 'cd /app/data && tar czf - .' "
+            f"> {shlex.quote(_TMP_DATA)}",
+            timeout=120,
+        ),
+        "tar panel_data",
+    )
+    try:
+        data = _sftp_read(ssh, _TMP_DATA)
+    finally:
+        _rm(ssh, _TMP_DATA)
+    logger.info("panel_data: %d байт", len(data))
+    return data
+
+
+def restore_panel_data(ssh: paramiko.SSHClient, data: bytes) -> None:
+    """Распаковать panel_data на целевом backend. PANEL_ROLE в томе не хранится."""
+    if not data:
+        raise PanelBackupError("Пустой архив panel_data.")
+    backend = detect_container(ssh, "backend")
+    _sftp_write(ssh, _TMP_DATA, data)
+    try:
+        _check(
+            ssh_exec.run(
+                ssh,
+                f"cat {shlex.quote(_TMP_DATA)} | docker exec -i {shlex.quote(backend)} "
+                f"sh -c 'mkdir -p /app/data && tar xzf - -C /app/data'",
+                timeout=120,
+            ),
+            "untar panel_data",
+        )
+    finally:
+        _rm(ssh, _TMP_DATA)
+    logger.info("panel_data восстановлен на %s", backend)
+
+
+# --------------------------------------------------------------------------- #
+# .env (секретный ключ Fernet, пароль БД и пр.)
+# --------------------------------------------------------------------------- #
+
+
+def read_env(ssh: paramiko.SSHClient) -> str:
+    """Прочитать .env панели с узла."""
+    path = f"{REMOTE_PANEL_DIR}/.env"
+    try:
+        return _sftp_read(ssh, path).decode("utf-8", errors="replace")
+    except FileNotFoundError as exc:  # noqa: BLE001
+        raise PanelBackupError(f".env не найден на сервере ({path}).") from exc
+
+
+def write_env(ssh: paramiko.SSHClient, content: str) -> None:
+    """Записать .env панели на узел (0600)."""
+    path = f"{REMOTE_PANEL_DIR}/.env"
+    ssh_exec.run(ssh, f"mkdir -p {shlex.quote(REMOTE_PANEL_DIR)}", timeout=15)
+    _sftp_write(ssh, path, content.encode("utf-8"), mode=0o600)
+
+
+def env_value(content: str, key: str) -> Optional[str]:
+    """Достать значение KEY=value из текста .env."""
+    for line in content.splitlines():
+        line = line.strip()
+        if line.startswith(f"{key}="):
+            return line.split("=", 1)[1].strip()
+    return None
+
+
+# --------------------------------------------------------------------------- #
+# Локальные дампы (источник = ЭТА панель, без SSH; backend выполняется на узле)
+# --------------------------------------------------------------------------- #
+
+
+def _local_docker_bin() -> str:
+    from app.services.panel_update import resolve_docker_bin
+
+    docker = resolve_docker_bin()
+    if not docker:
+        raise PanelBackupError("docker CLI недоступен в backend-контейнере.")
+    return docker
+
+
+def _local_container(pattern: str) -> str:
+    docker = _local_docker_bin()
+    res = subprocess.run(
+        [docker, "ps", "--format", "{{.Names}}"],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    for name in res.stdout.splitlines():
+        if pattern in name:
+            return name.strip()
+    raise PanelBackupError(f"Локальный контейнер «{pattern}» не найден.")
+
+
+def local_dump_postgres() -> bytes:
+    """pg_dump БД этой панели через локальный docker (источник миграции)."""
+    docker = _local_docker_bin()
+    pg = _local_container("postgres")
+    res = subprocess.run(
+        [docker, "exec", pg, "pg_dump", "-Fc", "-U", DB_USER, "-d", DB_NAME],
+        capture_output=True,
+        timeout=300,
+    )
+    if res.returncode != 0:
+        raise PanelBackupError("local pg_dump: " + res.stderr.decode("utf-8", "replace")[-500:])
+    if not res.stdout:
+        raise PanelBackupError("local pg_dump вернул пустой дамп.")
+    logger.info("local pg_dump: %d байт", len(res.stdout))
+    return res.stdout
+
+
+def local_dump_panel_data() -> bytes:
+    """tar.gz каталога /app/data этой панели (источник миграции).
+
+    PANEL_ROLE НЕ попадает (он на хосте, вне тома) — целевой узел сам задаёт роль.
+    """
+    if not LOCAL_DATA_DIR.exists():
+        raise PanelBackupError(f"Каталог данных {LOCAL_DATA_DIR} не найден.")
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+        for item in sorted(LOCAL_DATA_DIR.iterdir()):
+            # пропускаем временные/лог-файлы апдейтера
+            if item.name in {"update.lock", "update.log", "update_state.json"}:
                 continue
-        raise
+            tar.add(str(item), arcname=item.name)
+    data = buf.getvalue()
+    logger.info("local panel_data: %d байт", len(data))
+    return data
 
-    return str(snapshot)
+
+# --------------------------------------------------------------------------- #
+# Произвольный путь (сертификаты Let's Encrypt, nginx-конфиги)
+# --------------------------------------------------------------------------- #
+
+
+def copy_path(source_ssh: paramiko.SSHClient, target_ssh: paramiko.SSHClient, path: str) -> bool:
+    """Перенести каталог/файл `path` (абсолютный) со старого узла на новый as-is.
+
+    Возвращает False, если на источнике пути нет (не критично — пропускаем).
+    """
+    path = path.rstrip("/")
+    check = ssh_exec.run(source_ssh, f"test -e {shlex.quote(path)} && echo Y || echo N", timeout=15)
+    if "Y" not in check.stdout:
+        return False
+
+    # tar относительно / — чтобы распаковать на целевом в то же место.
+    rel = path.lstrip("/")
+    _rm(source_ssh, _TMP_GENERIC)
+    _check(
+        ssh_exec.run(
+            source_ssh,
+            f"tar czf {shlex.quote(_TMP_GENERIC)} -C / {shlex.quote(rel)}",
+            timeout=120,
+        ),
+        f"tar {path}",
+    )
+    try:
+        blob = _sftp_read(source_ssh, _TMP_GENERIC)
+    finally:
+        _rm(source_ssh, _TMP_GENERIC)
+
+    _sftp_write(target_ssh, _TMP_GENERIC, blob)
+    try:
+        _check(
+            ssh_exec.run(target_ssh, f"tar xzf {shlex.quote(_TMP_GENERIC)} -C /", timeout=120),
+            f"untar {path}",
+        )
+    finally:
+        _rm(target_ssh, _TMP_GENERIC)
+    logger.info("copied %s (%d байт)", path, len(blob))
+    return True
