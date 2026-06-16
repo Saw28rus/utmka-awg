@@ -664,6 +664,15 @@ iptables -D FORWARD -s {cs} -o {iface} -j ACCEPT 2>/dev/null || true
 iptables -A FORWARD -s {cs} -o {iface} -j ACCEPT
 iptables -D FORWARD -d {cs} -i {iface} -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || true
 iptables -A FORWARD -d {cs} -i {iface} -m state --state RELATED,ESTABLISHED -j ACCEPT
+# MTU/MSS fix: транзит {iface} имеет MTU {MTU}. Клиентский интерфейс (awg0) по
+# умолчанию 1420 → пакеты клиента не влезают в транзит и молча дропаются
+# («подключилось, но интернета нет», особенно на мобильных сетях с урезанным
+# PMTUD). Опускаем MTU клиентского интерфейса до MTU транзита и клампим TCP MSS
+# к PMTU, чтобы сайты грузились даже когда крупные UDP теряются.
+CLIENT_IF=$(ip route show {cs} 2>/dev/null | awk '{{print $3; exit}}')
+[ -n "$CLIENT_IF" ] && ip link set dev "$CLIENT_IF" mtu {MTU} 2>/dev/null || true
+iptables -t mangle -C FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null \
+  || iptables -t mangle -A FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
 echo OK_ENTRY
 """
 
@@ -718,6 +727,7 @@ ip route flush table {table} 2>/dev/null || true
 iptables -t nat -D POSTROUTING -s {cs} -o {iface} -j SNAT --to-source {entry_ip} 2>/dev/null || true
 iptables -D FORWARD -s {cs} -o {iface} -j ACCEPT 2>/dev/null || true
 iptables -D FORWARD -d {cs} -i {iface} -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || true
+iptables -t mangle -D FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null || true
 awg-quick down {conf} 2>/dev/null || ip link del {iface} 2>/dev/null || true
 rm -f {conf} 2>/dev/null || true
 echo DOWN_ENTRY

@@ -267,6 +267,14 @@ def resolve_endpoint_host(record: dict, fallback_host: str) -> str:
     return fallback_host
 
 
+# MTU клиентского туннеля. 1280 — стандарт Amnezia и минимум IPv6: пакеты
+# гарантированно проходят без фрагментации даже на мобильных сетях (где ICMP
+# «fragmentation needed» часто режется → PMTU black-hole) и через каскад, где
+# транзит utmka-cas0 имеет MTU 1280. Без явного MTU клиент берёт 1420 →
+# «подключилось, но сайты не грузятся» на мобильном интернете.
+CLIENT_MTU = 1280
+
+
 def build_client_config(
     *,
     client_private_key: str,
@@ -278,12 +286,14 @@ def build_client_config(
     endpoint_port: int,
     awg_params: dict[str, str],
     keepalive: int = 25,
+    mtu: int = CLIENT_MTU,
 ) -> str:
     interface_lines = [
         "[Interface]",
         f"Address = {client_ip}/32",
         f"DNS = {dns or '1.1.1.1'}",
         f"PrivateKey = {client_private_key}",
+        f"MTU = {mtu}",
     ]
     for key in AWG_PARAM_KEYS:
         if key in awg_params:
