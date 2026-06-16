@@ -105,6 +105,7 @@ write_env() {
 
   if [ -f "$env_file" ] && grep -q '^PANEL_SECRET_KEY=' "$env_file"; then
     echo ".env уже существует — не перезаписываю секреты."
+    FRESH_ENV=0
     return
   fi
 
@@ -132,6 +133,11 @@ PANEL_HOST_DIR=${INSTALL_DIR}
 PANEL_INSTALL_DIR=/host/utmka-awg
 EOF
   chmod 600 "$env_file"
+  # Свежий .env сгенерирован → запомним пароль, чтобы после старта ПРИНУДИТЕЛЬНО
+  # выставить его в БД (иначе уцелевший том Postgres от прошлой установки оставит
+  # старого админа, и напечатанный пароль не подойдёт).
+  FRESH_ENV=1
+  GENERATED_ADMIN_PASS="$admin_pass"
   local ip
   ip="$(public_ip)"
   echo ""
@@ -156,6 +162,39 @@ start_stack() {
   echo "Позже: домен + HTTPS во вкладке «Безопасность» у сервера в панели."
 }
 
+wait_for_health() {
+  # Ждём, пока backend ответит на /health (миграции + старт) — до ~90 сек.
+  local i
+  for i in $(seq 1 30); do
+    if curl -s -o /dev/null -w '%{http_code}' --max-time 5 \
+        http://127.0.0.1:8080/api/v1/health 2>/dev/null | grep -q '200'; then
+      return 0
+    fi
+    sleep 3
+  done
+  return 1
+}
+
+ensure_admin_password() {
+  # Только при свежем .env: гарантируем, что напечатанный пароль реально работает,
+  # даже если уцелел том Postgres от прошлой установки (стейл-админ).
+  if [ "${FRESH_ENV:-0}" != "1" ] || [ -z "${GENERATED_ADMIN_PASS:-}" ]; then
+    return 0
+  fi
+  cd "$INSTALL_DIR"
+  if ! wait_for_health; then
+    echo "ВНИМАНИЕ: панель не ответила вовремя — пароль админа не синхронизирован."
+    echo "Если вход не работает: docker compose exec -T backend python /host/utmka-awg/scripts/reset-admin.py 'НОВЫЙ_ПАРОЛЬ'"
+    return 0
+  fi
+  if docker compose exec -T backend python /host/utmka-awg/scripts/reset-admin.py "$GENERATED_ADMIN_PASS" >/dev/null 2>&1; then
+    echo "Пароль администратора синхронизирован с напечатанным выше."
+  else
+    echo "ВНИМАНИЕ: не удалось синхронизировать пароль админа автоматически."
+    echo "Сбросьте вручную: docker compose exec -T backend python /host/utmka-awg/scripts/reset-admin.py 'НОВЫЙ_ПАРОЛЬ'"
+  fi
+}
+
 main() {
   need_root
   ensure_docker
@@ -163,6 +202,7 @@ main() {
   clone_or_update
   write_env
   start_stack
+  ensure_admin_password
 }
 
 main "$@"
