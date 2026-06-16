@@ -25,8 +25,8 @@ from typing import Optional
 import paramiko
 
 from app.core.config import settings
+from app.services import node_backup, panel_provision
 from app.services import node_migration_store as store_mod
-from app.services import panel_backup, panel_provision
 from app.services.node_migration_store import node_migration_store as NM
 from app.ssh import exec as ssh_exec
 
@@ -239,10 +239,10 @@ def provision() -> dict:
 
         # 4. Залить данные (БД + panel_data) со старого узла (источник = локально).
         NM.add_step("data", "running", "переношу базу и данные панели")
-        pg_dump = panel_backup.local_dump_postgres()
-        data_tar = panel_backup.local_dump_panel_data()
-        panel_backup.restore_postgres(ssh, pg_dump, stop_backend=True)
-        panel_backup.restore_panel_data(ssh, data_tar)
+        pg_dump = node_backup.local_dump_postgres()
+        data_tar = node_backup.local_dump_panel_data()
+        node_backup.restore_postgres(ssh, pg_dump, stop_backend=True)
+        node_backup.restore_panel_data(ssh, data_tar)
         NM.add_step("data", "ok", f"БД ({len(pg_dump)} Б) и panel_data ({len(data_tar)} Б) перенесены")
 
         # 5. Перезапустить с новым секретом и ролью standby.
@@ -354,10 +354,10 @@ def activate(*, force: bool = False) -> dict:
 
         # 3. Финальная дельта-синхронизация (догнать изменения с момента provision).
         NM.add_step("sync", "running", "финальная синхронизация данных")
-        pg_dump = panel_backup.local_dump_postgres()
-        data_tar = panel_backup.local_dump_panel_data()
-        panel_backup.restore_postgres(ssh, pg_dump, stop_backend=True)
-        panel_backup.restore_panel_data(ssh, data_tar)
+        pg_dump = node_backup.local_dump_postgres()
+        data_tar = node_backup.local_dump_panel_data()
+        node_backup.restore_postgres(ssh, pg_dump, stop_backend=True)
+        node_backup.restore_panel_data(ssh, data_tar)
         NM.add_step("sync", "ok", "данные синхронизированы")
 
         # 4. Перевести новый узел в active и перезапустить (его планировщик стартует,
