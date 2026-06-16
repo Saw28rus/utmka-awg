@@ -150,6 +150,41 @@ def _amnezia_container(record: dict) -> Optional[str]:
     return None
 
 
+def _ensure_exit_awg(exit_id: str) -> Optional[CascadeStep]:
+    """Гарантирует AmneziaWG на выходном сервере: ставит автоматически, если его нет.
+
+    Делает каскад «одной кнопкой» — пользователю не нужно вручную заходить на
+    exit и ставить протокол. Идемпотентно: если AmneziaWG уже стоит — быстрый
+    no-op (install_awg сам проверяет наличие контейнера и мгновенно отвечает).
+
+    Бросает CascadeError, если установка не удалась (это происходит ДО любых
+    изменений трафика, поэтому откат не нужен — apply просто не начнётся).
+    """
+    from app.services.awg_install import AwgInstallError, install_awg
+
+    rec = server_store.get_record(exit_id) or {}
+    name = rec.get("name") or exit_id
+    if _amnezia_container(rec):
+        return None  # уже в записи панели — _gather подтвердит контейнер
+    try:
+        res = install_awg(exit_id, variant="awg2")
+        return CascadeStep(
+            name=f"Exit «{name}»: установка AmneziaWG",
+            status="ok",
+            detail=res.message,
+        )
+    except AwgInstallError as exc:
+        if "уже установлен" in str(exc).lower():
+            return CascadeStep(
+                name=f"Exit «{name}»: AmneziaWG",
+                status="ok",
+                detail="уже установлен",
+            )
+        raise CascadeError(
+            f"Не удалось автоматически установить AmneziaWG на выходной сервер «{name}»: {exc}"
+        )
+
+
 def _container_amnezia_ip(ssh, container: str) -> str:
     """IP контейнера в amnezia-dns-net (amn0), не docker0."""
     quoted = shlex.quote(container)
@@ -238,6 +273,11 @@ def apply_cascade(entry_id: str) -> CascadeApplyResult:
         raise CascadeError("Entry или exit сервер не найден.")
 
     steps: list[CascadeStep] = []
+    # Авто-подготовка exit: ставим AmneziaWG, если его ещё нет (одна кнопка
+    # делает всё — пользователю не нужно вручную ставить протокол на выход).
+    prep = _ensure_exit_awg(exit_id)
+    if prep is not None:
+        steps.append(prep)
     facts = _gather(entry_id, exit_id)
     entry_f, exit_f = facts.get("entry", {}), facts.get("exit", {})
 

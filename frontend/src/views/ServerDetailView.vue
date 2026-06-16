@@ -655,11 +655,20 @@
 
           <div v-if="cascadeApplyBusy" class="ssl-loading">
             <n-spin size="small" />
-            <span>{{ cascadeApplyBusy === 'apply' ? 'Включаю каскад…' : 'Выключаю каскад…' }}</span>
+            <span>{{ cascadeApplyBusy === 'apply'
+              ? 'Включаю каскад… Если на выходном сервере нет AmneziaWG, ставлю его — это может занять несколько минут. Не закрывайте страницу.'
+              : 'Выключаю каскад…' }}</span>
           </div>
 
           <div v-if="cascadeApplyResult && !cascadeApplyBusy" class="cascade-result-banner" :class="cascadeApplyResult.ok ? 'ok' : 'warn'">
-            {{ cascadeApplyResult.message }}
+            <div class="cascade-result-msg">{{ cascadeApplyResult.message }}</div>
+            <ul v-if="cascadeApplyResult.steps?.length" class="cascade-result-steps">
+              <li v-for="(s, i) in cascadeApplyResult.steps" :key="i" :class="`step-${s.status}`">
+                <span class="step-mark">{{ s.status === 'ok' ? '✓' : s.status === 'failed' ? '✕' : '•' }}</span>
+                <span class="step-name">{{ s.name }}</span>
+                <span v-if="s.detail" class="step-detail">— {{ s.detail }}</span>
+              </li>
+            </ul>
           </div>
         </div>
 
@@ -2233,30 +2242,38 @@ function runApply() {
   dialog.warning({
     title: 'Включить каскад?',
     content:
-      'Трафик пойдёт через выходной сервер. Телефон может на несколько секунд переподключиться. ' +
-      'Если что-то пойдёт не так — настройка откатится сама.',
+      'Трафик пойдёт через выходной сервер. Если на выходном сервере ещё нет AmneziaWG — ' +
+      'панель установит его сама, это может занять несколько минут. ' +
+      'Телефон может на несколько секунд переподключиться. Если что-то пойдёт не так — настройка откатится сама.',
     positiveText: 'Включить каскад',
     negativeText: 'Отмена',
-    onPositiveClick: async () => {
-      cascadeApplyBusy.value = 'apply'
-      cascadeApplyResult.value = null
-      try {
-        const { data } = await api.post<CascadeApplyResult>(
-          `/servers/${serverId}/cascade/apply`,
-          {},
-          { timeout: 300_000 }
-        )
-        cascadeApplyResult.value = data
-        if (data.ok) message.success(data.message)
-        else message.error(data.message)
-        await loadCascadeStatus()
-      } catch (error: any) {
-        message.error(error?.response?.data?.detail || 'Не удалось включить каскад.')
-      } finally {
-        cascadeApplyBusy.value = ''
-      }
+    // Закрываем диалог сразу и показываем прогресс прямо на странице — иначе
+    // окно подтверждения «висит» поверх спиннера, и кажется, что всё зависло.
+    onPositiveClick: () => {
+      void doApplyCascade()
+      return true
     }
   })
+}
+
+async function doApplyCascade() {
+  cascadeApplyBusy.value = 'apply'
+  cascadeApplyResult.value = null
+  try {
+    const { data } = await api.post<CascadeApplyResult>(
+      `/servers/${serverId}/cascade/apply`,
+      {},
+      { timeout: 600_000 }
+    )
+    cascadeApplyResult.value = data
+    if (data.ok) message.success(data.message)
+    else message.error(data.message)
+    await loadCascadeStatus()
+  } catch (error: any) {
+    message.error(error?.response?.data?.detail || 'Не удалось включить каскад.')
+  } finally {
+    cascadeApplyBusy.value = ''
+  }
 }
 
 function runRollback() {
@@ -3940,6 +3957,40 @@ function confirmDeleteServer() {
   border: 1px solid var(--color-warning, #e5a000);
   background: rgba(229, 160, 0, 0.08);
   color: var(--color-warning, #e5a000);
+}
+
+.cascade-result-steps {
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.cascade-result-steps li {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  font-size: 12.5px;
+  color: var(--color-text-secondary, #9aa);
+}
+
+.cascade-result-steps .step-mark {
+  flex: 0 0 auto;
+  font-weight: 700;
+}
+
+.cascade-result-steps .step-ok .step-mark {
+  color: #34c759;
+}
+
+.cascade-result-steps .step-failed .step-mark {
+  color: var(--color-danger, #ff5a5a);
+}
+
+.cascade-result-steps .step-detail {
+  opacity: 0.75;
 }
 
 .cascade-setup {

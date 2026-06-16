@@ -537,12 +537,15 @@ def run_preflight(entry_server_id: str, exit_server_id: str) -> CascadePreflight
             detail=f"Внутри контейнера {exit_container}. Транзит exit поднимется в его netns.",
         ))
     elif exit_vals:
-        exit_awg_tooling = "none"
+        # AmneziaWG на exit НЕ обязателен заранее: панель поставит его сама при
+        # включении каскада (одна кнопка делает всё). Поэтому это не блокер, а
+        # предупреждение-«будет установлено». Жёсткие требования к exit — только
+        # root и публичный IP (проверены выше).
+        exit_awg_tooling = "auto_install"
         checks.append(CascadeCheck(
-            id="exit_awg", label="Exit: AmneziaWG-стек", status="danger", value="Не найден",
-            detail="Для транзита нужен amneziawg (kernel-модуль, amneziawg-go или контейнер Amnezia).",
+            id="exit_awg", label="Exit: AmneziaWG-стек", status="warning", value="Будет установлен",
+            detail="На выходном сервере нет AmneziaWG — панель установит его автоматически при включении каскада.",
         ))
-        blockers.append("На exit нет AmneziaWG-стека для транзита.")
     else:
         exit_awg_tooling = "unknown"
 
