@@ -27,7 +27,12 @@ from app.schemas.awg_masking import (
     MaskingStep,
 )
 from app.services.amnezia_link import build_vpn_link
-from app.services.awg_config import build_client_config, parse_interface, parse_peers
+from app.services.awg_config import (
+    build_client_config,
+    parse_interface,
+    parse_peers,
+    resolve_endpoint_host,
+)
 from app.services.awg_masking import (
     STATIC_FALLBACK_H,
     _find_awg_container,
@@ -709,6 +714,9 @@ def _reissue_clients(
     """Пере-рендер конфигов/ссылок клиентов с новыми параметрами (ключи не меняются)."""
     record = server_store.get_record(server_id) or {}
     server_name = record.get("name") or "Server"
+    # Endpoint в конфиге должен уважать заданный домен (панели/явный), а не голый
+    # IP — иначе ротация маскировки затирала бы домен обратно на IP.
+    endpoint_host = resolve_endpoint_host(record, host)
     server_public_key = _server_public_key(ssh, container, iface, server_private_key)
 
     reissued = skipped = 0
@@ -729,12 +737,12 @@ def _reissue_clients(
             dns=dns,
             server_public_key=server_public_key,
             preshared_key=preshared_key,
-            endpoint_host=host,
+            endpoint_host=endpoint_host,
             endpoint_port=listen_port,
             awg_params=awg_params,
         )
         vpn_link = build_vpn_link(
-            host=host,
+            host=endpoint_host,
             port=listen_port,
             dns=dns,
             client_ip=item.client_ip,
@@ -750,7 +758,7 @@ def _reissue_clients(
             item.id,
             config_text=config_text,
             vpn_link=vpn_link,
-            endpoint=f"{host}:{listen_port}",
+            endpoint=f"{endpoint_host}:{listen_port}",
         )
         reissued += 1
     return reissued, skipped

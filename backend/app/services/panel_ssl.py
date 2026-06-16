@@ -258,6 +258,16 @@ def install_panel_ssl(server_id: str, domain: str, *, email: Optional[str] = Non
                 "backup_dir": backup_dir,
             },
         )
+        # Если на сервере есть AmneziaWG-клиенты — перевыпускаем их конфиги, чтобы
+        # Endpoint указывал на только что привязанный домен панели, а не на голый IP
+        # (пользователь задал домен один раз — VPN сразу ведёт на него). Best-effort:
+        # ошибка перевыпуска не должна валить успешную установку HTTPS.
+        try:
+            from app.services.awg_transport import _reissue as _reissue_awg_configs
+
+            _reissue_awg_configs(server_id)
+        except Exception:  # noqa: BLE001
+            pass
         return PanelSslInstallResult(
             ok=True,
             domain=domain,

@@ -102,6 +102,34 @@ def _nse(pid: int) -> str:
     return f"nsenter -t {int(pid)} -n"
 
 
+def _ensure_ipset(ssh) -> None:
+    """Гарантирует наличие `ipset` на ХОСТЕ.
+
+    Split-слой запускает `nsenter -n ipset` — это хостовый бинарник в namespace
+    контейнера. На свежем сервере (Ubuntu/Debian) ipset не установлен, отсюда
+    «nsenter: failed to execute ipset: No such file or directory». Ставим сам —
+    пользователю не нужно ничего делать вручную (защита от дурака, простота).
+    """
+    res = run_script(
+        ssh,
+        """
+set +e
+if command -v ipset >/dev/null 2>&1; then echo IPSET_OK; exit 0; fi
+export DEBIAN_FRONTEND=noninteractive
+apt-get update -qq >/dev/null 2>&1
+apt-get install -y -qq ipset >/dev/null 2>&1
+modprobe ip_set 2>/dev/null || true
+command -v ipset >/dev/null 2>&1 && echo IPSET_OK || echo IPSET_MISSING
+""",
+        timeout=180,
+    )
+    if "IPSET_OK" not in res.stdout:
+        raise SplitError(
+            "На сервере нет утилиты ipset и установить её автоматически не удалось "
+            "(нужен доступ в интернет / apt). Установите вручную: apt-get install -y ipset."
+        )
+
+
 # ---------------------------------------------------------------------------
 # apply / teardown
 # ---------------------------------------------------------------------------
@@ -114,6 +142,7 @@ def apply_split(ssh, pid: int, client_subnet: str, cidrs: list[str]) -> int:
     cs = shlex.quote(client_subnet)
     nse = _nse(pid)
 
+    _ensure_ipset(ssh)
     _write_host_file_chunked(ssh, HOST_IPSET_FILE, _render_ipset_restore(cidrs))
 
     script = f"""

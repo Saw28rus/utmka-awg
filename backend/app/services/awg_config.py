@@ -243,6 +243,30 @@ def build_peer_block(public_key: str, preshared_key: Optional[str], client_ip: s
     return "\n".join(lines) + "\n"
 
 
+def resolve_endpoint_host(record: dict, fallback_host: str) -> str:
+    """Хост для `[Peer] Endpoint` в клиентском конфиге.
+
+    Приоритет того, что увидит клиент в Endpoint:
+    1. Явно заданный endpoint-домен (вкладка «Маскировка» → Endpoint-домен).
+    2. Домен HTTPS-панели, если он активен — он уже DNS-проверен на этот сервер,
+       поэтому VPN-порт доступен по тому же адресу. Так пользователю не нужно
+       вводить домен второй раз: задал домен панели → конфиги ведут на домен.
+    3. IP сервера (fallback).
+
+    Чат-субдомен сюда НЕ берём: он изолирован под мини-апп. Для отдельного
+    VPN-домена есть явное поле Endpoint-домен.
+    """
+    explicit = (record.get("endpoint_host") or "").strip()
+    if explicit:
+        return explicit
+    panel_ssl = record.get("panel_ssl") or {}
+    if panel_ssl.get("status") == "active":
+        domain = (panel_ssl.get("domain") or "").strip()
+        if domain:
+            return domain
+    return fallback_host
+
+
 def build_client_config(
     *,
     client_private_key: str,

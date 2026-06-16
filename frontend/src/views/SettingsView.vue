@@ -209,7 +209,7 @@
           <p class="status-line">{{ updateInfo?.message || 'Нажми «Проверить обновление».' }}</p>
           <p v-if="settings" class="mono hint">
             Текущая: {{ updateInfo?.current || settings.panel_version }}
-            <template v-if="updateInfo?.latest"> → {{ updateInfo.latest }}</template>
+            <template v-if="updateInfo?.available && updateInfo?.latest"> → {{ updateInfo.latest }}</template>
           </p>
           <div class="actions">
             <n-button :loading="checkingUpdate" :disabled="panelUpdate.isRunning" @click="checkUpdate">

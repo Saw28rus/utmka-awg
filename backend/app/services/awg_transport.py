@@ -15,7 +15,7 @@ from typing import Optional
 
 from app.schemas.clients import TransportReissueResult
 from app.services.amnezia_link import build_vpn_link
-from app.services.awg_config import build_client_config, parse_interface
+from app.services.awg_config import build_client_config, parse_interface, resolve_endpoint_host
 from app.services.awg_masking import _find_awg_container, _read_container_config
 from app.services.awg_masking_apply import _connect, _server_public_key
 from app.services.client_store import client_store
@@ -27,7 +27,7 @@ class TransportError(Exception):
 
 
 def _endpoint_host_for(record: dict, ssh_host: str) -> str:
-    return (record.get("endpoint_host") or "").strip() or ssh_host
+    return resolve_endpoint_host(record, ssh_host)
 
 
 def _reissue(server_id: str, *, only_client_id: Optional[str] = None) -> TransportReissueResult:

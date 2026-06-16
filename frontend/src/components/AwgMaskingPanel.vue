@@ -315,33 +315,12 @@
         <span class="muted">Состояние запасного канала появится после проверки маскировки.</span>
       </div>
     </div>
-
-    <div v-if="rotationAvailable" class="panel block endpoint">
-      <h3>Endpoint-домен</h3>
-      <p class="masking-hint">
-        Если задать домен (A-запись на этот сервер), клиентские конфиги будут указывать на него
-        вместо IP — потом можно сменить IP сервера без перевыпуска ключей. Это операционное удобство,
-        а не маскировка. Пусто — используется IP сервера. После сохранения конфиги перевыпускаются.
-      </p>
-      <div class="endpoint-row">
-        <n-input
-          v-model:value="endpointHost"
-          size="small"
-          placeholder="vpn.example.com (пусто = IP сервера)"
-          :disabled="endpointLoading"
-          style="max-width: 360px"
-        />
-        <n-button size="small" type="primary" secondary :loading="endpointLoading" @click="applyEndpoint">
-          Сохранить и перевыпустить
-        </n-button>
-      </div>
-    </div>
   </div>
 </template>
 
 <script setup lang="ts">
 import { AlertTriangle, CheckCircle2, Dices, Info, LifeBuoy, RefreshCw, ShieldCheck, Undo2, XCircle } from '@lucide/vue'
-import { NButton, NInput, NInputNumber, NSelect, NSpin, NSwitch, useDialog, useMessage } from 'naive-ui'
+import { NButton, NInputNumber, NSelect, NSpin, NSwitch, useDialog, useMessage } from 'naive-ui'
 import { computed, onMounted, reactive, ref } from 'vue'
 
 import { api } from '@/api/client'
@@ -456,8 +435,6 @@ const previewLoading = ref(false)
 const applyLoading = ref(false)
 const rollbackLoading = ref(false)
 const applyResult = ref<MaskingApplyResult | null>(null)
-const endpointHost = ref('')
-const endpointLoading = ref(false)
 
 const policy = reactive<RotationPolicy>({
   enabled: false,
@@ -580,14 +557,6 @@ async function loadRotationMeta() {
   } catch {
     /* секция ротации просто не покажет пресеты */
   }
-  try {
-    const { data: server } = await api.get<{ endpoint_host?: string | null }>(
-      `/servers/${props.serverId}`
-    )
-    endpointHost.value = server.endpoint_host ?? ''
-  } catch {
-    /* endpoint prefill необязателен */
-  }
 }
 
 async function loadPolicy() {
@@ -661,24 +630,6 @@ async function runNow() {
   } finally {
     runLoading.value = false
     void loadPolicy()
-  }
-}
-
-async function applyEndpoint() {
-  endpointLoading.value = true
-  try {
-    const { data } = await api.post<{ ok: boolean; reissued: number; skipped: number }>(
-      `/servers/${props.serverId}/awg/endpoint`,
-      { endpoint_host: endpointHost.value.trim() || null }
-    )
-    message.success(
-      `Endpoint сохранён. Перевыпущено конфигов: ${data.reissued}` +
-        (data.skipped ? `, пропущено: ${data.skipped}.` : '.')
-    )
-  } catch (err: any) {
-    message.error(err?.response?.data?.detail || 'Не удалось применить endpoint.')
-  } finally {
-    endpointLoading.value = false
   }
 }
 
@@ -1093,19 +1044,4 @@ onMounted(() => {
   cursor: pointer;
 }
 
-.endpoint {
-  margin-top: 16px;
-}
-
-.endpoint h3 {
-  margin: 0 0 6px;
-  font-size: 16px;
-}
-
-.endpoint-row {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px;
-  align-items: center;
-}
 </style>

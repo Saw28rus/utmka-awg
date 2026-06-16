@@ -17,6 +17,7 @@ from app.services.awg_config import (
     parse_interface,
     parse_peers,
     remove_client_from_table,
+    resolve_endpoint_host,
 )
 from app.services.awg_detect import _container_names, _locate_config
 from app.services.client_store import client_store
@@ -75,7 +76,7 @@ def create_awg_client(
             raise ClientCreateError("Не удалось получить публичный ключ сервера.")
 
         endpoint_port = interface.listen_port or record.get("vpn_port") or 51820
-        endpoint_host = (record.get("endpoint_host") or "").strip() or target.host
+        endpoint_host = resolve_endpoint_host(record, target.host)
 
         private_key, public_key, preshared_key = _generate_keys(ssh, container)
 
