@@ -9,7 +9,7 @@
         <span class="entity-avatar entity-avatar--lg">{{ server.name.charAt(0).toUpperCase() }}</span>
         <div class="server-text">
           <div class="name-row">
-            <strong>{{ server.name }}</strong>
+            <strong class="server-name">{{ server.name }}</strong>
             <span v-if="roleLabel" class="role-pill" :class="`role-pill--${roleLabel}`">{{ roleLabelText }}</span>
             <span
               v-else-if="server.former_entry"
@@ -274,6 +274,9 @@ const trafficText = computed(() => formatBytes(props.metrics?.total_traffic_byte
   text-decoration: none;
   transition: border-color 0.15s ease;
   min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  box-sizing: border-box;
 }
 
 .server-card:hover {
@@ -286,9 +289,14 @@ const trafficText = computed(() => formatBytes(props.metrics?.total_traffic_byte
 
 .card-head {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
   gap: 12px;
+  min-width: 0;
+}
+
+.card-head > :last-child {
+  flex-shrink: 0;
 }
 
 .card-id {
@@ -296,6 +304,8 @@ const trafficText = computed(() => formatBytes(props.metrics?.total_traffic_byte
   align-items: center;
   gap: 12px;
   min-width: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
 }
 
 .server-text {
@@ -307,10 +317,13 @@ const trafficText = computed(() => formatBytes(props.metrics?.total_traffic_byte
   align-items: center;
   gap: 6px;
   min-width: 0;
+  flex-wrap: wrap;
 }
 
-.name-row strong {
+.server-name {
   font-size: 14px;
+  min-width: 0;
+  flex: 1 1 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -439,7 +452,9 @@ const trafficText = computed(() => formatBytes(props.metrics?.total_traffic_byte
   display: grid;
   gap: 10px;
   min-height: 84px;
+  min-width: 0;
   align-content: center;
+  overflow: hidden;
 }
 
 .metrics-state {
@@ -462,6 +477,8 @@ const trafficText = computed(() => formatBytes(props.metrics?.total_traffic_byte
   border-top: 1px solid var(--color-border);
   color: var(--color-muted);
   font-size: 12px;
+  min-width: 0;
+  flex-wrap: wrap;
 }
 
 .foot-item {

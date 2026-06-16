@@ -40,6 +40,7 @@ const tone = computed(() => {
 .metric-bar {
   display: grid;
   gap: 6px;
+  min-width: 0;
 }
 
 .metric-top {
@@ -47,6 +48,7 @@ const tone = computed(() => {
   align-items: center;
   justify-content: space-between;
   gap: 8px;
+  min-width: 0;
 }
 
 .metric-label {
@@ -55,12 +57,18 @@ const tone = computed(() => {
   gap: 6px;
   color: var(--color-muted);
   font-size: 12px;
+  flex-shrink: 0;
 }
 
 .metric-value {
   color: var(--color-text);
   font-size: 12px;
   font-variant-numeric: tabular-nums;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: right;
 }
 
 .track {

@@ -435,6 +435,10 @@ p {
   gap: 14px;
 }
 
+.server-grid > * {
+  min-width: 0;
+}
+
 .cascade-group {
   grid-column: 1 / -1;
   display: grid;

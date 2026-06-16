@@ -148,7 +148,7 @@ def _keep_old_server_as_solo(old_entry_id: str, backup: dict, source_id: Optiona
 
     live = server_store.get_record(old_entry_id) or {}
     base_name = live.get("name") or "Сервер"
-    label = f"{base_name} (бывший вход)"
+    label = base_name
     now = datetime.now(timezone.utc).isoformat()
     protocols = backup.get("installed_protocols") or {}
 
