@@ -37,6 +37,7 @@ class ServerRead(BaseModel):
     endpoint_host: Optional[str] = None
     last_detect_message: Optional[str] = None
     created_at: Optional[str] = None
+    former_entry: bool = False
 
 
 class ServerMetrics(BaseModel):

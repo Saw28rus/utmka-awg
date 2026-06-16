@@ -129,19 +129,76 @@ def list_replace_candidates(old_entry_id: str) -> list[dict]:
     return result
 
 
-def _remove_panel_server_record(server_id: str) -> None:
-    """Убрать временную запись одиночного сервера после успешной замены."""
+def _keep_old_server_as_solo(old_entry_id: str, backup: dict, source_id: Optional[str]) -> None:
+    """После замены старый (заменённый) сервер остаётся в панели одиночным
+    с бейджем «бывший вход» — на случай повторного использования после разбана
+    или смены IP. «Поменялись местами»: новый VPS встал входом, старый — в резерв.
+    """
+    from datetime import datetime, timezone
+
+    from app.core.crypto import decrypt
+    from app.schemas.servers import ServerCreate
     from app.services.health_store import health_store
     from app.services.metrics_cache import metrics_cache
     from app.services.protocol_backup import forget_node as forget_snapshots
     from app.services.server_store import server_store
 
-    if not server_store.get_record(server_id):
+    if not backup.get("host"):
         return
-    server_store.delete(server_id)
-    metrics_cache.invalidate(server_id)
-    forget_snapshots(server_id)
-    health_store.forget(server_id)
+
+    live = server_store.get_record(old_entry_id) or {}
+    base_name = live.get("name") or "Сервер"
+    label = f"{base_name} (бывший вход)"
+    now = datetime.now(timezone.utc).isoformat()
+    protocols = backup.get("installed_protocols") or {}
+
+    runtime = {
+        "name": label,
+        "host": backup.get("host"),
+        "ssh_port": backup.get("ssh_port") or 22,
+        "ssh_username": backup.get("ssh_username") or "root",
+        "ssh_password_enc": backup.get("ssh_password_enc"),
+        "ssh_key_enc": backup.get("ssh_key_enc"),
+        "container_names": backup.get("container_names") or [],
+        "installed_protocols": protocols,
+        "awg2_imported": bool(protocols.get("awg2")),
+        "vpn_port": backup.get("vpn_port"),
+        "status": "offline",
+        "endpoint_host": None,  # домен ушёл на новый вход
+        "former_entry": True,
+        "former_entry_at": now,
+    }
+
+    # Режим «запасной из панели»: его запись физически стала новым входом —
+    # переиспользуем её под старый сервер и чистим неактуальную телеметрию.
+    if source_id and server_store.get_record(source_id):
+        server_store.update_runtime(source_id, **runtime)
+        metrics_cache.invalidate(source_id)
+        forget_snapshots(source_id)
+        health_store.forget(source_id)
+        return
+
+    # Ручной ввод нового VPS: отдельной записи нет — создаём новую одиночную.
+    payload = ServerCreate(
+        name=label,
+        host=backup["host"],
+        ssh_port=backup.get("ssh_port") or 22,
+        ssh_username=backup.get("ssh_username") or "root",
+        ssh_password=decrypt(backup.get("ssh_password_enc")),
+        ssh_key=decrypt(backup.get("ssh_key_enc")),
+        awg2_detected=bool(protocols.get("awg2")),
+        container_names=backup.get("container_names") or [],
+    )
+    created = server_store.create(payload, message="Бывший входной сервер (заменён)")
+    server_store.update_runtime(
+        created.id,
+        installed_protocols=protocols,
+        awg2_imported=bool(protocols.get("awg2")),
+        vpn_port=backup.get("vpn_port"),
+        status="offline",
+        former_entry=True,
+        former_entry_at=now,
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -610,9 +667,14 @@ def activate(old_entry_id: str) -> dict:
 
     ER.set_status(old_entry_id, store_mod.STATUS_ACTIVE)
 
+    # Старый сервер не выбрасываем: оставляем в панели одиночным с бейджем
+    # «бывший вход» (повторное использование после разбана / смены IP).
     source_id = raw.get("source_server_id")
-    if source_id and source_id != old_entry_id:
-        _remove_panel_server_record(source_id)
+    _keep_old_server_as_solo(
+        old_entry_id,
+        backup,
+        source_id if (source_id and source_id != old_entry_id) else None,
+    )
 
     # Уведомление + аудит (best-effort).
     try:
@@ -622,7 +684,11 @@ def activate(old_entry_id: str) -> dict:
             level="success",
             code="entry_replaced",
             title="Вход заменён",
-            message=f"Вход «{old.get('name')}» теперь на {raw['new_host']}. Клиентам конфиги менять не нужно.",
+            message=(
+                f"Вход «{old.get('name')}» теперь на {raw['new_host']}. "
+                f"Клиентам конфиги менять не нужно. Старый сервер ({backup.get('host')}) "
+                f"оставлен в панели как одиночный («бывший вход»)."
+            ),
         )
     except Exception:  # noqa: BLE001
         pass

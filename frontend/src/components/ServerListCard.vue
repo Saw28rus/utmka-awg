@@ -11,6 +11,13 @@
           <div class="name-row">
             <strong>{{ server.name }}</strong>
             <span v-if="roleLabel" class="role-pill" :class="`role-pill--${roleLabel}`">{{ roleLabelText }}</span>
+            <span
+              v-else-if="server.former_entry"
+              class="role-pill role-pill--former"
+              title="Раньше был входом в каскаде. Оставлен в панели как запасной — можно переиспользовать после разбана или смены IP."
+            >
+              бывший вход
+            </span>
           </div>
           <span class="mono">{{ server.host }}:{{ server.ssh_port }}</span>
         </div>
@@ -125,6 +132,7 @@ export type ServerListItem = {
   status: string
   protocols: string[]
   active_peers: number
+  former_entry?: boolean
 }
 
 export type ServerMetrics = {
@@ -328,6 +336,14 @@ const trafficText = computed(() => formatBytes(props.metrics?.total_traffic_byte
   color: var(--color-pill-exit-text);
   background: var(--color-pill-exit-bg);
   border: 1px solid var(--color-pill-exit-border);
+}
+
+.role-pill--former {
+  text-transform: none;
+  letter-spacing: 0;
+  color: #c9a26b;
+  background: color-mix(in srgb, #c9a26b 14%, transparent);
+  border: 1px solid color-mix(in srgb, #c9a26b 40%, transparent);
 }
 
 .server-text .mono {

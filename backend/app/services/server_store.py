@@ -159,6 +159,7 @@ class ServerStore:
             endpoint_host=record.get("endpoint_host"),
             last_detect_message=record.get("last_detect_message"),
             created_at=record.get("created_at"),
+            former_entry=record.get("former_entry", False),
         )
 
     def _to_list_item(self, record: dict) -> ServerListItem:
