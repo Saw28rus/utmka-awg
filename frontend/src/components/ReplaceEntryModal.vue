@@ -23,7 +23,7 @@
           <strong>без перевыпуска конфигов клиентам</strong>.
         </p>
         <ol class="intro-steps">
-          <li>Вводите IP и SSH нового <strong>чистого</strong> сервера</li>
+          <li>Выберите заранее добавленный одиночный сервер или введите IP и SSH нового <strong>чистого</strong> VPS</li>
           <li>Панель развернёт на нём копию входа (ключи, peers, маскировка, порт)</li>
           <li>Меняете <strong>A-запись домена</strong> у регистратора на новый IP</li>
           <li>Нажимаете «Активировать» — клиенты снова работают на старых конфигах</li>
@@ -33,9 +33,35 @@
         </p>
       </div>
 
-      <!-- ШАГ 1: ввод данных нового VPS -->
+      <!-- ШАГ 1: выбор сервера -->
       <div v-if="stage === 'form'" class="form">
-        <div class="form-grid">
+        <div v-if="candidates.length" class="field span2">
+          <span>Способ выбора сервера</span>
+          <n-radio-group v-model:value="inputMode">
+            <n-radio value="panel">Из панели (одиночный сервер)</n-radio>
+            <n-radio value="manual">Ввести вручную</n-radio>
+          </n-radio-group>
+        </div>
+
+        <div v-if="inputMode === 'panel' && candidates.length" class="panel-pick">
+          <label class="field span2">
+            <span>Сервер из панели</span>
+            <n-select
+              v-model:value="selectedCandidateId"
+              placeholder="Выберите заранее добавленный VPS"
+              :options="candidateOptions"
+              :loading="loadingCandidates"
+            />
+          </label>
+          <p v-if="selectedCandidate" class="hint">
+            Будет использован SSH: <span class="mono">{{ selectedCandidate.host }}:{{ selectedCandidate.ssh_port }}</span>
+          </p>
+          <p class="hint">
+            Подходит одиночный сервер без каскада — например, заранее добавленный «запасной» VPS.
+          </p>
+        </div>
+
+        <div v-else class="form-grid">
           <label class="field span2">
             <span>IP нового сервера</span>
             <n-input v-model:value="form.host" placeholder="например, 195.201.10.20" />
@@ -69,7 +95,7 @@
             />
           </label>
         </div>
-        <p class="hint">
+        <p v-if="inputMode === 'manual' || !candidates.length" class="hint">
           Сервер должен быть <strong>чистым</strong> (без AmneziaWG). Панель проверит это сама.
         </p>
       </div>
@@ -137,7 +163,7 @@
         </n-button>
 
         <n-button v-if="stage === 'intro'" tertiary @click="close">Отмена</n-button>
-        <n-button v-if="stage === 'intro'" type="primary" @click="stage = 'form'">Я понял, продолжить</n-button>
+        <n-button v-if="stage === 'intro'" type="primary" @click="goToForm">Я понял, продолжить</n-button>
 
         <n-button v-if="stage === 'form'" type="primary" :loading="busy" @click="runPreflight">
           Проверить сервер
@@ -186,6 +212,7 @@ import {
   NModal,
   NRadio,
   NRadioGroup,
+  NSelect,
   NSpin,
   useDialog,
   useMessage
@@ -195,6 +222,14 @@ import { computed, onUnmounted, ref, watch } from 'vue'
 import { api } from '@/api/client'
 import StatusBadge from '@/components/StatusBadge.vue'
 import StepsTimeline from '@/components/ReplaceStepsTimeline.vue'
+
+type ReplaceCandidate = {
+  id: string
+  name: string
+  host: string
+  ssh_port: number
+  has_awg2: boolean
+}
 
 type Replacement = {
   status?: string
@@ -234,6 +269,10 @@ const activating = ref(false)
 const rec = ref<Replacement | null>(null)
 const preflightBlockers = ref<string[]>([])
 const preflightWarnings = ref<string[]>([])
+const candidates = ref<ReplaceCandidate[]>([])
+const loadingCandidates = ref(false)
+const inputMode = ref<'panel' | 'manual'>('manual')
+const selectedCandidateId = ref<string | null>(null)
 let pollTimer: ReturnType<typeof setInterval> | null = null
 
 const form = ref({
@@ -265,6 +304,38 @@ const statusTone = computed(() => {
   if (rec.value?.error) return 'danger'
   return 'neutral'
 })
+
+const candidateOptions = computed(() =>
+  candidates.value.map((c) => ({
+    label: `${c.name} (${c.host}:${c.ssh_port})`,
+    value: c.id
+  }))
+)
+
+const selectedCandidate = computed(() =>
+  candidates.value.find((c) => c.id === selectedCandidateId.value) ?? null
+)
+
+async function loadCandidates() {
+  loadingCandidates.value = true
+  try {
+    const { data } = await api.get<ReplaceCandidate[]>(`/servers/${props.serverId}/replace/candidates`)
+    candidates.value = data || []
+    if (candidates.value.length && !selectedCandidateId.value) {
+      selectedCandidateId.value = candidates.value[0].id
+    }
+  } catch {
+    candidates.value = []
+  } finally {
+    loadingCandidates.value = false
+  }
+}
+
+async function goToForm() {
+  stage.value = 'form'
+  await loadCandidates()
+  inputMode.value = candidates.value.length ? 'panel' : 'manual'
+}
 
 function stageFromStatus(status?: string): Stage {
   switch (status) {
@@ -310,19 +381,28 @@ function stopPolling() {
 }
 
 async function runPreflight() {
-  if (!form.value.host.trim()) {
+  const usePanel = inputMode.value === 'panel' && candidates.value.length
+  if (usePanel) {
+    if (!selectedCandidateId.value) {
+      message.warning('Выберите сервер из панели.')
+      return
+    }
+  } else if (!form.value.host.trim()) {
     message.warning('Укажите IP нового сервера.')
     return
   }
   busy.value = true
   try {
-    const { data } = await api.post(`/servers/${props.serverId}/replace/preflight`, {
-      new_host: form.value.host.trim(),
-      ssh_port: form.value.port || 22,
-      ssh_username: form.value.username.trim() || 'root',
-      ssh_password: form.value.authType === 'password' ? form.value.password : undefined,
-      ssh_key: form.value.authType === 'key' ? form.value.key : undefined
-    })
+    const payload = usePanel
+      ? { source_server_id: selectedCandidateId.value }
+      : {
+          new_host: form.value.host.trim(),
+          ssh_port: form.value.port || 22,
+          ssh_username: form.value.username.trim() || 'root',
+          ssh_password: form.value.authType === 'password' ? form.value.password : undefined,
+          ssh_key: form.value.authType === 'key' ? form.value.key : undefined
+        }
+    const { data } = await api.post(`/servers/${props.serverId}/replace/preflight`, payload)
     preflightBlockers.value = data.blockers || []
     preflightWarnings.value = data.warnings || []
     rec.value = data.replacement || null
@@ -431,6 +511,9 @@ function reset() {
   rec.value = null
   preflightBlockers.value = []
   preflightWarnings.value = []
+  candidates.value = []
+  inputMode.value = 'manual'
+  selectedCandidateId.value = null
   form.value = { host: '', port: 22, username: 'root', authType: 'password', password: '', key: '' }
 }
 
@@ -492,6 +575,11 @@ onUnmounted(stopPolling)
 .form {
   display: grid;
   gap: 12px;
+}
+
+.panel-pick {
+  display: grid;
+  gap: 10px;
 }
 
 .form-grid {

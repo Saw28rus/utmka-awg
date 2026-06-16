@@ -82,6 +82,68 @@ def _container_running(ssh, container: str) -> bool:
     return out == "running"
 
 
+def _cascade_member_ids() -> set[str]:
+    from app.services.cascade_store import cascade_store
+
+    ids: set[str] = set()
+    for link in cascade_store.list_links():
+        if link.get("entry_server_id"):
+            ids.add(link["entry_server_id"])
+        if link.get("exit_server_id"):
+            ids.add(link["exit_server_id"])
+    return ids
+
+
+def list_replace_candidates(old_entry_id: str) -> list[dict]:
+    """Одиночные серверы панели (не в каскаде), подходящие как новый вход."""
+    from app.core.crypto import decrypt
+    from app.services.server_store import server_store
+
+    in_cascade = _cascade_member_ids()
+    exit_id = _entry_cascade_exit(old_entry_id)
+    result: list[dict] = []
+
+    for rec in server_store.list_records():
+        sid = rec.get("id")
+        if not sid or sid == old_entry_id:
+            continue
+        if sid in in_cascade:
+            continue
+        if exit_id and sid == exit_id:
+            continue
+        has_pw = bool(decrypt(rec.get("ssh_password_enc")))
+        has_key = bool(decrypt(rec.get("ssh_key_enc")))
+        if not has_pw and not has_key:
+            continue
+        has_awg2 = bool(rec.get("awg2_imported") or (rec.get("installed_protocols") or {}).get("awg2"))
+        result.append(
+            {
+                "id": sid,
+                "name": rec.get("name") or sid[:8],
+                "host": rec.get("host") or "",
+                "ssh_port": rec.get("ssh_port") or 22,
+                "has_awg2": has_awg2,
+            }
+        )
+    result.sort(key=lambda x: (x.get("name") or "").lower())
+    return result
+
+
+def _remove_panel_server_record(server_id: str) -> None:
+    """Убрать временную запись одиночного сервера после успешной замены."""
+    from app.services.health_store import health_store
+    from app.services.metrics_cache import metrics_cache
+    from app.services.protocol_backup import forget_node as forget_snapshots
+    from app.services.server_store import server_store
+
+    if not server_store.get_record(server_id):
+        return
+    server_store.delete(server_id)
+    metrics_cache.invalidate(server_id)
+    forget_snapshots(server_id)
+    health_store.forget(server_id)
+
+
 # --------------------------------------------------------------------------- #
 # Шаг 1–2: preflight нового VPS
 # --------------------------------------------------------------------------- #
@@ -90,11 +152,12 @@ def _container_running(ssh, container: str) -> bool:
 def preflight(
     old_entry_id: str,
     *,
-    new_host: str,
-    ssh_port: int,
-    ssh_username: str,
-    ssh_password: Optional[str],
-    ssh_key: Optional[str],
+    source_server_id: Optional[str] = None,
+    new_host: Optional[str] = None,
+    ssh_port: int = 22,
+    ssh_username: str = "root",
+    ssh_password: Optional[str] = None,
+    ssh_key: Optional[str] = None,
 ) -> dict:
     from app.services.amnezia_ssh import container_exists, docker_available, port_busy
     from app.services.panel_ssl import _server_public_ip
@@ -120,17 +183,42 @@ def preflight(
         if cur and cur.get("status") in {store_mod.STATUS_PROVISIONING, store_mod.STATUS_ACTIVATING}:
             raise EntryReplacementError("Замена уже выполняется. Дождитесь завершения или отмените.")
 
+    creds_from_record: Optional[dict] = None
+    source_name: Optional[str] = None
+
+    if source_server_id:
+        allowed = {c["id"] for c in list_replace_candidates(old_entry_id)}
+        if source_server_id not in allowed:
+            raise EntryReplacementError(
+                "Выбранный сервер недоступен для замены (не одиночный или уже в каскаде)."
+            )
+        src = server_store.get_record(source_server_id)
+        if not src:
+            raise EntryReplacementError("Выбранный сервер не найден.")
+        target = server_store.ssh_target(source_server_id)
+        if not target:
+            raise EntryReplacementError("Не удалось прочитать SSH-доступ выбранного сервера.")
+        new_host = target.host
+        ssh_port = target.port
+        ssh_username = target.username
+        ssh_password = target.password
+        ssh_key = target.key
+        creds_from_record = src
+        source_name = src.get("name")
+    else:
+        source_server_id = None
+
     new_host = (new_host or "").strip()
     if not _is_valid_host(new_host):
         raise EntryReplacementError("Некорректный IP/hostname нового сервера.")
     if new_host == old.get("host"):
         raise EntryReplacementError("Это тот же сервер, что и старый вход.")
-    if bool(ssh_password) == bool(ssh_key):
+    if not source_server_id and bool(ssh_password) == bool(ssh_key):
         raise EntryReplacementError("Укажите ровно один способ авторизации: пароль ИЛИ ключ.")
 
-    # Не пересекаемся с другими узлами панели.
+    # Не пересекаемся с другими узлами панели (кроме выбранного источника).
     for rec in server_store.list_records():
-        if rec.get("id") == old_entry_id:
+        if rec.get("id") in {old_entry_id, source_server_id}:
             continue
         if rec.get("host") == new_host:
             raise EntryReplacementError("Этот IP уже используется другим узлом панели.")
@@ -149,11 +237,15 @@ def preflight(
         new_host=new_host,
         new_ssh_port=ssh_port,
         new_ssh_username=ssh_username,
-        new_ssh_password=ssh_password,
-        new_ssh_key=ssh_key,
+        new_ssh_password=ssh_password if not creds_from_record else None,
+        new_ssh_key=ssh_key if not creds_from_record else None,
         expected_domain=expected_domain,
         port=old_port,
         cascade_exit_id=exit_id,
+        source_server_id=source_server_id,
+        source_server_name=source_name,
+        ssh_password_enc=creds_from_record.get("ssh_password_enc") if creds_from_record else None,
+        ssh_key_enc=creds_from_record.get("ssh_key_enc") if creds_from_record else None,
     )
     ER.set_status(old_entry_id, store_mod.STATUS_PREFLIGHT)
 
@@ -517,6 +609,10 @@ def activate(old_entry_id: str) -> dict:
             )
 
     ER.set_status(old_entry_id, store_mod.STATUS_ACTIVE)
+
+    source_id = raw.get("source_server_id")
+    if source_id and source_id != old_entry_id:
+        _remove_panel_server_record(source_id)
 
     # Уведомление + аудит (best-effort).
     try:
