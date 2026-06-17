@@ -122,9 +122,16 @@ def _awg_params(with_s34: bool) -> dict[str, str]:
         s2 = _secrets.randbelow(136) + 15
 
     params = {
-        "$JUNK_PACKET_COUNT": str(_secrets.randbelow(8) + 3),  # 3..10
+        # Mobile-safe junk: AmneziaWG шлёт Jc junk-пакетов ПЕРЕД handshake-init.
+        # Большой залп (старый дефолт Jc 3..10 по 50..1000 байт = до ~10 КБ) на
+        # мобильных сетях частично режется оператором, и среди потерянных пакетов
+        # оказывается сам init → сервер его не видит → «вечное подключение».
+        # Доказано дампом: при Jc=7 доходило 5 из 8 пакетов, init терялся.
+        # Junk-параметры не обязаны совпадать у пиров, поэтому держим залп малым:
+        # Jc 3..4 и Jmax 500 — достаточно для обфускации, но init проходит.
+        "$JUNK_PACKET_COUNT": str(_secrets.randbelow(2) + 3),  # 3..4
         "$JUNK_PACKET_MIN_SIZE": "50",
-        "$JUNK_PACKET_MAX_SIZE": "1000",
+        "$JUNK_PACKET_MAX_SIZE": "500",
         "$INIT_PACKET_JUNK_SIZE": str(s1),
         "$RESPONSE_PACKET_JUNK_SIZE": str(s2),
         "$COOKIE_REPLY_PACKET_JUNK_SIZE": str(_secrets.randbelow(136) + 15) if with_s34 else "0",

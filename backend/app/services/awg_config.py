@@ -274,6 +274,42 @@ def resolve_endpoint_host(record: dict, fallback_host: str) -> str:
 # «подключилось, но сайты не грузятся» на мобильном интернете.
 CLIENT_MTU = 1280
 
+# Mobile-safe ограничения junk в КЛИЕНТСКОМ конфиге. AmneziaWG шлёт Jc junk-пакетов
+# (размером Jmin..Jmax) ПЕРЕД handshake-init. Большой залп на мобильных сетях
+# частично теряется, и среди потерянных пакетов оказывается сам init → сервер его
+# не видит → «вечное подключение». Junk-параметры по протоколу НЕ обязаны совпадать
+# у пиров, поэтому клиенту всегда выдаём малый залп — даже если на сервере остался
+# агрессивный дефолт (Jc до 10, Jmax 1000). Так старые установки чинятся простым
+# перевыпуском конфига, без переустановки AmneziaWG.
+CLIENT_JUNK_MAX_JC = 4
+CLIENT_JUNK_MAX_JMAX = 500
+
+
+def _mobile_safe_awg_params(awg_params: dict[str, str]) -> dict[str, str]:
+    """Ограничивает junk-параметры (Jc/Jmin/Jmax) до mobile-safe значений.
+
+    S1–S4 и H1–H4 НЕ трогаем: они обязаны совпадать с сервером, иначе AWG2 не
+    распарсит пакеты. Меняем только junk, который приёмник всё равно отбрасывает.
+    """
+    safe = dict(awg_params)
+
+    def _as_int(key: str) -> Optional[int]:
+        try:
+            return int(str(safe[key]).strip())
+        except (KeyError, ValueError, TypeError):
+            return None
+
+    jc = _as_int("Jc")
+    if jc is not None and jc > CLIENT_JUNK_MAX_JC:
+        safe["Jc"] = str(CLIENT_JUNK_MAX_JC)
+    jmax = _as_int("Jmax")
+    if jmax is not None and jmax > CLIENT_JUNK_MAX_JMAX:
+        safe["Jmax"] = str(CLIENT_JUNK_MAX_JMAX)
+        jmin = _as_int("Jmin")
+        if jmin is not None and jmin >= CLIENT_JUNK_MAX_JMAX:
+            safe["Jmin"] = str(max(1, CLIENT_JUNK_MAX_JMAX - 1))
+    return safe
+
 
 def build_client_config(
     *,
@@ -295,9 +331,10 @@ def build_client_config(
         f"PrivateKey = {client_private_key}",
         f"MTU = {mtu}",
     ]
+    safe_params = _mobile_safe_awg_params(awg_params)
     for key in AWG_PARAM_KEYS:
-        if key in awg_params:
-            interface_lines.append(f"{key} = {awg_params[key]}")
+        if key in safe_params:
+            interface_lines.append(f"{key} = {safe_params[key]}")
 
     peer_lines = [
         "",
