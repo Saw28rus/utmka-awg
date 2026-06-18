@@ -107,6 +107,7 @@ class ClientListItem(BaseModel):
     billing_mode: str = "free"
     billing_amount_kopecks: Optional[int] = None
     billing_period_months: int = 1
+    last_paid_at: Optional[str] = None
 
 
 class ClientDetail(ClientListItem):

@@ -76,12 +76,12 @@
     <button
       v-if="roleLabel === 'entry'"
       type="button"
-      class="replace-entry-btn"
-      title="Быстрая замена входного сервера без перевыпуска конфигов"
-      @click.prevent.stop="$emit('replace-entry')"
+      class="migrate-node-btn"
+      title="Перенос VPN, панели и всех данных на новый сервер без смены конфигов клиентам"
+      @click.prevent.stop="$emit('migrate-node')"
     >
-      <ArrowRightLeft :size="15" />
-      <span>Заменить вход</span>
+      <ServerCog :size="15" />
+      <span>Мигрировать узел</span>
     </button>
 
     <footer class="card-foot">
@@ -114,7 +114,7 @@
 </template>
 
 <script setup lang="ts">
-import { Activity, AlertTriangle, ArrowDownUp, ArrowRightLeft, Clock, Cpu, HardDrive, MemoryStick, Network, ShieldCheck, Trash2, Users, WifiOff } from '@lucide/vue'
+import { Activity, AlertTriangle, ArrowDownUp, Clock, Cpu, HardDrive, MemoryStick, Network, ServerCog, ShieldCheck, Trash2, Users, WifiOff } from '@lucide/vue'
 import { NSpin } from 'naive-ui'
 import { computed } from 'vue'
 import { RouterLink, type RouteLocationRaw } from 'vue-router'
@@ -175,7 +175,7 @@ const props = defineProps<{
   healthChecking?: boolean
 }>()
 
-defineEmits<{ delete: []; check: []; 'replace-entry': [] }>()
+defineEmits<{ delete: []; check: []; 'migrate-node': [] }>()
 
 const healthProblem = computed(
   () => props.health && (props.health.state === 'degraded' || props.health.state === 'down')
@@ -527,7 +527,7 @@ const trafficText = computed(() => formatBytes(props.metrics?.total_traffic_byte
   background: var(--color-accent-soft);
 }
 
-.replace-entry-btn {
+.migrate-node-btn {
   display: flex;
   align-items: center;
   justify-content: center;
@@ -535,13 +535,13 @@ const trafficText = computed(() => formatBytes(props.metrics?.total_traffic_byte
   width: 100%;
   padding: 9px 14px;
   border-radius: 10px;
-  border: 1px solid color-mix(in srgb, #e8a040 45%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-info) 45%, transparent);
   background: linear-gradient(
     135deg,
-    color-mix(in srgb, #e8a040 16%, transparent),
+    color-mix(in srgb, var(--color-info) 14%, transparent),
     color-mix(in srgb, var(--color-accent) 10%, transparent)
   );
-  color: #f0c070;
+  color: var(--color-info);
   font-size: 13px;
   font-weight: 600;
   cursor: pointer;
@@ -551,17 +551,17 @@ const trafficText = computed(() => formatBytes(props.metrics?.total_traffic_byte
     transform 0.1s ease;
 }
 
-.replace-entry-btn:hover {
-  border-color: color-mix(in srgb, #e8a040 70%, transparent);
+.migrate-node-btn:hover {
+  border-color: color-mix(in srgb, var(--color-info) 70%, transparent);
   background: linear-gradient(
     135deg,
-    color-mix(in srgb, #e8a040 24%, transparent),
+    color-mix(in srgb, var(--color-info) 22%, transparent),
     color-mix(in srgb, var(--color-accent) 16%, transparent)
   );
   transform: translateY(-1px);
 }
 
-.replace-entry-btn:active {
+.migrate-node-btn:active {
   transform: translateY(0);
 }
 </style>

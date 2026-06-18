@@ -524,3 +524,27 @@ class InvoiceService:
             pass
 
         invoice.client_extended = True
+
+
+async def last_paid_at_by_client_ids(
+    session: AsyncSession, client_ids: list[str]
+) -> dict[str, str]:
+    """Последняя успешная оплата по каждому client_id (для списка клиентов)."""
+    if not client_ids:
+        return {}
+    stmt = (
+        select(Invoice.client_id, func.max(Invoice.paid_at))
+        .where(
+            Invoice.client_id.in_(client_ids),
+            Invoice.status == "succeeded",
+            Invoice.paid_at.isnot(None),
+            Invoice.deleted_at.is_(None),
+        )
+        .group_by(Invoice.client_id)
+    )
+    rows = (await session.execute(stmt)).all()
+    return {
+        cid: paid_at.isoformat()
+        for cid, paid_at in rows
+        if cid and paid_at
+    }

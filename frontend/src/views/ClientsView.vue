@@ -10,6 +10,15 @@
           <p>Появляются после import существующей Amnezia или создания нового.</p>
         </div>
         <div class="head-actions">
+          <div v-if="clients.length" class="total-traffic" title="Суммарный трафик всех клиентов">
+            <span class="total-traffic-icon" aria-hidden="true">
+              <ArrowDownUp :size="14" />
+            </span>
+            <span class="total-traffic-value">
+              <strong>{{ totalTraffic.value }}</strong>
+              <em v-if="totalTraffic.unit">{{ totalTraffic.unit }}</em>
+            </span>
+          </div>
           <n-button
             tertiary
             circle
@@ -37,7 +46,7 @@
         </div>
       </div>
 
-      <div v-if="clients.length" class="client-list">
+      <div v-if="clients.length" class="client-list" :class="{ 'client-list--paid': hasPaidClients }">
         <div class="list-head">
           <span>Клиент</span>
           <span class="actions-head" />
@@ -46,6 +55,10 @@
           <span>Трафик</span>
           <span>Создан</span>
           <span>Действует до</span>
+          <template v-if="hasPaidClients">
+            <span>Сумма</span>
+            <span>Дата оплаты</span>
+          </template>
           <span class="center">Статус</span>
         </div>
         <div v-for="client in clients" :key="client.id" class="client-row">
@@ -108,6 +121,20 @@
           >
             {{ expiryText(client) }}
           </RouterLink>
+          <template v-if="hasPaidClients">
+            <RouterLink
+              :to="{ name: 'client-detail', params: { id: client.id } }"
+              class="row-cell billing-cell"
+            >
+              {{ billingAmountText(client) }}
+            </RouterLink>
+            <RouterLink
+              :to="{ name: 'client-detail', params: { id: client.id } }"
+              class="row-cell date-cell"
+            >
+              {{ lastPaidText(client) }}
+            </RouterLink>
+          </template>
           <RouterLink
             :to="{ name: 'client-detail', params: { id: client.id } }"
             class="row-cell status-cell"
@@ -140,9 +167,9 @@
 </template>
 
 <script setup lang="ts">
-import { Download, Pencil, Plus, RefreshCw, Upload } from '@lucide/vue'
+import { Download, ArrowDownUp, Pencil, Plus, RefreshCw, Upload } from '@lucide/vue'
 import { NButton, NSwitch, useMessage } from 'naive-ui'
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 
 import { api } from '@/api/client'
@@ -177,6 +204,10 @@ type ClientListItem = {
   created_at?: string | null
   online: boolean
   blocked: boolean
+  billing_mode?: string
+  billing_amount_kopecks?: number | null
+  billing_period_months?: number
+  last_paid_at?: string | null
 }
 
 const router = useRouter()
@@ -191,6 +222,26 @@ const editClient = ref<ClientLimitsSource | null>(null)
 const clients = ref<ClientListItem[]>([])
 
 useClientTrafficPoll(clients)
+
+const hasPaidClients = computed(() =>
+  clients.value.some((c) => c.billing_mode === 'paid' && c.billing_amount_kopecks)
+)
+
+const totalTraffic = computed(() => {
+  const totalBytes = clients.value.reduce((sum, c) => sum + (c.traffic_used_bytes || 0), 0)
+  const raw = formatBytes(totalBytes)
+  const match = raw.match(/^([\d.,]+)\s*(.+)$/)
+  const unitMap: Record<string, string> = {
+    GB: 'Гб',
+    MB: 'Мб',
+    KB: 'КБ',
+    TB: 'Тб',
+    PB: 'ПБ',
+    B: 'Б'
+  }
+  if (!match) return { value: raw, unit: '' }
+  return { value: match[1], unit: unitMap[match[2]] ?? match[2] }
+})
 
 onMounted(() => {
   void loadClients()
@@ -313,6 +364,24 @@ function expiryText(client: ClientListItem) {
   return formatDate(client.expires_at)
 }
 
+function isPaidClient(client: ClientListItem) {
+  return client.billing_mode === 'paid' && !!client.billing_amount_kopecks
+}
+
+function billingAmountText(client: ClientListItem) {
+  if (!isPaidClient(client)) return '—'
+  const rub = (client.billing_amount_kopecks ?? 0) / 100
+  const formatted = rub.toLocaleString('ru-RU', { maximumFractionDigits: 0 })
+  const period = client.billing_period_months === 3 ? '/3 мес' : '/мес'
+  return `${formatted} ₽${period}`
+}
+
+function lastPaidText(client: ClientListItem) {
+  if (!isPaidClient(client)) return '—'
+  if (!client.last_paid_at) return '—'
+  return formatDate(client.last_paid_at)
+}
+
 function isExpiringSoon(client: ClientListItem) {
   if (!client.expires_at) return false
   const expires = new Date(client.expires_at).getTime()
@@ -350,7 +419,60 @@ function presence(client: ClientListItem): {
 
 .head-actions {
   display: flex;
+  align-items: center;
   gap: 10px;
+}
+
+.total-traffic {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 34px;
+  padding: 0 12px 0 8px;
+  border-radius: 999px;
+  border: 1px solid var(--color-border);
+  background: linear-gradient(
+    135deg,
+    var(--color-surface-2),
+    color-mix(in srgb, var(--color-accent) 6%, var(--color-surface-2))
+  );
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--color-text) 4%, transparent);
+}
+
+.total-traffic-icon {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 999px;
+  background: var(--color-accent-soft);
+  color: var(--color-accent);
+  flex-shrink: 0;
+}
+
+.total-traffic-value {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.total-traffic-value strong {
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 1;
+  color: var(--color-text);
+  letter-spacing: -0.02em;
+}
+
+.total-traffic-value em {
+  font-style: normal;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+  color: var(--color-accent);
+  letter-spacing: 0.02em;
 }
 
 .title-row {
@@ -381,6 +503,11 @@ p {
   gap: 14px;
   align-items: center;
   padding: 0 18px;
+}
+
+.client-list--paid .list-head,
+.client-list--paid .client-row {
+  grid-template-columns: minmax(150px, 1.1fr) 72px minmax(90px, 0.8fr) 64px minmax(110px, 0.9fr) 80px 88px 76px 88px 96px;
 }
 
 .list-head {
@@ -455,6 +582,13 @@ p {
 
 .date-cell.expiring {
   color: var(--color-warning);
+}
+
+.billing-cell {
+  font-size: 12.5px;
+  color: var(--color-muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 
 .center {

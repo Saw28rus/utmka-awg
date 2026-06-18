@@ -39,8 +39,17 @@ router = APIRouter()
 async def list_clients(
     server_id: Optional[str] = Query(default=None),
     _: CurrentUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
 ) -> list[ClientListItem]:
-    return client_store.list_all(server_id=server_id)
+    items = client_store.list_all(server_id=server_id)
+    if not items:
+        return items
+    from app.services.invoice_service import last_paid_at_by_client_ids
+
+    paid_map = await last_paid_at_by_client_ids(db, [c.id for c in items])
+    if not paid_map:
+        return items
+    return [item.model_copy(update={"last_paid_at": paid_map.get(item.id)}) for item in items]
 
 
 @router.post("/sync-traffic", response_model=list[ClientTrafficSnapshot])

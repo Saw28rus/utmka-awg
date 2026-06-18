@@ -6,89 +6,55 @@
       <section class="main-grid">
         <div class="server-list panel">
           <div class="section-head">
-            <div>
-              <h2>Серверы</h2>
-              <p>{{ servers.length ? 'Состояние SSH, AWG2 и клиентов' : 'Добавь VPS для начала работы' }}</p>
-            </div>
-            <n-button
-              v-if="isAdmin"
-              type="primary"
-              @click="$router.push({ path: '/servers', query: { add: '1' } })"
-            >
-              <template #icon><Plus :size="16" /></template>
-              Добавить сервер
-            </n-button>
+            <h2>Серверы</h2>
           </div>
 
           <div v-if="servers.length" class="server-rows">
-            <template v-if="isAdmin">
-              <RouterLink
-                v-for="server in servers"
-                :key="server.id"
-                :to="{ name: 'server-detail', params: { id: server.id } }"
-                class="server-row"
-              >
-                <div class="server-main">
-                  <span class="entity-avatar entity-avatar--md">{{ server.name.charAt(0).toUpperCase() }}</span>
-                  <div>
-                    <strong>{{ server.name }}</strong>
-                    <span class="mono">{{ server.host }}:{{ server.ssh_port }}</span>
-                  </div>
+            <component
+              :is="isAdmin ? RouterLink : 'div'"
+              v-for="server in servers"
+              :key="server.id"
+              v-bind="isAdmin ? { to: { name: 'server-detail', params: { id: server.id } } } : {}"
+              class="server-row"
+            >
+              <div class="server-main">
+                <span class="entity-avatar entity-avatar--sm">{{ server.name.charAt(0).toUpperCase() }}</span>
+                <div class="server-text">
+                  <strong>{{ server.name }}</strong>
+                  <span class="mono">{{ serverHost(server) }}</span>
                 </div>
-                <span class="server-meta">{{ server.active_peers }} клиентов</span>
-                <StatusBadge
-                  :label="serverStatusLabel(server)"
-                  :tone="serverStatusTone(server)"
-                  :pulse="serverOnline(server)"
-                />
-              </RouterLink>
-            </template>
-            <template v-else>
-              <div v-for="server in servers" :key="server.id" class="server-row">
-                <div class="server-main">
-                  <span class="entity-avatar entity-avatar--md">{{ server.name.charAt(0).toUpperCase() }}</span>
-                  <div>
-                    <strong>{{ server.name }}</strong>
-                    <span class="mono">{{ server.host }}</span>
-                  </div>
-                </div>
+              </div>
+              <div class="server-trailing">
+                <span v-if="isAdmin" class="server-meta">{{ server.active_peers }} клиентов</span>
                 <StatusBadge
                   :label="serverStatusLabel(server)"
                   :tone="serverStatusTone(server)"
                   :pulse="serverOnline(server)"
                 />
               </div>
-            </template>
+            </component>
           </div>
 
           <EmptyState
             v-else
             title="Серверов пока нет"
-            text="После добавления VPS панель покажет detect и предложит import или install."
+            text="Добавьте VPS на странице «Серверы»."
           />
         </div>
 
-        <aside class="side-stack">
-          <div class="panel compact-panel">
-            <h2>События</h2>
-            <OperationTimeline v-if="events.length" :events="events" />
-            <p v-else class="empty-note">Нет предупреждений — всё спокойно.</p>
+        <aside class="status-panel panel">
+          <h2>Статусы</h2>
+          <div class="status-row">
+            <StatusBadge label="Панель online" tone="ok" :pulse="true" />
+            <span>API отвечает</span>
           </div>
-
-          <div class="panel compact-panel">
-            <h2>Статусы</h2>
-            <div class="status-row">
-              <StatusBadge label="Панель online" tone="ok" :pulse="true" />
-              <span>API отвечает</span>
-            </div>
-            <div class="status-row">
-              <StatusBadge :label="awgLabel" :tone="awgTone" :pulse="awgOnline" />
-              <span>{{ awgHint }}</span>
-            </div>
-            <div class="status-row">
-              <StatusBadge :label="`${summary?.clients.active ?? 0} клиентов`" tone="info" />
-              <span>{{ summary?.clients.online ?? 0 }} онлайн сейчас</span>
-            </div>
+          <div class="status-row">
+            <StatusBadge :label="awgLabel" :tone="awgTone" :pulse="awgOnline" />
+            <span>{{ awgHint }}</span>
+          </div>
+          <div class="status-row">
+            <StatusBadge :label="`${summary?.clients.active ?? 0} клиентов`" tone="info" />
+            <span>{{ summary?.clients.online ?? 0 }} онлайн сейчас</span>
           </div>
         </aside>
       </section>
@@ -97,14 +63,12 @@
 </template>
 
 <script setup lang="ts">
-import { Plus } from '@lucide/vue'
-import { NButton } from 'naive-ui'
 import { computed, onMounted, ref } from 'vue'
+import { RouterLink } from 'vue-router'
 
 import { api } from '@/api/client'
 import EmptyState from '@/components/EmptyState.vue'
 import MetricStrip from '@/components/MetricStrip.vue'
-import OperationTimeline from '@/components/OperationTimeline.vue'
 import StatusBadge from '@/components/StatusBadge.vue'
 import AppShell from '@/layouts/AppShell.vue'
 import { useAuthStore } from '@/stores/auth'
@@ -171,21 +135,6 @@ const metricItems = computed(() => {
   ]
 })
 
-const events = computed(() => {
-  const alerts = summary.value?.alerts ?? []
-  const toneMap: Record<string, 'ok' | 'info' | 'warning' | 'danger' | 'neutral'> = {
-    info: 'info',
-    warning: 'warning',
-    danger: 'danger'
-  }
-  return alerts.map((alert) => ({
-    code: alert.code,
-    label: alert.level === 'warning' ? 'Внимание' : 'Инфо',
-    message: alert.message,
-    tone: toneMap[alert.level] ?? 'neutral'
-  }))
-})
-
 const awgOnline = computed(() => (summary.value?.servers.online ?? 0) > 0)
 const awgLabel = computed(() => (servers.value.length ? 'AWG2' : 'AWG2'))
 const awgTone = computed(() => {
@@ -197,6 +146,10 @@ const awgHint = computed(() => {
   const imported = servers.value.filter((s) => s.awg2_imported).length
   return `${imported} из ${servers.value.length} с AWG2`
 })
+
+function serverHost(server: ServerListItem) {
+  return isAdmin.value ? `${server.host}:${server.ssh_port}` : server.host
+}
 
 function serverOnline(server: ServerListItem) {
   return server.status === 'online'
@@ -219,8 +172,9 @@ function serverStatusTone(server: ServerListItem) {
 
 .main-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 360px;
+  grid-template-columns: minmax(0, 1fr) 280px;
   gap: 18px;
+  align-items: start;
 }
 
 .server-list {
@@ -228,24 +182,14 @@ function serverStatusTone(server: ServerListItem) {
 }
 
 .section-head {
-  min-height: 64px;
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 16px;
-  padding: 16px;
+  padding: 12px 14px;
   border-bottom: 1px solid var(--color-border);
 }
 
 h2 {
   margin: 0;
-  font-size: 16px;
+  font-size: 15px;
   letter-spacing: 0;
-}
-
-p {
-  margin: 4px 0 0;
-  color: var(--color-muted);
 }
 
 .server-rows {
@@ -253,11 +197,11 @@ p {
 }
 
 .server-row {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 110px auto;
-  gap: 14px;
+  display: flex;
   align-items: center;
-  padding: 12px 16px;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 14px;
   color: inherit;
   text-decoration: none;
   border-bottom: 1px solid var(--color-border);
@@ -279,69 +223,59 @@ p {
   min-width: 0;
 }
 
-.server-main strong {
-  display: block;
-  font-size: 14px;
+.server-text {
+  min-width: 0;
 }
 
-.server-main span {
+.server-text strong {
   display: block;
-  margin-top: 2px;
+  font-size: 13px;
+  line-height: 1.3;
+}
+
+.server-text .mono {
+  display: block;
+  margin-top: 1px;
   color: var(--color-dim);
-  font-size: 12px;
+  font-size: 11.5px;
+  line-height: 1.3;
+}
+
+.server-trailing {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
 }
 
 .server-meta {
   color: var(--color-muted);
   font-size: 12px;
+  white-space: nowrap;
 }
 
-.side-stack {
-  display: grid;
-  gap: 18px;
-  align-content: start;
+.status-panel {
+  padding: 12px 14px;
 }
 
-.compact-panel {
-  padding: 16px;
-}
-
-.compact-panel :deep(.timeline) {
-  margin-top: 12px;
-  border-top: 1px solid var(--color-border);
-  border-bottom: 1px solid var(--color-border);
-}
-
-.compact-panel :deep(.event) {
-  grid-template-columns: 1fr;
-  gap: 8px;
-  align-items: start;
-}
-
-.empty-note {
-  margin: 12px 0 0;
-  color: var(--color-muted);
-  font-size: 13px;
+.status-panel h2 {
+  margin-bottom: 4px;
 }
 
 .status-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
-  min-height: 42px;
+  gap: 10px;
+  min-height: 36px;
   border-top: 1px solid var(--color-border);
   color: var(--color-muted);
-  font-size: 13px;
+  font-size: 12.5px;
 }
 
-@media (max-width: 1100px) {
+@media (max-width: 900px) {
   .main-grid {
     grid-template-columns: 1fr;
-  }
-
-  .server-row {
-    grid-template-columns: 1fr auto;
   }
 
   .server-meta {
