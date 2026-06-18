@@ -51,6 +51,7 @@
     vapidKey: '',
     pushSupported: false,
     pushSynced: false,
+    pollBusy: false,
     deferredPrompt: null
   };
 
@@ -352,14 +353,15 @@
   }
 
   function poll(initial) {
+    if (state.pollBusy) return;
+    state.pollBusy = true;
     req('GET', '/messages?after_id=' + state.lastId + '&limit=200', null, true)
       .then(function (data) {
         setConn(true);
         if (data.messages && data.messages.length) {
           var hadAdmin = false;
           data.messages.forEach(function (m) {
-            appendMessage(m);
-            if (m.sender !== 'client') hadAdmin = true;
+            if (appendMessage(m) && m.sender !== 'client') hadAdmin = true;
           });
           if (state.nearBottom || initial) {
             scrollDown(true);
@@ -375,6 +377,9 @@
       .catch(function (err) {
         if (err && err.message === 'session') return;
         setConn(false);
+      })
+      .finally(function () {
+        state.pollBusy = false;
       });
   }
 
@@ -389,6 +394,7 @@
   }
 
   function appendMessage(m) {
+    if (els.messages.querySelector('[data-msg-id="' + m.id + '"]')) return false;
     state.lastId = Math.max(state.lastId, m.id);
 
     var when = null;
@@ -408,6 +414,7 @@
 
     var div = document.createElement('div');
     div.className = 'msg ' + (m.sender === 'client' ? 'client' : m.sender);
+    div.dataset.msgId = String(m.id);
     var text = document.createElement('div');
     text.className = 'msg-text';
     linkify(text, m.body);
@@ -420,6 +427,7 @@
     } catch (e2) { time.textContent = ''; }
     div.appendChild(time);
     els.messages.appendChild(div);
+    return true;
   }
 
   // Безопасно вставляет текст и делает http(s)-ссылки кликабельными.
@@ -497,7 +505,10 @@
     }
   }
   document.addEventListener('visibilitychange', function () {
-    if (!document.hidden) clearBadge();
+    if (!document.hidden) {
+      clearBadge();
+      if (!els.chatScreen.hidden) poll(false);
+    }
   });
   window.addEventListener('focus', function () {
     if (!els.chatScreen.hidden) clearBadge();
@@ -977,17 +988,20 @@
 
   function initServiceWorker() {
     if (!('serviceWorker' in navigator)) return;
-    navigator.serviceWorker.register('/sw.js?v=14').catch(function () {});
+    navigator.serviceWorker.register('/sw.js?v=15').catch(function () {});
     navigator.serviceWorker.addEventListener('message', function (e) {
       if (!e.data) return;
       if (e.data.type === 'open-chat') {
         clearBadge();
         if (!els.chatScreen.hidden) scrollDown(true);
       } else if (e.data.type === 'push-msg') {
-        // Пришло новое сообщение, а чат открыт — подтянем сразу.
         if (!els.chatScreen.hidden) {
-          poll(false);
-          if (!document.hidden) clearBadge();
+          if (!document.hidden) {
+            poll(false);
+            clearBadge();
+          } else {
+            bumpBadge(1);
+          }
         }
       }
     });
