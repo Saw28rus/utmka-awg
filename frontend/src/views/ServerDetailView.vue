@@ -1174,6 +1174,7 @@ import DpiTrendCard from '@/components/DpiTrendCard.vue'
 import MetricBar from '@/components/MetricBar.vue'
 import StatusBadge from '@/components/StatusBadge.vue'
 import AppShell from '@/layouts/AppShell.vue'
+import { useServerDetailCache } from '@/stores/serverDetailCache'
 import { labelCascadeState, toneCascadeState } from '@/utils/cascadeLabels'
 import { formatBytes, formatUptime, percentOf } from '@/utils/format'
 
@@ -1419,6 +1420,7 @@ const dialog = useDialog()
 const message = useMessage()
 
 const serverId = route.params.id as string
+const detailCache = useServerDetailCache()
 
 const loading = ref(true)
 const refreshing = ref(false)
@@ -1788,11 +1790,25 @@ function applyTabFromQuery() {
 }
 
 onMounted(async () => {
+  // Мгновенно показываем последний снимок из кэша, если он есть,
+  // а затем в фоне сверяем с сервером (stale-while-revalidate).
+  const cached = detailCache.snapshot(serverId)
+  if (cached?.server) {
+    server.value = cached.server as ServerRead
+    loading.value = false
+  }
+  if (cached?.metrics) metrics.value = cached.metrics as ServerMetrics
+  if (cached?.overview) {
+    overview.value = cached.overview as ServerOverview
+    overviewLoading.value = false
+  }
+
   try {
     const { data } = await api.get<ServerRead>(`/servers/${serverId}`)
     server.value = data
+    detailCache.patch(serverId, { server: data })
   } catch {
-    server.value = null
+    if (!cached?.server) server.value = null
   } finally {
     loading.value = false
   }
@@ -1825,19 +1841,23 @@ async function loadMetrics(refresh = false) {
       params: { refresh }
     })
     metrics.value = data
+    detailCache.patch(serverId, { metrics: data })
   } catch {
-    metrics.value = null
+    if (!metrics.value) metrics.value = null
   }
 }
 
 async function loadOverview() {
-  overviewLoading.value = true
+  // Спиннер показываем только когда показывать ещё нечего; при наличии
+  // кэша обновляем данные молча.
+  if (!overview.value) overviewLoading.value = true
   try {
     const { data } = await api.get<ServerOverview>(`/servers/${serverId}/overview`)
     overview.value = data
+    detailCache.patch(serverId, { overview: data })
     if (!data.online && data.message) message.warning(data.message)
   } catch {
-    message.error('Не удалось получить данные сервера.')
+    if (!overview.value) message.error('Не удалось получить данные сервера.')
   } finally {
     overviewLoading.value = false
   }
