@@ -49,7 +49,10 @@ import type { DataTableColumns } from 'naive-ui'
 import { h, onMounted, ref } from 'vue'
 
 import { api } from '@/api/client'
+import { onRevisit } from '@/composables/useRevisit'
 import AppShell from '@/layouts/AppShell.vue'
+
+defineOptions({ name: 'UsersView' })
 
 type UserRow = {
   id: string
@@ -119,14 +122,15 @@ const columns: DataTableColumns<UserRow> = [
 ]
 
 onMounted(loadUsers)
+onRevisit(() => void loadUsers(true))
 
-async function loadUsers() {
-  loading.value = true
+async function loadUsers(silent = false) {
+  if (!silent) loading.value = true
   try {
     const { data } = await api.get<UserRow[]>('/users')
     users.value = data
   } finally {
-    loading.value = false
+    if (!silent) loading.value = false
   }
 }
 

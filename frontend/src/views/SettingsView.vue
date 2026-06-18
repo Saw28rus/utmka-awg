@@ -265,10 +265,13 @@ import type { DataTableColumns } from 'naive-ui'
 import { computed, onMounted, ref, watch } from 'vue'
 
 import { api } from '@/api/client'
+import { onRevisit } from '@/composables/useRevisit'
 import AppShell from '@/layouts/AppShell.vue'
 import { useIntegrationsStore } from '@/stores/integrations'
 import { usePanelStore } from '@/stores/panel'
 import { usePanelUpdateStore } from '@/stores/panelUpdate'
+
+defineOptions({ name: 'SettingsView' })
 
 type SectionId =
   | 'security'
@@ -382,6 +385,8 @@ onMounted(async () => {
   await loadAll()
   loading.value = false
 })
+
+onRevisit(() => void loadAll())
 
 watch(
   () => panelUpdate.status,

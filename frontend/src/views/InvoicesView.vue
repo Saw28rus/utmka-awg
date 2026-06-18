@@ -279,9 +279,12 @@ import { useRouter } from 'vue-router'
 import { api } from '@/api/client'
 import EmptyState from '@/components/EmptyState.vue'
 import StatusBadge from '@/components/StatusBadge.vue'
+import { onRevisit } from '@/composables/useRevisit'
 import AppShell from '@/layouts/AppShell.vue'
 import { useInvoiceBatchStore } from '@/stores/invoiceBatch'
 import { copyToClipboard } from '@/utils/clipboard'
+
+defineOptions({ name: 'InvoicesView' })
 
 type TabId = 'home' | 'issued' | 'paid' | 'overdue' | 'deleted' | 'templates'
 
@@ -432,6 +435,13 @@ onMounted(async () => {
   await Promise.all([loadClients(), loadTemplates()])
 })
 
+onRevisit(() => {
+  // Тихо сверяем активную вкладку с сервером, не мигая спиннером.
+  if (activeTab.value === 'home') void loadClients(true)
+  else if (activeTab.value === 'templates') void loadTemplates()
+  else void loadInvoices(activeTab.value, true)
+})
+
 function renderTokens(
   body: string,
   data: { name: string; service?: string | null; amount?: number | null; link: string }
@@ -497,13 +507,13 @@ async function switchTab(tab: TabId) {
   }
 }
 
-async function loadClients() {
-  loadingClients.value = true
+async function loadClients(silent = false) {
+  if (!silent) loadingClients.value = true
   try {
     const { data } = await api.get<ClientItem[]>('/clients')
     clients.value = data
   } finally {
-    loadingClients.value = false
+    if (!silent) loadingClients.value = false
   }
 }
 
@@ -512,13 +522,13 @@ async function loadTemplates() {
   templates.value = data
 }
 
-async function loadInvoices(tab: TabId) {
-  loadingList.value = true
+async function loadInvoices(tab: TabId, silent = false) {
+  if (!silent) loadingList.value = true
   try {
     const { data } = await api.get<InvoiceItem[]>('/invoices', { params: { tab } })
     invoices.value = data
   } finally {
-    loadingList.value = false
+    if (!silent) loadingList.value = false
   }
 }
 

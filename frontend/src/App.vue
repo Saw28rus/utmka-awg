@@ -2,7 +2,11 @@
   <n-config-provider :theme="naiveTheme" :theme-overrides="themeOverrides" :locale="ruRU" :date-locale="dateRuRU">
     <n-dialog-provider>
       <n-message-provider>
-        <RouterView />
+        <RouterView v-slot="{ Component }">
+          <keep-alive :include="cachedViews">
+            <component :is="Component" />
+          </keep-alive>
+        </RouterView>
         <PanelUpdateOverlay />
       </n-message-provider>
     </n-dialog-provider>
@@ -27,6 +31,19 @@ import { useThemeStore } from '@/stores/theme'
 
 const themeStore = useThemeStore()
 themeStore.initFromUser()
+
+// Страницы-списки держим в памяти: при возврате показываем данные мгновенно,
+// а сами компоненты в фоне сверяются с сервером (см. onRevisit в каждой view).
+// Детальные страницы, чат (таймеры) и логин намеренно НЕ кэшируем.
+const cachedViews = [
+  'DashboardView',
+  'ServersView',
+  'ClientsView',
+  'InvoicesView',
+  'UsersView',
+  'ChannelsView',
+  'SettingsView'
+]
 
 const naiveTheme = computed(() => (themeStore.mode === 'dark' ? darkTheme : lightTheme))
 

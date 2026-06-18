@@ -90,8 +90,11 @@ import { onMounted, ref } from 'vue'
 
 import { api } from '@/api/client'
 import StatusBadge from '@/components/StatusBadge.vue'
+import { onRevisit } from '@/composables/useRevisit'
 import AppShell from '@/layouts/AppShell.vue'
 import { labelCascadeState, toneCascadeState } from '@/utils/cascadeLabels'
+
+defineOptions({ name: 'ChannelsView' })
 
 type Channel = {
   id: string
@@ -136,17 +139,18 @@ function pluralClients(n: number) {
   return 'клиентов'
 }
 
-async function load() {
-  loading.value = true
+async function load(silent = false) {
+  if (!silent) loading.value = true
   try {
     const { data } = await api.get<Channel[]>('/channels')
     channels.value = data
   } finally {
-    loading.value = false
+    if (!silent) loading.value = false
   }
 }
 
-onMounted(load)
+onMounted(() => void load())
+onRevisit(() => void load(true))
 </script>
 
 <style scoped>

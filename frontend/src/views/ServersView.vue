@@ -112,8 +112,11 @@ import EmptyState from '@/components/EmptyState.vue'
 import MigrateNodeModal from '@/components/MigrateNodeModal.vue'
 import ServerListCard, { type NodeHealth, type ServerListItem, type ServerMetrics } from '@/components/ServerListCard.vue'
 import StatusBadge from '@/components/StatusBadge.vue'
+import { onRevisit } from '@/composables/useRevisit'
 import AppShell from '@/layouts/AppShell.vue'
 import { labelCascadeState, toneCascadeState } from '@/utils/cascadeLabels'
+
+defineOptions({ name: 'ServersView' })
 
 type CascadeLinkSummary = {
   entry_server_id: string
@@ -215,6 +218,8 @@ onMounted(async () => {
     router.replace({ path: '/servers' })
   }
 })
+
+onRevisit(() => void loadServers())
 
 watch(
   () => route.query.add,

@@ -1,4 +1,4 @@
-import { onUnmounted, watch, type Ref } from 'vue'
+import { onActivated, onDeactivated, onUnmounted, watch, type Ref } from 'vue'
 
 import { api } from '@/api/client'
 
@@ -97,6 +97,13 @@ export function useClientTrafficPoll(
     { immediate: true }
   )
 
+  // Под <keep-alive> onUnmounted не вызывается: останавливаем поллинг, когда
+  // страница скрыта, и возобновляем при возврате (для некэшированных страниц
+  // эти хуки просто не срабатывают).
+  onActivated(() => {
+    if (hasTargets()) start()
+  })
+  onDeactivated(stop)
   onUnmounted(stop)
 
   return { syncTraffic, start, stop }

@@ -177,8 +177,11 @@ import {
   useClientTrafficPoll,
   type ClientTrafficSnapshot
 } from '@/composables/useClientTrafficPoll'
+import { onRevisit } from '@/composables/useRevisit'
 import AppShell from '@/layouts/AppShell.vue'
 import { formatBytes } from '@/utils/format'
+
+defineOptions({ name: 'ClientsView' })
 
 type ClientListItem = {
   id: string
@@ -237,6 +240,11 @@ const totalTraffic = computed(() => {
 
 onMounted(() => {
   void loadClients()
+  void syncTrafficNow()
+})
+
+onRevisit(() => {
+  void loadClients(false)
   void syncTrafficNow()
 })
 

@@ -70,9 +70,12 @@ import { api } from '@/api/client'
 import EmptyState from '@/components/EmptyState.vue'
 import MetricStrip from '@/components/MetricStrip.vue'
 import StatusBadge from '@/components/StatusBadge.vue'
+import { onRevisit } from '@/composables/useRevisit'
 import AppShell from '@/layouts/AppShell.vue'
 import { useAuthStore } from '@/stores/auth'
 import { formatBytes } from '@/utils/format'
+
+defineOptions({ name: 'DashboardView' })
 
 const auth = useAuthStore()
 const isAdmin = computed(() => auth.user?.role === 'admin')
@@ -98,6 +101,7 @@ const summary = ref<DashboardSummary | null>(null)
 const servers = ref<ServerListItem[]>([])
 
 onMounted(load)
+onRevisit(() => void load())
 
 async function load() {
   const serversEndpoint = isAdmin.value ? '/servers' : '/servers/minimal'
