@@ -712,6 +712,16 @@ async function toggleActiveById(userId: string, _next: boolean) {
 
 let threadsTimer: number | undefined
 let messagesTimer: number | undefined
+let pollBusy = false
+
+function appendMessages(incoming: MessageRow[]): boolean {
+  if (!incoming.length) return false
+  const seen = new Set(messages.value.map((m) => m.id))
+  const fresh = incoming.filter((m) => !seen.has(m.id))
+  if (!fresh.length) return false
+  messages.value.push(...fresh)
+  return true
+}
 
 onMounted(async () => {
   await Promise.all([loadStatus(), loadThreads(), loadFolders()])
@@ -825,20 +835,24 @@ async function selectThread(id: string) {
 }
 
 async function pollMessages() {
-  if (!activeThreadId.value || sending.value) return
-  const lastId = messages.value.length ? messages.value[messages.value.length - 1].id : 0
+  if (!activeThreadId.value || sending.value || pollBusy) return
+  pollBusy = true
+  const threadAtStart = activeThreadId.value
+  const lastId = messages.value.reduce((max, m) => (m.id > max ? m.id : max), 0)
   try {
     const { data } = await api.get<{ messages: MessageRow[] }>(
-      `/chat/admin/threads/${activeThreadId.value}/messages`,
+      `/chat/admin/threads/${threadAtStart}/messages`,
       { params: { after_id: lastId, limit: 100 } }
     )
-    if (data.messages.length) {
-      messages.value.push(...data.messages)
+    if (threadAtStart !== activeThreadId.value) return
+    if (appendMessages(data.messages)) {
       scrollToBottom()
       void loadThreads()
     }
   } catch {
     /* поллинг — не шумим */
+  } finally {
+    pollBusy = false
   }
 }
 
@@ -858,7 +872,7 @@ async function sendMessage() {
       `/chat/admin/threads/${activeThreadId.value}/messages`,
       { body }
     )
-    messages.value.push(data)
+    appendMessages([data])
     draft.value = ''
     scrollToBottom()
     void loadThreads()
@@ -1044,7 +1058,7 @@ function confirmSendKey() {
       keyBusy.value = true
       try {
         const { data } = await api.post<MessageRow>(`/chat/admin/threads/${activeThreadId.value}/send-key`)
-        messages.value.push(data)
+        appendMessages([data])
         scrollToBottom()
         message.success('Ключ отправлен в чат.')
         void loadThreads()
@@ -1089,7 +1103,7 @@ async function insertInvoice(inv: InvoiceRow) {
       `/chat/admin/threads/${activeThreadId.value}/insert-invoice`,
       { invoice_id: inv.id }
     )
-    messages.value.push(data)
+    appendMessages([data])
     scrollToBottom()
     showInvoices.value = false
     message.success('Счёт отправлен в чат.')
