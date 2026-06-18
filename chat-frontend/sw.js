@@ -1,13 +1,13 @@
 /* Service worker чата поддержки: офлайн-оболочка + push-уведомления.
    ВАЖНО: при изменении статики поднимайте CACHE — иначе клиенты получат старое. */
 
-var CACHE = 'utmka-chat-v13';
+var CACHE = 'utmka-chat-v14';
 var SHELL = [
   '/',
   '/index.html',
-  '/style.css?v=13',
-  '/app.js?v=13',
-  '/manifest.webmanifest?v=13',
+  '/style.css?v=14',
+  '/app.js?v=14',
+  '/manifest.webmanifest?v=14',
   '/icons/icon-192.png',
   '/icons/icon-512.png',
   '/icons/apple-touch-icon.png',
@@ -82,12 +82,11 @@ self.addEventListener('push', function (e) {
   var url = data.url || '/';
   e.waitUntil(
     self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then(function (list) {
-      var focused = list.some(function (c) { return c.focused || c.visibilityState === 'visible'; });
-      // Сообщаем открытому приложению, что есть новое — оно подтянет сообщение.
+      // Только активное окно (focused). На Android PWA часто остаётся visible в
+      // recents — из‑за этого push «не приходил», хотя сообщение доставлялось.
+      var chatFocused = list.some(function (c) { return c.focused; });
       list.forEach(function (c) { c.postMessage({ type: 'push-msg' }); });
-      // Если чат открыт и активен — не показываем системное уведомление и не
-      // вешаем значок на иконку (пользователь и так всё видит).
-      if (focused) return;
+      if (chatFocused) return;
       return self.registration.showNotification(title, {
         body: body,
         icon: '/icons/icon-192.png',

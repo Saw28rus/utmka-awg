@@ -86,7 +86,8 @@ def _send_one(
             data=payload,
             vapid_private_key=vapid,
             vapid_claims={"sub": sub_claim},
-            ttl=600,
+            ttl=86400,
+            headers={"Urgency": "high"},
         )
         return True
     except Exception as exc:  # noqa: BLE001

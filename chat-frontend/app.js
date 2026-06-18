@@ -50,6 +50,7 @@
     lastDateKey: '',
     vapidKey: '',
     pushSupported: false,
+    pushSynced: false,
     deferredPrompt: null
   };
 
@@ -339,6 +340,7 @@
     state.pollTimer = setInterval(function () { poll(false); }, POLL_MS);
     els.draft.focus();
     refreshPwaUi();
+    syncPushSubscription().then(refreshPwaUi);
   }
 
   // --- сообщения --------------------------------------------------------------
@@ -851,6 +853,40 @@
     });
   });
 
+  function postPushSubscription(sub) {
+    var j = sub.toJSON();
+    return req('POST', '/push/subscribe', {
+      endpoint: sub.endpoint,
+      p256dh: j.keys ? j.keys.p256dh : '',
+      auth: j.keys ? j.keys.auth : ''
+    }, true).then(function () {
+      state.pushSynced = true;
+      return true;
+    });
+  }
+
+  function syncPushSubscription() {
+    if (!state.pushSupported || !state.vapidKey || !state.access) {
+      return Promise.resolve(false);
+    }
+    if (pushPermission() !== 'granted') {
+      state.pushSynced = false;
+      return Promise.resolve(false);
+    }
+    return navigator.serviceWorker.ready.then(function (reg) {
+      return reg.pushManager.getSubscription();
+    }).then(function (sub) {
+      if (!sub) {
+        state.pushSynced = false;
+        return false;
+      }
+      return postPushSubscription(sub);
+    }).catch(function () {
+      state.pushSynced = false;
+      return false;
+    });
+  }
+
   function enablePush() {
     if (!state.pushSupported || !state.vapidKey) return Promise.resolve(false);
     return Notification.requestPermission().then(function (perm) {
@@ -864,17 +900,13 @@
           });
         });
       }).then(function (sub) {
-        var j = sub.toJSON();
-        return req('POST', '/push/subscribe', {
-          endpoint: sub.endpoint,
-          p256dh: j.keys ? j.keys.p256dh : '',
-          auth: j.keys ? j.keys.auth : ''
-        }, true).then(function () { return true; });
+        return postPushSubscription(sub);
       });
     }).catch(function () { return false; });
   }
 
   function disablePush() {
+    state.pushSynced = false;
     if (!('serviceWorker' in navigator)) return;
     navigator.serviceWorker.ready.then(function (reg) {
       return reg.pushManager.getSubscription();
@@ -913,9 +945,8 @@
     var notifPossible = state.pushSupported && !!state.vapidKey;
     // На iOS push доступен только в установленном PWA
     if (isIos && !standalone) notifPossible = false;
-    // Колокольчик нужен только чтобы ВКЛЮЧИТЬ уведомления.
-    // Если уже разрешены — прячем (клиенту больше нечего нажимать).
-    els.notifBtn.hidden = !notifPossible || perm === 'granted';
+    // Колокольчик: включить push или повторить синхронизацию подписки с сервером.
+    els.notifBtn.hidden = !notifPossible || (perm === 'granted' && state.pushSynced);
 
     // Контекстный баннер: сначала установка, затем уведомления
     if (canInstall && !dismissed('install')) {
@@ -928,6 +959,15 @@
         'Включить', function () {
           enablePush().then(function (ok) { if (ok) dismiss('notif'); refreshPwaUi(); });
         });
+    } else if (notifPossible && perm === 'granted' && !state.pushSynced && !dismissed('notif')) {
+      showBanner('notif',
+        'Подключите уведомления на этом устройстве.',
+        'Подключить', function () {
+          syncPushSubscription().then(function (ok) {
+            if (ok) dismiss('notif');
+            refreshPwaUi();
+          });
+        });
     } else {
       els.banner.hidden = true;
     }
@@ -937,7 +977,7 @@
 
   function initServiceWorker() {
     if (!('serviceWorker' in navigator)) return;
-    navigator.serviceWorker.register('/sw.js?v=13').catch(function () {});
+    navigator.serviceWorker.register('/sw.js?v=14').catch(function () {});
     navigator.serviceWorker.addEventListener('message', function (e) {
       if (!e.data) return;
       if (e.data.type === 'open-chat') {
@@ -958,24 +998,28 @@
     return fetch(API + '/config').then(function (r) { return r.json(); })
       .then(function (cfg) {
         state.vapidKey = (cfg && cfg.push_enabled && cfg.vapid_public_key) ? cfg.vapid_public_key : '';
+        refreshPwaUi();
+        if (state.access) {
+          return syncPushSubscription().then(refreshPwaUi);
+        }
       }).catch(function () {});
   }
 
   // --- старт ------------------------------------------------------------------
 
   initServiceWorker();
-  loadConfig();
-
-  if (state.refresh) {
-    refreshTokens().then(function (ok) {
-      if (ok) {
-        req('GET', '/me', null, true).then(function (profile) {
-          state.profile = profile;
-          enterChat();
-        }).catch(doLogout);
-      } else {
-        doLogout();
-      }
-    });
-  }
+  loadConfig().then(function () {
+    if (state.refresh) {
+      refreshTokens().then(function (ok) {
+        if (ok) {
+          req('GET', '/me', null, true).then(function (profile) {
+            state.profile = profile;
+            enterChat();
+          }).catch(doLogout);
+        } else {
+          doLogout();
+        }
+      });
+    }
+  });
 })();
