@@ -1,51 +1,80 @@
 <template>
   <n-modal :show="show" @update:show="$emit('update:show', $event)">
-    <div class="edit-card panel" role="dialog" aria-modal="true">
-      <h3>Лимит и срок действия</h3>
-      <p class="edit-hint">
-        Не меняет ссылку клиента. При превышении лимита или окончании срока peer блокируется на сервере автоматически.
-      </p>
+    <div class="edit-card panel modal-card" role="dialog" aria-modal="true">
+      <header class="edit-head">
+        <h3>Лимит и срок действия</h3>
+        <p class="edit-hint">
+          Ссылку клиента не меняет. При превышении лимита или окончании срока peer блокируется на сервере.
+        </p>
+      </header>
 
-      <label class="field">
-        <span>Лимит трафика, ГБ</span>
-        <input
-          v-model="form.trafficLimitGb"
-          type="number"
-          min="0"
-          step="0.5"
-          placeholder="Пусто = без лимита"
-        />
-      </label>
-      <label class="field">
-        <span>Действует до</span>
-        <div class="date-row">
-          <input v-model="form.expiresAt" type="date" :min="todayStr" />
-          <n-button v-if="form.expiresAt" size="tiny" tertiary @click="form.expiresAt = ''">
-            Бессрочно
-          </n-button>
+      <div class="edit-grid">
+        <label class="field">
+          <span>Лимит трафика, ГБ</span>
+          <input
+            v-model="form.trafficLimitGb"
+            type="number"
+            min="0"
+            step="0.5"
+            placeholder="Без лимита"
+          />
+        </label>
+        <label class="field">
+          <span>Действует до</span>
+          <div class="date-row">
+            <input v-model="form.expiresAt" type="date" :min="todayStr" placeholder="Бессрочно" />
+            <button
+              v-if="form.expiresAt"
+              type="button"
+              class="clear-date"
+              title="Бессрочно"
+              @click="form.expiresAt = ''"
+            >
+              ∞
+            </button>
+          </div>
+        </label>
+      </div>
+
+      <section class="billing-block">
+        <div class="billing-head">
+          <span class="section-label">Тариф</span>
+          <div class="billing-toggle" role="group" aria-label="Тариф">
+            <button
+              type="button"
+              class="billing-opt"
+              :class="{ active: form.billingMode === 'free' }"
+              @click="form.billingMode = 'free'"
+            >
+              Бесплатный
+            </button>
+            <button
+              type="button"
+              class="billing-opt"
+              :class="{ active: form.billingMode === 'paid' }"
+              @click="form.billingMode = 'paid'"
+            >
+              Платный
+            </button>
+          </div>
         </div>
-      </label>
-      <label class="field">
-        <span>Тариф</span>
-        <select v-model="form.billingMode">
-          <option value="free">Бесплатный</option>
-          <option value="paid">Платный (самооплата в чате)</option>
-        </select>
-      </label>
-      <template v-if="form.billingMode === 'paid'">
-        <label class="field">
-          <span>Сумма за период, ₽</span>
-          <input v-model="form.billingAmountRub" type="number" min="1" step="1" placeholder="Например, 300" />
-        </label>
-        <label class="field">
-          <span>Период оплаты</span>
-          <select v-model.number="form.billingPeriodMonths">
-            <option :value="1">Раз в месяц</option>
-            <option :value="3">Раз в 3 месяца</option>
-          </select>
-        </label>
-      </template>
-      <div class="edit-actions">
+
+        <div v-if="form.billingMode === 'paid'" class="edit-grid billing-grid">
+          <label class="field">
+            <span>Сумма, ₽</span>
+            <input v-model="form.billingAmountRub" type="number" min="1" step="1" placeholder="300" />
+          </label>
+          <label class="field">
+            <span>Период</span>
+            <select v-model.number="form.billingPeriodMonths">
+              <option :value="1">Раз в месяц</option>
+              <option :value="3">Раз в 3 месяца</option>
+            </select>
+          </label>
+        </div>
+      </section>
+
+      <div class="modal-actions edit-actions">
         <n-button tertiary @click="$emit('update:show', false)">Отмена</n-button>
         <n-button type="primary" :loading="saving" @click="save">Сохранить</n-button>
       </div>
@@ -145,56 +174,168 @@ async function save() {
 
 <style scoped>
 .edit-card {
-  width: min(440px, calc(100vw - 32px));
-  padding: 22px;
+  width: min(480px, calc(100vw - 32px));
 }
 
-.edit-card h3 {
-  margin: 0 0 6px;
-  font-size: 16px;
+.edit-head {
+  margin-bottom: 2px;
+}
+
+.edit-head h3 {
+  margin: 0;
 }
 
 .edit-hint {
-  margin: 0 0 16px;
+  margin: 0;
+}
+
+.edit-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.billing-block {
+  padding: 12px;
+  border-radius: var(--radius);
+  border: 1px solid var(--color-border);
+  background: var(--color-surface-2);
+}
+
+.billing-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.section-label {
+  color: var(--color-dim);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.billing-toggle {
+  display: inline-flex;
+  padding: 3px;
+  border-radius: 999px;
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
+}
+
+.billing-opt {
+  padding: 5px 12px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
   color: var(--color-muted);
   font-size: 12.5px;
-  line-height: 1.5;
+  font-weight: 600;
+  cursor: pointer;
+  transition:
+    color 0.15s ease,
+    background-color 0.15s ease;
+}
+
+.billing-opt.active {
+  background: var(--color-accent-soft);
+  color: var(--color-accent);
+}
+
+.billing-grid {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--color-border);
 }
 
 .field {
   display: grid;
-  gap: 6px;
-  margin-bottom: 14px;
+  gap: 5px;
+  min-width: 0;
 }
 
 .field > span {
   color: var(--color-dim);
-  font-size: 12.5px;
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
 }
 
 .field input[type='number'],
 .field input[type='date'],
 .field select {
   width: 100%;
-  height: 38px;
-  padding: 0 12px;
+  height: 36px;
+  padding: 0 10px;
   border: 1px solid var(--color-border);
-  border-radius: 8px;
-  background: #0d0f10;
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
   color: var(--color-text);
-  font-size: 14px;
+  font-size: 13.5px;
+  transition: border-color 0.15s ease;
+}
+
+.field input:focus,
+.field select:focus {
+  outline: none;
+  border-color: var(--color-border-hover);
 }
 
 .date-row {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
+}
+
+.date-row input {
+  flex: 1;
+  min-width: 0;
+}
+
+.clear-date {
+  flex-shrink: 0;
+  width: 36px;
+  height: 36px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  color: var(--color-accent);
+  font-size: 14px;
+  font-weight: 700;
+  cursor: pointer;
+  transition:
+    border-color 0.15s ease,
+    background-color 0.15s ease;
+}
+
+.clear-date:hover {
+  border-color: var(--color-border-hover);
+  background: var(--color-accent-soft);
 }
 
 .edit-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 10px;
-  margin-top: 8px;
+  margin-top: 2px;
+}
+
+@media (max-width: 520px) {
+  .edit-grid,
+  .billing-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .billing-head {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .billing-toggle {
+    width: 100%;
+    justify-content: stretch;
+  }
+
+  .billing-opt {
+    flex: 1;
+    text-align: center;
+  }
 }
 </style>

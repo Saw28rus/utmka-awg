@@ -57,7 +57,6 @@
           <span>Действует до</span>
           <template v-if="hasPaidClients">
             <span>Сумма</span>
-            <span>Дата оплаты</span>
           </template>
           <span class="center">Статус</span>
         </div>
@@ -127,12 +126,6 @@
               class="row-cell billing-cell"
             >
               {{ billingAmountText(client) }}
-            </RouterLink>
-            <RouterLink
-              :to="{ name: 'client-detail', params: { id: client.id } }"
-              class="row-cell date-cell"
-            >
-              {{ lastPaidText(client) }}
             </RouterLink>
           </template>
           <RouterLink
@@ -207,7 +200,6 @@ type ClientListItem = {
   billing_mode?: string
   billing_amount_kopecks?: number | null
   billing_period_months?: number
-  last_paid_at?: string | null
 }
 
 const router = useRouter()
@@ -376,12 +368,6 @@ function billingAmountText(client: ClientListItem) {
   return `${formatted} ₽${period}`
 }
 
-function lastPaidText(client: ClientListItem) {
-  if (!isPaidClient(client)) return '—'
-  if (!client.last_paid_at) return '—'
-  return formatDate(client.last_paid_at)
-}
-
 function isExpiringSoon(client: ClientListItem) {
   if (!client.expires_at) return false
   const expires = new Date(client.expires_at).getTime()
@@ -507,7 +493,7 @@ p {
 
 .client-list--paid .list-head,
 .client-list--paid .client-row {
-  grid-template-columns: minmax(150px, 1.1fr) 72px minmax(90px, 0.8fr) 64px minmax(110px, 0.9fr) 80px 88px 76px 88px 96px;
+  grid-template-columns: minmax(150px, 1.1fr) 72px minmax(90px, 0.8fr) 64px minmax(110px, 0.9fr) 80px 88px 76px 96px;
 }
 
 .list-head {

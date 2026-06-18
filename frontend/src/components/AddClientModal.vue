@@ -70,7 +70,7 @@
             <span>Тариф</span>
             <select v-model="form.billingMode">
               <option value="free">Бесплатный</option>
-              <option value="paid">Платный (самооплата в чате)</option>
+              <option value="paid">Платный</option>
             </select>
           </label>
           <template v-if="form.billingMode === 'paid'">
