@@ -88,7 +88,14 @@ def create_xray_client(
         client_uuid = str(uuid.uuid4())
         _append_client_to_server(ssh, server_config, client_uuid, flow)
 
-        client_host = link_host or target.host
+        # По умолчанию ведём клиента на домен панели (он DNS-проверен на этот
+        # сервер), а не на голый IP: SNI у Reality — это маскировочный домен,
+        # поэтому host в Endpoint лишь определяет TCP-адрес и :443 одинаково
+        # уходит в Xray через nginx-stream. link_host (выбор IP в UI или каскад)
+        # имеет приоритет.
+        from app.services.awg_config import resolve_endpoint_host
+
+        client_host = link_host or resolve_endpoint_host(record, target.host)
         client_port = int(link_port or port)
 
         native_config = build_xray_native_config(

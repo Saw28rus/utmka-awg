@@ -139,6 +139,13 @@ class ServerStore:
             return True
         return any(name == "amnezia-xray" for name in (record.get("container_names") or []))
 
+    def _panel_domain(self, record: dict) -> Optional[str]:
+        panel_ssl = record.get("panel_ssl") or {}
+        if panel_ssl.get("status") == "active":
+            domain = (panel_ssl.get("domain") or "").strip()
+            return domain or None
+        return None
+
     def _to_read(self, record: dict) -> ServerRead:
         return ServerRead(
             id=record["id"],
@@ -157,6 +164,7 @@ class ServerStore:
             client_protocols=self._client_protocols(record),
             vpn_port=record.get("vpn_port"),
             endpoint_host=record.get("endpoint_host"),
+            panel_domain=self._panel_domain(record),
             last_detect_message=record.get("last_detect_message"),
             created_at=record.get("created_at"),
             former_entry=record.get("former_entry", False),

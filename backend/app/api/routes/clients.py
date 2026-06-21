@@ -177,6 +177,7 @@ async def create_client(
         traffic_limit_bytes=payload.traffic_limit_bytes,
         expires_at=payload.expires_at,
         keepalive=payload.keepalive,
+        link_host=(payload.link_host or "").strip() or None,
     )
     try:
         detail = await asyncio.to_thread(get_engine(protocol).create_client, spec)

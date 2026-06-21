@@ -11,6 +11,9 @@ class ClientCreate(BaseModel):
     traffic_limit_bytes: Optional[int] = Field(default=None, ge=0)
     expires_at: Optional[str] = None
     keepalive: int = Field(default=25, ge=0, le=120)
+    # Xray: явный хост для Endpoint клиентской ссылки (домен панели или IP).
+    # Пусто = бэкенд сам выбирает домен панели, иначе IP сервера.
+    link_host: Optional[str] = Field(default=None, max_length=255)
     # Тариф (CH9): основа для самооплаты клиентом в чате
     billing_mode: str = Field(default="free", pattern="^(free|paid)$")
     billing_amount_kopecks: Optional[int] = Field(default=None, ge=100, le=100_000_00)

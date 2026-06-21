@@ -51,6 +51,17 @@
               </option>
             </select>
           </label>
+          <label v-if="showEndpointChoice" class="field field-wide">
+            <span>Адрес подключения (Endpoint)</span>
+            <select v-model="form.endpointHost">
+              <option v-for="opt in endpointChoices" :key="opt.value" :value="opt.value">
+                {{ opt.label }}
+              </option>
+            </select>
+            <span class="hint-text">
+              Домен панели уже указывает на этот сервер, ссылка выглядит аккуратнее. IP — запасной вариант.
+            </span>
+          </label>
           <label class="field">
             <span>Лимит трафика, ГБ</span>
             <input
@@ -132,6 +143,8 @@ type ServerListItem = {
   awg2_imported: boolean
   protocols: string[]
   client_protocols?: string[]
+  endpoint_host?: string | null
+  panel_domain?: string | null
 }
 
 const PROTOCOL_LABELS: Record<string, string> = {
@@ -160,6 +173,7 @@ const form = reactive({
   server_id: '',
   protocol: 'awg2',
   format: 'both',
+  endpointHost: '',
   trafficLimitGb: '',
   expiresAt: '',
   billingMode: 'free',
@@ -202,6 +216,23 @@ const formatOptions = computed(() => {
   ]
 })
 
+const serverDomain = computed(() => {
+  const s = selectedServer.value
+  if (!s) return ''
+  return (s.endpoint_host || s.panel_domain || '').trim()
+})
+
+const showEndpointChoice = computed(() => form.protocol === 'xray' && !!serverDomain.value)
+
+const endpointChoices = computed(() => {
+  const host = selectedServer.value?.host || ''
+  const domain = serverDomain.value
+  const opts: { value: string; label: string }[] = []
+  if (domain) opts.push({ value: domain, label: `Домен — ${domain}` })
+  if (host) opts.push({ value: host, label: `IP — ${host}` })
+  return opts
+})
+
 const savingText = computed(() =>
   form.protocol === 'xray'
     ? 'Добавляю клиента в Xray и генерирую конфиг…'
@@ -214,6 +245,7 @@ watch(visible, async (open) => {
     form.name = ''
     form.protocol = 'awg2'
     form.format = 'both'
+    form.endpointHost = ''
     form.trafficLimitGb = ''
     form.expiresAt = ''
     form.billingMode = 'free'
@@ -238,6 +270,21 @@ watch(
     if (form.protocol === 'xray' && form.format === 'awg') form.format = 'both'
     if (form.protocol === 'awg2' && form.format === 'config') form.format = 'both'
   }
+)
+
+// Дефолт Endpoint для Xray — домен панели. Если выбор недоступен или
+// текущее значение выпало из списка (сменили сервер/протокол) — сбрасываем.
+watch(
+  [showEndpointChoice, serverDomain, () => form.server_id],
+  () => {
+    if (!showEndpointChoice.value) {
+      form.endpointHost = ''
+      return
+    }
+    const valid = endpointChoices.value.some((o) => o.value === form.endpointHost)
+    if (!valid) form.endpointHost = serverDomain.value
+  },
+  { immediate: true }
 )
 
 function syncProtocolForServer() {
@@ -287,6 +334,7 @@ async function submit() {
       server_id: form.server_id,
       protocol: form.protocol,
       format: form.format,
+      link_host: showEndpointChoice.value ? form.endpointHost || null : null,
       traffic_limit_bytes: trafficLimitBytes,
       expires_at: form.expiresAt || null,
       billing_mode: form.billingMode,

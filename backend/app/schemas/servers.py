@@ -35,6 +35,7 @@ class ServerRead(BaseModel):
     client_protocols: list[str] = []
     vpn_port: Optional[int] = None
     endpoint_host: Optional[str] = None
+    panel_domain: Optional[str] = None
     last_detect_message: Optional[str] = None
     created_at: Optional[str] = None
     former_entry: bool = False
@@ -72,6 +73,7 @@ class ServerMinimal(BaseModel):
     protocols: list[str] = []
     awg2_imported: bool = False
     client_protocols: list[str] = []
+    panel_domain: Optional[str] = None
 
 
 class DetectCheck(BaseModel):
