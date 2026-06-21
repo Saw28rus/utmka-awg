@@ -194,9 +194,11 @@ def verify_panel_domain(server_id: str, domain: str) -> PanelSslVerifyResult:
                 "Освободи его для Let's Encrypt (nginx — не помеха, его мастер перенастроит сам).",
             )
 
-        hint = ""
-        if xray_on_443:
-            hint = " Xray на :443 — настроим passthrough, VPN не отключится."
+        hint = (
+            " Xray уже на :443 — перенесём его на 127.0.0.1, VPN не отключится."
+            if xray_on_443
+            else " :443 зарезервируем под Xray (панель уйдёт на 8443)."
+        )
 
         return PanelSslVerifyResult(
             ok=True,
@@ -232,7 +234,7 @@ def install_panel_ssl(server_id: str, domain: str, *, email: Optional[str] = Non
             domain=domain,
             email=email or "",
             backup_dir=backup_dir,
-            xray_on_443=verify.xray_on_443,
+            move_xray=verify.xray_on_443,
             public_ip=verify.server_public_ip or record.get("host"),
             chat_domain=chat_domain,
         )
@@ -253,7 +255,9 @@ def install_panel_ssl(server_id: str, domain: str, *, email: Optional[str] = Non
                 "status": "active",
                 "fallback_url": fallback,
                 "cert_expires_at": cert_expires,
-                "xray_passthrough": verify.xray_on_443,
+                # :443 всегда зарезервирован под Xray (panel→8443, chat→8444, default→Xray).
+                # Поле сохраняем под прежним именем — на него опирается chat_domain.
+                "xray_passthrough": True,
                 "installed_at": datetime.now(timezone.utc).isoformat(),
                 "backup_dir": backup_dir,
             },
@@ -273,8 +277,9 @@ def install_panel_ssl(server_id: str, domain: str, *, email: Optional[str] = Non
             domain=domain,
             url=url,
             fallback_url=fallback,
-            xray_passthrough=verify.xray_on_443,
-            message="HTTPS для панели настроен. Сохрани запасной адрес на случай проблем с DNS.",
+            xray_passthrough=True,
+            message="HTTPS настроен, порт :443 зарезервирован под Xray (Reality). "
+            "Сохрани запасной адрес на случай проблем с DNS.",
         )
     finally:
         ssh.close()
@@ -518,7 +523,7 @@ def _build_install_script(
     domain: str,
     email: str,
     backup_dir: str,
-    xray_on_443: bool,
+    move_xray: bool,
     public_ip: str,
     chat_domain: str = "",
 ) -> str:
@@ -541,12 +546,33 @@ def _build_install_script(
         CERT_FULLCHAIN=f"{CERT_DIR}/{domain}/fullchain.pem",
         CERT_PRIVKEY=f"{CERT_DIR}/{domain}/privkey.pem",
     )
-    stream_conf = ""
-    chat_fix_pt = ""    # passthrough-ветка: чат-vhost → локальный порт 8444
-    chat_fix_plain = ""  # без passthrough: чат-vhost обратно на :443 (SNI рядом с панелью)
+
+    # :443 ВСЕГДА резервируется под Xray (Reality). Панель уходит на 8443, чат — на
+    # 8444, а на :443 встаёт nginx stream с SNI-маршрутизацией:
+    #   panel.domain → 8443, chat.domain → 8444, всё остальное → локальный Xray 1443.
+    # Так пользователь может в любой момент развернуть Xray на «классическом» :443,
+    # не освобождая порт вручную — он зарезервирован с первой же установки HTTPS.
+    if chat_domain:
+        stream_conf = _render_template(
+            "nginx-stream-xray-chat.conf",
+            DOMAIN=domain,
+            CHAT_DOMAIN=chat_domain,
+            PANEL_PORT=str(PANEL_HTTPS_INTERNAL),
+            CHAT_PORT=str(CHAT_HTTPS_INTERNAL),
+            XRAY_LOCAL_PORT=str(XRAY_LOCAL_PORT),
+        )
+    else:
+        stream_conf = _render_template(
+            "nginx-stream-xray.conf",
+            DOMAIN=domain,
+            XRAY_LOCAL_PORT=str(XRAY_LOCAL_PORT),
+        )
+
+    # Чат-vhost (если есть) переводим на локальный 8444 — :443 принадлежит stream-блоку.
+    chat_fix = ""
     qchat = shlex.quote(CHAT_NGINX_SITE)
     if chat_domain:
-        # Нормализуем listen → :443, чтобы переход между режимами был идемпотентным.
+        # Нормализуем listen → :443, затем на 8444: идемпотентно при повторных установках.
         _to_443 = (
             f"  sed -i 's/listen {CHAT_HTTPS_INTERNAL} ssl/listen 443 ssl/g' {qchat}\n"
             f"  sed -i 's/listen \\[::\\]:{CHAT_HTTPS_INTERNAL} ssl/listen [::]:443 ssl/g' {qchat}\n"
@@ -555,26 +581,7 @@ def _build_install_script(
             f"  sed -i 's/listen 443 ssl/listen {CHAT_HTTPS_INTERNAL} ssl/g' {qchat}\n"
             f"  sed -i 's/listen \\[::\\]:443 ssl/listen [::]:{CHAT_HTTPS_INTERNAL} ssl/g' {qchat}\n"
         )
-        chat_fix_pt = f"if [ -f {qchat} ]; then\n{_to_443}{_to_8444}fi\n"
-        chat_fix_plain = f"if [ -f {qchat} ]; then\n{_to_443}fi\n"
-
-    if xray_on_443:
-        if chat_domain:
-            # Сохраняем включённый чат-домен в SNI-карте: панель→8443, чат→8444, default→Xray.
-            stream_conf = _render_template(
-                "nginx-stream-xray-chat.conf",
-                DOMAIN=domain,
-                CHAT_DOMAIN=chat_domain,
-                PANEL_PORT=str(PANEL_HTTPS_INTERNAL),
-                CHAT_PORT=str(CHAT_HTTPS_INTERNAL),
-                XRAY_LOCAL_PORT=str(XRAY_LOCAL_PORT),
-            )
-        else:
-            stream_conf = _render_template(
-                "nginx-stream-xray.conf",
-                DOMAIN=domain,
-                XRAY_LOCAL_PORT=str(XRAY_LOCAL_PORT),
-            )
+        chat_fix = f"if [ -f {qchat} ]; then\n{_to_443}{_to_8444}fi\n"
 
     email_flag = f"-m {shlex.quote(email)}" if email else "--register-unsafely-without-email"
 
@@ -600,19 +607,18 @@ if [ -d /etc/nginx ]; then
   cp -a /etc/nginx/stream.d {shlex.quote(backup_dir)}/ 2>/dev/null || true
 fi
 
-# Блок stream нужен только для SNI passthrough (Xray на :443). В Ubuntu stream —
-# отдельный пакет libnginx-mod-stream; без него "stream" ломает nginx -t.
-if [ "{'1' if xray_on_443 else '0'}" = "1" ]; then
-  if [ ! -e /usr/lib/nginx/modules/ngx_stream_module.so ]; then
-    apt-get install -y -qq libnginx-mod-stream || apt-get update -qq && apt-get install -y -qq libnginx-mod-stream
-  fi
-  grep -q 'stream.d' /etc/nginx/nginx.conf 2>/dev/null || {{
-    sed -i '/^http {{/i stream {{\\n    include /etc/nginx/stream.d/*.conf;\\n}}\\n' /etc/nginx/nginx.conf
-  }}
+# Резерв :443 = SNI passthrough, для него нужен модуль stream. В Ubuntu это отдельный
+# пакет libnginx-mod-stream; без него директива "stream" роняет nginx -t.
+if [ ! -e /usr/lib/nginx/modules/ngx_stream_module.so ]; then
+  apt-get install -y -qq libnginx-mod-stream || apt-get update -qq && apt-get install -y -qq libnginx-mod-stream
 fi
+grep -q 'stream.d' /etc/nginx/nginx.conf 2>/dev/null || {{
+  sed -i '/^http {{/i stream {{\\n    include /etc/nginx/stream.d/*.conf;\\n}}\\n' /etc/nginx/nginx.conf
+}}
 
-XRAY_MOVED=0
-if [ "{'1' if xray_on_443 else '0'}" = "1" ]; then
+# Если Xray уже опубликован на 0.0.0.0:443 (старая установка) — переносим его на
+# 127.0.0.1:{XRAY_LOCAL_PORT}, чтобы :443 освободился под stream-блок.
+if [ "{'1' if move_xray else '0'}" = "1" ]; then
   if docker ps -a --format '{{{{.Names}}}}' | grep -qx {shlex.quote(XRAY_CONTAINER)}; then
     echo "Перенос Xray на 127.0.0.1:{XRAY_LOCAL_PORT} для совместного :443..."
     IMG=$(docker inspect -f '{{{{.Config.Image}}}}' {shlex.quote(XRAY_CONTAINER)} 2>/dev/null || true)
@@ -625,7 +631,6 @@ if [ "{'1' if xray_on_443 else '0'}" = "1" ]; then
       docker network connect amnezia-dns-net {shlex.quote(XRAY_CONTAINER)} 2>/dev/null || true
       docker exec -i {shlex.quote(XRAY_CONTAINER)} bash -c 'mkdir -p /dev/net; if [ ! -c /dev/net/tun ]; then mknod /dev/net/tun c 10 200; fi' 2>/dev/null || true
       docker exec -d {shlex.quote(XRAY_CONTAINER)} /opt/amnezia/start.sh 2>/dev/null || true
-      XRAY_MOVED=1
     fi
   fi
 fi
@@ -637,12 +642,12 @@ NGINX_HTTP_EOF
 ln -sf {shlex.quote(NGINX_SITE)} {shlex.quote(NGINX_SITE_ENABLED)}
 rm -f /etc/nginx/sites-enabled/default 2>/dev/null || true
 
-if [ "$XRAY_MOVED" = "1" ]; then
+# :443 → stream (panel→8443, chat→8444, default→Xray). Пишем ДО certbot: ACME идёт
+# по :80 (webroot), а upstream'ы на :443 проверяются nginx -t лишь синтаксически.
 cat > {shlex.quote(STREAM_CONF)} <<'NGINX_STREAM_EOF'
 {stream_conf}
 NGINX_STREAM_EOF
-{chat_fix_pt}fi
-
+{chat_fix}
 nginx -t
 systemctl enable nginx
 systemctl reload nginx || systemctl start nginx
@@ -651,21 +656,14 @@ certbot certonly --webroot -w {shlex.quote(WEBROOT)} -d {shlex.quote(domain)} \\
   --agree-tos --non-interactive {email_flag} || certbot certonly --standalone -d {shlex.quote(domain)} \\
   --agree-tos --non-interactive {email_flag}
 
-if [ "$XRAY_MOVED" = "1" ]; then
+# HTTPS-vhost панели слушает локальный 8443 (за stream-блоком), не :443.
 cat > {shlex.quote(NGINX_SITE)} <<'NGINX_HTTPS_EOF'
 {http_final_conf}
 
 {https_conf}
 NGINX_HTTPS_EOF
-  sed -i 's/listen 443 ssl/listen {PANEL_HTTPS_INTERNAL} ssl/g' {shlex.quote(NGINX_SITE)}
-  sed -i 's/listen \\[::\\]:443 ssl/listen [::]:{PANEL_HTTPS_INTERNAL} ssl/g' {shlex.quote(NGINX_SITE)}
-else
-cat > {shlex.quote(NGINX_SITE)} <<'NGINX_HTTPS_EOF'
-{http_final_conf}
-
-{https_conf}
-NGINX_HTTPS_EOF
-{chat_fix_plain}fi
+sed -i 's/listen 443 ssl/listen {PANEL_HTTPS_INTERNAL} ssl/g' {shlex.quote(NGINX_SITE)}
+sed -i 's/listen \\[::\\]:443 ssl/listen [::]:{PANEL_HTTPS_INTERNAL} ssl/g' {shlex.quote(NGINX_SITE)}
 
 nginx -t
 systemctl reload nginx

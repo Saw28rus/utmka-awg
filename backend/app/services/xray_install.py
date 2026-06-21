@@ -27,8 +27,23 @@ CONTAINER_NAME = "amnezia-xray"
 DOCKER_FOLDER = "/opt/amnezia/amnezia-xray"
 DEFAULT_SITE = "www.googletagmanager.com"
 DEFAULT_PORT = 443
+# Локальный порт, на который nginx (stream) проксирует :443 по SNI «default», когда
+# панель зарезервировала :443 под Xray. Должен совпадать с panel_ssl.XRAY_LOCAL_PORT.
+XRAY_LOCAL_PORT = 1443
 DEFAULT_TRANSPORT = "tcp"
 SUPPORTED_TRANSPORTS = ("tcp", "grpc", "xhttp")
+
+
+def _panel_reserves_443(record: dict) -> bool:
+    """True, если на ЭТОМ сервере панель держит :443 под SNI-passthrough (Xray).
+
+    В этом режиме nginx слушает :443 и отдаёт «всё прочее» (SNI маскировки Reality)
+    на 127.0.0.1:{XRAY_LOCAL_PORT}. Поэтому контейнер Xray публикуем не на 0.0.0.0:443
+    (его держит nginx), а на 127.0.0.1:{XRAY_LOCAL_PORT}; внутри контейнера Xray
+    по-прежнему слушает :443, так что клиентские ссылки и каскад продолжают идти на :443.
+    """
+    ssl = record.get("panel_ssl") or {}
+    return ssl.get("status") == "active" and bool(ssl.get("xray_passthrough"))
 
 
 @dataclass
@@ -71,10 +86,30 @@ def install_xray(
         if not docker_available(ssh):
             _ensure_docker(ssh, target.host)
 
-        if port_busy(ssh, port, proto="tcp"):
-            raise XrayInstallError(f"TCP-порт {port} уже занят на сервере.")
+        reserved = _panel_reserves_443(record)
+        if reserved:
+            # :443 держит nginx (panel SSL passthrough). Контейнер слушает :443 ВНУТРИ,
+            # а наружу публикуется на 127.0.0.1:{XRAY_LOCAL_PORT} — туда nginx и шлёт SNI
+            # маскировки. Клиент по-прежнему ходит на публичный :443 → nginx → Xray.
+            internal_port = DEFAULT_PORT
+            publish = f"127.0.0.1:{XRAY_LOCAL_PORT}"
+            busy_port = XRAY_LOCAL_PORT
+            connect_port = DEFAULT_PORT
+        else:
+            internal_port = port
+            publish = str(port)
+            busy_port = port
+            connect_port = port
 
-        vars_map = _build_vars(target.host, port, site, transport)
+        if port_busy(ssh, busy_port, proto="tcp"):
+            if reserved:
+                raise XrayInstallError(
+                    f"Локальный порт {busy_port} занят — снимите старый Xray-контейнер и повторите."
+                )
+            raise XrayInstallError(f"TCP-порт {busy_port} уже занят на сервере.")
+
+        vars_map = _build_vars(target.host, internal_port, site, transport)
+        vars_map["$XRAY_PUBLISH"] = publish
         _prepare_host(ssh, vars_map)
         _upload_dockerfile(ssh, vars_map)
         _build_image(ssh, vars_map)
@@ -84,12 +119,15 @@ def install_xray(
         _verify_running(ssh)
 
         creds = _read_credentials(ssh)
-        _register_container(server_id, record, port, transport)
+        _register_container(
+            server_id, record, connect_port, transport,
+            reserved=reserved, local_port=(XRAY_LOCAL_PORT if reserved else None),
+        )
 
         return XrayInstallResult(
             message="Xray (VLESS-Reality) установлен. Подключайся через клиент AmneziaVPN.",
             container=CONTAINER_NAME,
-            port=port,
+            port=connect_port,
             site_name=site,
             client_uuid=creds.get("uuid"),
             public_key=creds.get("public_key"),
@@ -112,6 +150,9 @@ def _build_vars(host: str, port: int, site: str, transport: str = DEFAULT_TRANSP
 
     vars_map = base_vars(host, CONTAINER_NAME, DOCKER_FOLDER)
     vars_map["$XRAY_SERVER_PORT"] = str(port)
+    # Хостовая часть публикации порта (`docker run -p`). По умолчанию — тот же порт на
+    # всех интерфейсах; в режиме резерва :443 install_xray переопределит на 127.0.0.1:1443.
+    vars_map["$XRAY_PUBLISH"] = str(port)
     vars_map["$XRAY_SITE_NAME"] = site
     vars_map["$XRAY_NETWORK"] = transport
 
@@ -232,12 +273,26 @@ def _read_credentials(ssh) -> dict[str, str]:
     return {"uuid": uuid_val or None, "public_key": public_key or None, "short_id": short_id or None}
 
 
-def _register_container(server_id: str, record: dict, port: int, transport: str = DEFAULT_TRANSPORT) -> None:
+def _register_container(
+    server_id: str,
+    record: dict,
+    port: int,
+    transport: str = DEFAULT_TRANSPORT,
+    *,
+    reserved: bool = False,
+    local_port: Optional[int] = None,
+) -> None:
     names = list(record.get("container_names") or [])
     if CONTAINER_NAME not in names:
         names.append(CONTAINER_NAME)
     protocols = dict(record.get("installed_protocols") or {})
-    protocols["xray"] = {"port": port, "container": CONTAINER_NAME, "transport": transport}
+    # `port` — публичный порт подключения (:443), на него идут клиентские ссылки, каскад
+    # и маскировка. `reserved`/`local_port` — диагностика: реально опубликован на 127.0.0.1.
+    entry = {"port": port, "container": CONTAINER_NAME, "transport": transport}
+    if reserved:
+        entry["reserved_443"] = True
+        entry["local_port"] = local_port
+    protocols["xray"] = entry
     server_store.update_runtime(server_id, container_names=names, installed_protocols=protocols)
 
 

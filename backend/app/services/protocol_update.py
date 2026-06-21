@@ -34,6 +34,7 @@ from app.services.amnezia_ssh import (
 from app.services.awg_install import VARIANTS
 from app.services.protocol_versions import pinned, record_install
 from app.services.server_store import server_store
+from app.services.xray_install import XRAY_LOCAL_PORT, _panel_reserves_443
 from app.ssh import exec as ssh_exec
 
 BACKUP_TAG = "utmka-preupdate"
@@ -185,9 +186,13 @@ def _start_process(ssh, container: str) -> None:
         raise UpdateError(f"Не удалось запустить протокол: {result.stderr.strip()[-300:]}")
 
 
-def _run_container(ssh, spec: dict, port: int, host: str) -> None:
+def _run_container(
+    ssh, spec: dict, port: int, host: str, extra_vars: Optional[dict[str, str]] = None
+) -> None:
     vars_map = base_vars(host, spec["container"], spec["folder"])
     vars_map[spec["port_var"]] = str(port)
+    if extra_vars:
+        vars_map.update(extra_vars)
     run_text = replace_vars(load_script(spec["scripts"], "run_container.sh"), vars_map)
     run_res = run_script(ssh, run_text, timeout=120)
     if run_res.exit_code != 0:
@@ -195,11 +200,14 @@ def _run_container(ssh, spec: dict, port: int, host: str) -> None:
         raise UpdateError(f"Запуск контейнера не удался: {combined}")
 
 
-def _recreate_and_start(ssh, spec: dict, port: int, host: str, bundle_b64: str) -> None:
+def _recreate_and_start(
+    ssh, spec: dict, port: int, host: str, bundle_b64: str,
+    extra_vars: Optional[dict[str, str]] = None,
+) -> None:
     """rm → run → restore → start → health. Используется и для apply, и для rollback."""
     container = spec["container"]
     ssh_exec.run(ssh, f"docker rm -f {_q(container)} 2>/dev/null || true", timeout=60)
-    _run_container(ssh, spec, port, host)
+    _run_container(ssh, spec, port, host, extra_vars)
     _restore_bundle(ssh, spec, bundle_b64)
     _start_process(ssh, container)
 
@@ -240,6 +248,16 @@ def _run_update(server_id: str, spec: dict) -> UpdateResult:
     if not port:
         raise UpdateError("Не удалось определить порт протокола — обновление прервано.")
 
+    # Xray в режиме резерва :443 публикуется на 127.0.0.1:1443 (наружу :443 держит nginx).
+    # При обновлении сохраняем то же отображение, иначе контейнер встанет на 0.0.0.0:443
+    # и конфликтнёт с nginx. Для прочих протоколов/режимов — публикация = тот же порт.
+    extra_vars: dict[str, str] = {}
+    if pid == "xray":
+        if _panel_reserves_443(record):
+            extra_vars["$XRAY_PUBLISH"] = f"127.0.0.1:{XRAY_LOCAL_PORT}"
+        else:
+            extra_vars["$XRAY_PUBLISH"] = str(port)
+
     to_version = (pinned(pid) or {}).get("version")
     try:
         _record2, target, ssh = connect_target(server_id)
@@ -267,9 +285,9 @@ def _run_update(server_id: str, spec: dict) -> UpdateResult:
 
         # 4-6. Пересоздать на новом образе, восстановить конфиг, поднять, health.
         try:
-            _recreate_and_start(ssh, spec, port, host, bundle)
+            _recreate_and_start(ssh, spec, port, host, bundle, extra_vars)
         except UpdateError as exc:
-            _rollback_to_backup(ssh, spec, port, host, bundle)
+            _rollback_to_backup(ssh, spec, port, host, bundle, extra_vars)
             raise UpdateError(
                 f"Обновление не удалось ({exc}). Выполнен авто-откат на прежнюю версию.",
                 rolled_back=True,
@@ -289,7 +307,10 @@ def _run_update(server_id: str, spec: dict) -> UpdateResult:
         ssh.close()
 
 
-def _rollback_to_backup(ssh, spec: dict, port: int, host: str, bundle_b64: str) -> None:
+def _rollback_to_backup(
+    ssh, spec: dict, port: int, host: str, bundle_b64: str,
+    extra_vars: Optional[dict[str, str]] = None,
+) -> None:
     """Вернуть прежний образ из бэкап-тега и пересоздать контейнер с тем же конфигом."""
     container = spec["container"]
     backup_ref = f"{container}:{BACKUP_TAG}"
@@ -297,7 +318,7 @@ def _rollback_to_backup(ssh, spec: dict, port: int, host: str, bundle_b64: str) 
         retag = ssh_exec.run(ssh, f"docker tag {_q(backup_ref)} {_q(container)}", timeout=30)
         if retag.exit_code != 0:
             return
-        _recreate_and_start(ssh, spec, port, host, bundle_b64)
+        _recreate_and_start(ssh, spec, port, host, bundle_b64, extra_vars)
     except Exception:  # noqa: BLE001
         # Откат — best-effort; если и он упал, оставляем как есть (оператор увидит ошибку).
         pass

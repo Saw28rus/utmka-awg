@@ -1,10 +1,13 @@
 # Run container
+# $XRAY_PUBLISH — хостовая часть публикации: «443» (на всех интерфейсах) или
+# «127.0.0.1:1443» в режиме резерва :443 (наружу :443 держит nginx, сюда он проксирует).
+# $XRAY_SERVER_PORT — порт, который Xray слушает ВНУТРИ контейнера.
 sudo docker run -d \
 --privileged \
 --log-driver none \
 --restart always \
 --cap-add=NET_ADMIN \
--p $XRAY_SERVER_PORT:$XRAY_SERVER_PORT/tcp \
+-p $XRAY_PUBLISH:$XRAY_SERVER_PORT/tcp \
 --name $CONTAINER_NAME $CONTAINER_NAME
 
 sudo docker network connect amnezia-dns-net $CONTAINER_NAME
