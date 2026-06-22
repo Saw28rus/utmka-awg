@@ -185,6 +185,7 @@ async def create_client(
                 format=payload.format,
                 traffic_limit_bytes=payload.traffic_limit_bytes,
                 expires_at=payload.expires_at,
+                fingerprint=payload.fingerprint,
             )
         else:
             spec = ClientSpec(
@@ -196,6 +197,7 @@ async def create_client(
                 expires_at=payload.expires_at,
                 keepalive=payload.keepalive,
                 link_host=(payload.link_host or "").strip() or None,
+                fingerprint=(payload.fingerprint or "").strip() or None,
             )
             detail = await asyncio.to_thread(get_engine(protocol).create_client, spec)
     except (ClientCreateError, XrayClientCreateError, XrayCascadeError) as exc:

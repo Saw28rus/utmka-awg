@@ -231,14 +231,15 @@ def _reissue_clients(
                 c_port = int(link.get("relay_port") or port)
                 split_ru = bool(link.get("split_ru"))
                 descr = entry_rec.get("name") or c_host
+        fp = (tgt.get("fingerprint") or "chrome")
         native = build_xray_native_config(
             host=c_host, port=c_port, client_uuid=uuid, flow=flow, site=site,
-            public_key=pbk, short_id=sid, split_ru=split_ru,
+            public_key=pbk, short_id=sid, fingerprint=fp, split_ru=split_ru,
             network=network, service_name=service_name, path=path,
         )
         uri = build_vless_uri(
             host=c_host, port=c_port, client_uuid=uuid, flow=flow, site=site,
-            public_key=pbk, short_id=sid, name=tgt["name"],
+            public_key=pbk, short_id=sid, name=tgt["name"], fingerprint=fp,
             network=network, service_name=service_name, path=path,
         )
         config_text = uri if tgt["has_config"] else None

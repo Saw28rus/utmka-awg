@@ -23,6 +23,17 @@ from app.ssh import exec as ssh_exec
 PUBLIC_KEY_PATH = "/opt/amnezia/xray/xray_public.key"
 SHORT_ID_PATH = "/opt/amnezia/xray/xray_short_id.key"
 DEFAULT_FLOW = "xtls-rprx-vision"
+DEFAULT_FINGERPRINT = "chrome"
+# uTLS-отпечатки, поддерживаемые Xray. Совпадение с устройством не требуется —
+# chrome оптимален (самый массовый ClientHello → лучшая маскировка).
+ALLOWED_FINGERPRINTS = (
+    "chrome", "firefox", "safari", "ios", "android", "edge", "random", "randomized",
+)
+
+
+def normalize_fingerprint(value: Optional[str]) -> str:
+    fp = (value or "").strip().lower()
+    return fp if fp in ALLOWED_FINGERPRINTS else DEFAULT_FINGERPRINT
 
 
 class ClientCreateError(Exception):
@@ -40,6 +51,7 @@ def create_xray_client(
     link_port: Optional[int] = None,
     channel_entry_id: Optional[str] = None,
     split_ru: bool = False,
+    fingerprint: Optional[str] = None,
 ) -> ClientDetail:
     """Создаёт VLESS-Reality клиента на сервере ``server_id`` (где живёт UUID).
 
@@ -85,6 +97,7 @@ def create_xray_client(
         if not public_key or not short_id:
             raise ClientCreateError("Не найдены Reality-ключи на сервере. Переустанови Xray.")
 
+        fp = normalize_fingerprint(fingerprint)
         client_uuid = str(uuid.uuid4())
         _append_client_to_server(ssh, server_config, client_uuid, flow)
 
@@ -120,6 +133,7 @@ def create_xray_client(
             site=site,
             public_key=public_key,
             short_id=short_id,
+            fingerprint=fp,
             split_ru=split_ru,
             network=network,
             service_name=service_name,
@@ -134,6 +148,7 @@ def create_xray_client(
             public_key=public_key,
             short_id=short_id,
             name=name,
+            fingerprint=fp,
             network=network,
             service_name=service_name,
             path=path,
@@ -164,6 +179,7 @@ def create_xray_client(
             traffic_limit_bytes=traffic_limit_bytes,
             expires_at=expires_at,
             channel_entry_id=channel_entry_id,
+            fingerprint=fp,
         )
         server_store.update_runtime(server_id, active_peers=client_store.count_for_server(server_id))
         return detail

@@ -227,6 +227,7 @@ async def xray_cascade_create_client_route(
             format=(payload or {}).get("format", "both"),
             traffic_limit_bytes=(payload or {}).get("traffic_limit_bytes"),
             expires_at=(payload or {}).get("expires_at"),
+            fingerprint=(payload or {}).get("fingerprint"),
         )
     except XrayCascadeError as exc:
         raise HTTPException(status_code=400, detail=str(exc))

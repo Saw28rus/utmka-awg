@@ -14,6 +14,9 @@ class ClientCreate(BaseModel):
     # Xray: явный хост для Endpoint клиентской ссылки (домен панели или IP).
     # Пусто = бэкенд сам выбирает домен панели, иначе IP сервера.
     link_host: Optional[str] = Field(default=None, max_length=255)
+    # Xray: uTLS-fingerprint (chrome/safari/ios/firefox/android/edge/random).
+    # Пусто = chrome (оптимальный дефолт). Совпадение с устройством не требуется.
+    fingerprint: Optional[str] = Field(default=None, max_length=16)
     # Тариф (CH9): основа для самооплаты клиентом в чате
     billing_mode: str = Field(default="free", pattern="^(free|paid)$")
     billing_amount_kopecks: Optional[int] = Field(default=None, ge=100, le=100_000_00)

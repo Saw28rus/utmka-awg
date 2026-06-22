@@ -67,6 +67,7 @@ class ClientStore:
         expires_at: Optional[str] = None,
         keepalive: int = 25,
         channel_entry_id: Optional[str] = None,
+        fingerprint: Optional[str] = None,
     ) -> ClientDetail:
         client_id = str(uuid4())
         record = {
@@ -76,6 +77,7 @@ class ClientStore:
             "server_name": server_name,
             "channel_entry_id": channel_entry_id,
             "protocol": protocol,
+            "fingerprint": fingerprint,
             "status": "active",
             "client_ip": client_ip,
             "imported": imported,
@@ -175,6 +177,7 @@ class ClientStore:
                     "has_config": bool(record.get("config_text_enc")),
                     "has_vpn": bool(record.get("vpn_link_enc")),
                     "channel_entry_id": record.get("channel_entry_id"),
+                    "fingerprint": record.get("fingerprint"),
                 }
             )
         return out
@@ -194,6 +197,7 @@ class ClientStore:
                     "public_key": record.get("public_key"),
                     "has_config": bool(record.get("config_text_enc")),
                     "has_vpn": bool(record.get("vpn_link_enc")),
+                    "fingerprint": record.get("fingerprint"),
                 }
             )
         return out

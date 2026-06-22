@@ -52,6 +52,17 @@
             </select>
           </label>
           <p v-if="cascadeHint" class="field-wide hint-text hint-cascade">{{ cascadeHint }}</p>
+          <label v-if="isXrayLike" class="field">
+            <span>Отпечаток TLS (fingerprint)</span>
+            <select v-model="form.fingerprint">
+              <option v-for="opt in fingerprintOptions" :key="opt.value" :value="opt.value">
+                {{ opt.label }}
+              </option>
+            </select>
+            <span class="hint-text">
+              Chrome — оптимально для всех устройств (лучшая маскировка). Совпадение с телефоном не требуется.
+            </span>
+          </label>
           <label v-if="showEndpointChoice" class="field field-wide">
             <span>Адрес подключения (Endpoint)</span>
             <select v-model="form.endpointHost">
@@ -176,6 +187,7 @@ const form = reactive({
   server_id: '',
   protocol: 'awg2',
   format: 'both',
+  fingerprint: 'chrome',
   endpointHost: '',
   trafficLimitGb: '',
   expiresAt: '',
@@ -208,6 +220,16 @@ const availableProtocols = computed(() => {
 })
 
 const isXrayLike = computed(() => form.protocol === 'xray')
+
+const fingerprintOptions = [
+  { value: 'chrome', label: 'Chrome (рекомендуется)' },
+  { value: 'safari', label: 'Safari' },
+  { value: 'ios', label: 'iOS' },
+  { value: 'firefox', label: 'Firefox' },
+  { value: 'android', label: 'Android' },
+  { value: 'edge', label: 'Edge' },
+  { value: 'random', label: 'Случайный' }
+]
 
 const formatOptions = computed(() => {
   if (isXrayLike.value) {
@@ -258,6 +280,7 @@ watch(visible, async (open) => {
     form.name = ''
     form.protocol = 'awg2'
     form.format = 'both'
+    form.fingerprint = 'chrome'
     form.endpointHost = ''
     form.trafficLimitGb = ''
     form.expiresAt = ''
@@ -347,6 +370,7 @@ async function submit() {
       server_id: form.server_id,
       protocol: form.protocol,
       format: form.format,
+      fingerprint: isXrayLike.value ? form.fingerprint : null,
       link_host: showEndpointChoice.value ? form.endpointHost || null : null,
       traffic_limit_bytes: trafficLimitBytes,
       expires_at: form.expiresAt || null,

@@ -48,6 +48,7 @@ class ClientSpec:
     expires_at: Optional[str] = None
     keepalive: int = 25
     link_host: Optional[str] = None
+    fingerprint: Optional[str] = None
 
 
 class ProtocolEngine:
@@ -167,6 +168,7 @@ class XrayEngine(ProtocolEngine):
             traffic_limit_bytes=spec.traffic_limit_bytes,
             expires_at=spec.expires_at,
             link_host=(spec.link_host or None),
+            fingerprint=(spec.fingerprint or None),
         )
 
     def delete_client(self, server_id: str, public_key: str) -> bool:

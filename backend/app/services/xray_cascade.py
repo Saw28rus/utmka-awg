@@ -760,6 +760,7 @@ def create_xray_cascade_client(
     format: str = "both",
     traffic_limit_bytes: Optional[int] = None,
     expires_at: Optional[str] = None,
+    fingerprint: Optional[str] = None,
 ):
     """Выдать клиента в Xray-каскад (chain-модель).
 
@@ -783,6 +784,7 @@ def create_xray_cascade_client(
             traffic_limit_bytes=traffic_limit_bytes,
             expires_at=expires_at,
             channel_entry_id=entry_id,
+            fingerprint=fingerprint,
         )
     except ClientCreateError as exc:
         raise XrayCascadeError(str(exc)) from exc
