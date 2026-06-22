@@ -513,12 +513,74 @@ def _routing_needs_heal(ssh) -> bool:
     )
 
 
+def _refresh_exit_keys_if_changed(entry_id: str, link: dict) -> bool:
+    """Если Reality-ключи exit изменились (переустановка Xray на exit) — обновить.
+
+    Самая частая причина «каскад активен, но трафик не идёт»: exit переустановили,
+    pbk/sid/uuid сменились, а на entry записаны старые. Перечитываем профиль exit,
+    и при расхождении заново заводим uplink на exit и переписываем outbound на entry.
+    Возвращает True, если что-то обновили.
+    """
+    exit_id = link.get("exit_server_id")
+    if not exit_id:
+        return False
+    try:
+        exit_ssh = _connect(exit_id)
+    except XrayCascadeError:
+        return False
+    try:
+        profile = _exit_profile(exit_ssh)
+        if not profile.get("public_key") or not profile.get("short_id") or not profile.get("sni"):
+            return False
+        same_keys = (
+            profile["public_key"] == link.get("exit_public_key")
+            and profile["short_id"] == link.get("exit_short_id")
+            and profile["sni"] == link.get("sni")
+            and int(profile["exit_port"]) == int(link.get("exit_port") or 0)
+        )
+        uplink_uuid = link.get("uplink_uuid")
+        from app.services.xray_client import (
+            ClientCreateError,
+            _append_client_to_server,
+            _read_server_config,
+        )
+
+        exit_cfg = _read_server_config(exit_ssh)
+        clients = exit_cfg["inbounds"][0].get("settings", {}).get("clients", [])
+        uplink_present = bool(uplink_uuid) and any(
+            isinstance(c, dict) and c.get("id") == uplink_uuid for c in clients
+        )
+        if same_keys and uplink_present:
+            return False  # всё совпадает — обновлять нечего
+
+        if not uplink_uuid:
+            uplink_uuid = str(uuid_mod.uuid4())
+        if not uplink_present:
+            try:
+                _append_client_to_server(exit_ssh, exit_cfg, uplink_uuid, profile["flow"])
+            except ClientCreateError:
+                return False
+    finally:
+        exit_ssh.close()
+
+    xray_cascade_store.upsert_link(
+        entry_id, uplink_uuid=uplink_uuid, sni=profile["sni"],
+        exit_port=profile["exit_port"], exit_public_key=profile["public_key"],
+        exit_short_id=profile["short_id"], exit_flow=profile["flow"],
+        exit_network=profile["network"], exit_service_name=profile["service_name"],
+        exit_path=profile["path"],
+        message="Ключи exit изменились — каскад переинициализирован автоматически.",
+    )
+    return True
+
+
 def reconcile_xray_cascade(entry_id: str, *, heal: bool = True) -> dict:
     """Сверяет цепочку на entry с намерением и (при heal) восстанавливает её.
 
     Конфиг каскада живёт в server.json контейнера и переживает рестарт. Heal нужен,
     если контейнер пересоздали/конфиг сбросили: переписываем outbound+routing из
-    сохранённого профиля exit (exit не трогаем — uplink-UUID уже там).
+    сохранённого профиля exit. Дополнительно ловим смену ключей exit (переустановка)
+    и переинициализируем каскад свежими ключами.
     """
     link = xray_cascade_store.get_link(entry_id)
     if not link or not link.get("exit_host"):
@@ -531,13 +593,25 @@ def reconcile_xray_cascade(entry_id: str, *, heal: bool = True) -> dict:
     uplink_uuid = link.get("uplink_uuid")
     split_ru = bool(link.get("split_ru"))
 
+    # Сверяем ключи exit ДО проверки entry: смена ключей на exit (переустановка)
+    # ломает цепочку молча, и без обновления никакой heal на entry не поможет.
+    keys_refreshed = False
+    if heal:
+        try:
+            keys_refreshed = _refresh_exit_keys_if_changed(entry_id, link)
+        except Exception:  # noqa: BLE001
+            keys_refreshed = False
+        if keys_refreshed:
+            link = xray_cascade_store.get_link(entry_id) or link
+            uplink_uuid = link.get("uplink_uuid")
+
     try:
         ssh = _connect(entry_id)
     except XrayCascadeError:
         return {"entry": entry_id, "ok": False, "error": "ssh-unreachable"}
     try:
         _cleanup_legacy_nginx_relay(ssh)
-        if _chain_alive(ssh):
+        if _chain_alive(ssh) and not keys_refreshed:
             if _routing_needs_heal(ssh) and uplink_uuid:
                 try:
                     reapply_entry_chain_config(ssh, link)
@@ -546,6 +620,19 @@ def reconcile_xray_cascade(entry_id: str, *, heal: bool = True) -> dict:
             if (link.get("state") or "") != "active":
                 xray_cascade_store.upsert_link(entry_id, state="active", message="Каскад активен.")
             return {"entry": entry_id, "ok": True, "healed": False, "state": "active"}
+        if keys_refreshed and uplink_uuid:
+            # Ключи exit обновились — переписываем outbound на entry свежими ключами.
+            try:
+                reapply_entry_chain_config(ssh, link)
+            except XrayCascadeError:
+                pass
+            if _chain_alive(ssh):
+                xray_cascade_store.upsert_link(
+                    entry_id, state="active",
+                    last_healed_at=datetime.now(timezone.utc).isoformat(),
+                    message="Ключи exit изменились — каскад переинициализирован (self-heal).",
+                )
+                return {"entry": entry_id, "ok": True, "healed": True, "state": "active"}
         if not heal or not uplink_uuid:
             xray_cascade_store.upsert_link(entry_id, state="down",
                                            message="Цепочка каскада не обнаружена на entry.")
