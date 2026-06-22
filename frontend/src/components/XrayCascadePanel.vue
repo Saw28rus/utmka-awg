@@ -2,7 +2,7 @@
   <div class="panel block xray-cascade">
     <div class="xc-head">
       <div class="xc-title">
-        <h3>Xray-каскад (TCP-relay)</h3>
+        <h3>Xray-каскад (цепочка Xray→Xray)</h3>
         <StatusBadge :label="stateLabel" :tone="stateTone" :pulse="status?.live_active" />
       </div>
       <n-button size="small" tertiary :loading="loading" @click="loadStatus">
@@ -12,10 +12,11 @@
     </div>
 
     <p class="xc-hint">
-      Клиент → <strong>этот узел (entry)</strong> → exit с Xray-Reality → интернет.
-      Если на entry активен резерв :443 — вход встаёт прямо на <strong>:443</strong>
-      через SNI-ветку nginx (лучшая маскировка). Иначе поднимается TCP-relay на
-      отдельном порту. Маскировка/ключи всегда остаются на exit.
+      Клиент → <strong>этот узел (entry)</strong> со своим Xray → серверная
+      маршрутизация: РФ-трафик выходит <strong>здесь напрямую</strong> (русский IP),
+      остальное уходит на <strong>exit</strong> и выходит там. Правило серверное —
+      работает в любом клиенте, включая <code>vless://</code>. На entry нужен свой
+      установленный Xray.
     </p>
 
     <div v-if="status && status.state !== 'none' && status.state !== 'down'" class="xc-route">
@@ -47,24 +48,6 @@
           :disabled="isActive || !!busy"
         />
       </label>
-      <label class="xc-field xc-field--port">
-        <span>Relay-порт на entry</span>
-        <n-input-number
-          v-model:value="relayPort"
-          :min="1"
-          :max="65535"
-          :disabled="isActive || !!busy"
-          placeholder="443"
-        />
-        <span class="xc-sub">
-          Пусто или 443 — вход на :443 через nginx (если есть резерв). Другой порт —
-          отдельный TCP-relay (socat).
-        </span>
-      </label>
-    </div>
-
-    <div v-if="isActive" class="xc-mode-badge xc-sub">
-      Режим входа: <strong>{{ isNginxMode ? 'nginx SNI :443' : `TCP-relay :${status?.relay_port}` }}</strong>
     </div>
 
     <div v-if="exitOptions.length === 0" class="xc-empty">
@@ -106,7 +89,7 @@
         :disabled="!canApply || !!busy"
         @click="runApply"
       >
-        Включить relay
+        Включить каскад
       </n-button>
       <n-button
         v-if="isActive"
@@ -124,8 +107,8 @@
       <div class="xc-split-text">
         <h4>Split-правило: РФ напрямую</h4>
         <span class="xc-sub">
-          Российские сайты/IP идут мимо каскада (быстрее), остальное — через exit.
-          Применяется к конфигам AmneziaVPN.
+          Российские сайты/IP выходят с entry (русский IP), остальное — через exit.
+          Правило серверное — действует для всех клиентов (vless:// тоже).
         </span>
       </div>
       <n-switch
@@ -139,7 +122,7 @@
     <div v-if="isActive" class="xc-clients">
       <div class="xc-clients-head">
         <h4>Выдать клиента в каскад</h4>
-        <span class="xc-sub">Конфиг указывает на entry, ключи живут на exit.</span>
+        <span class="xc-sub">Обычный Xray-клиент entry — split делает сервер.</span>
       </div>
       <div class="xc-clients-form">
         <n-input v-model:value="clientName" placeholder="Имя клиента" :disabled="!!busy" />
@@ -162,7 +145,7 @@
 
 <script setup lang="ts">
 import { AlertTriangle, ArrowRight, CheckCircle2, RefreshCw, XCircle } from '@lucide/vue'
-import { NButton, NInput, NInputNumber, NSelect, NSwitch, useMessage } from 'naive-ui'
+import { NButton, NInput, NSelect, NSwitch, useMessage } from 'naive-ui'
 import { computed, onMounted, ref } from 'vue'
 
 import { api } from '@/api/client'
@@ -176,7 +159,6 @@ const busy = ref<'' | 'preflight' | 'apply' | 'rollback' | 'client' | 'rules'>('
 const status = ref<any>(null)
 const preflight = ref<any>(null)
 const exitId = ref<string | null>(null)
-const relayPort = ref<number | null>(null)
 const servers = ref<any[]>([])
 const clientName = ref('')
 const lastClientLink = ref('')
@@ -191,8 +173,6 @@ const exitOptions = computed(() =>
 
 const isActive = computed(() => status.value?.state === 'active')
 const splitRu = computed(() => !!status.value?.split_ru)
-const cascadeMode = computed(() => preflight.value?.mode || status.value?.mode || '')
-const isNginxMode = computed(() => cascadeMode.value === 'nginx')
 
 const canApply = computed(
   () => preflight.value?.ok && preflight.value?.entry_server_id === props.serverId,
@@ -233,7 +213,6 @@ async function loadStatus() {
     const { data } = await api.get(`/servers/${props.serverId}/xray-cascade/status`)
     status.value = data
     if (data.exit_server_id && !exitId.value) exitId.value = data.exit_server_id
-    if (data.relay_port && !relayPort.value) relayPort.value = data.relay_port
   } catch {
     status.value = null
   } finally {
@@ -248,11 +227,11 @@ async function runPreflight() {
   try {
     const { data } = await api.post(
       `/servers/${props.serverId}/xray-cascade/preflight`,
-      { exit_server_id: exitId.value, relay_port: relayPort.value || undefined },
+      { exit_server_id: exitId.value },
       { timeout: 120_000 },
     )
     preflight.value = data
-    if (data.ok) message.success('Проверка пройдена — можно включать relay.')
+    if (data.ok) message.success('Проверка пройдена — можно включать каскад.')
     else message.warning('Проверка выявила блокеры.')
     await loadStatus()
   } catch (error: any) {

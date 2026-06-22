@@ -172,9 +172,10 @@ async def create_client(
     protocol = (payload.protocol or "awg2").lower()
     try:
         if protocol == "xray_cascade":
-            # Каскадная выдача: server_id — это entry (РФ), а UUID/ключи живут на
-            # exit (NL). Прогоняем через тот же эндпоинт, чтобы переиспользовать
-            # тариф/лимиты/аудит ниже. Сам Xray на entry не нужен.
+            # Каскадная выдача (chain): server_id — это entry (РФ) со своим Xray.
+            # Клиент обычный (UUID/ключи на entry, конфиг на entry:443), а раздвоение
+            # РФ/заграница делает серверный routing на entry. Прогоняем через тот же
+            # эндпоинт, чтобы переиспользовать тариф/лимиты/аудит ниже.
             from app.services.xray_cascade import create_xray_cascade_client
 
             detail = await asyncio.to_thread(

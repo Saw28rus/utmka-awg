@@ -252,7 +252,7 @@ const cascadeHint = computed(() => {
   if (!isCascade.value) return ''
   const s = selectedServer.value
   const exit = s?.xray_cascade_exit_name || 'exit'
-  return `Клиент подключается к «${s?.name}» (вход), трафик уходит на «${exit}» (выход), где живут ключи Reality. Локальный Xray на входе не нужен.`
+  return `Клиент подключается к «${s?.name}» (вход): РФ-трафик выходит здесь напрямую, остальное уходит на «${exit}» (выход). Маршрутизация серверная — работает в любом клиенте.`
 })
 
 const endpointChoices = computed(() => {
