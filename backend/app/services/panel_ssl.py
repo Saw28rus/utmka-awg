@@ -590,7 +590,7 @@ def _build_install_script(
 export DEBIAN_FRONTEND=noninteractive
 
 mkdir -p {shlex.quote(SSL_BACKUP_ROOT)} {shlex.quote(backup_dir)} {shlex.quote(WEBROOT)}
-mkdir -p /etc/nginx/stream.d /etc/nginx/sites-enabled
+mkdir -p /etc/nginx/stream.d /etc/nginx/stream.d/cascade-maps /etc/nginx/sites-enabled
 
 if ! command -v nginx >/dev/null 2>&1; then
   apt-get update -qq

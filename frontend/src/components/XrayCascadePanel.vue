@@ -13,7 +13,9 @@
 
     <p class="xc-hint">
       Клиент → <strong>этот узел (entry)</strong> → exit с Xray-Reality → интернет.
-      На entry поднимается прозрачный TCP-relay, маскировка/ключи остаются на exit.
+      Если на entry активен резерв :443 — вход встаёт прямо на <strong>:443</strong>
+      через SNI-ветку nginx (лучшая маскировка). Иначе поднимается TCP-relay на
+      отдельном порту. Маскировка/ключи всегда остаются на exit.
     </p>
 
     <div v-if="status && status.state !== 'none' && status.state !== 'down'" class="xc-route">
@@ -54,7 +56,15 @@
           :disabled="isActive || !!busy"
           placeholder="443"
         />
+        <span class="xc-sub">
+          Пусто или 443 — вход на :443 через nginx (если есть резерв). Другой порт —
+          отдельный TCP-relay (socat).
+        </span>
       </label>
+    </div>
+
+    <div v-if="isActive" class="xc-mode-badge xc-sub">
+      Режим входа: <strong>{{ isNginxMode ? 'nginx SNI :443' : `TCP-relay :${status?.relay_port}` }}</strong>
     </div>
 
     <div v-if="exitOptions.length === 0" class="xc-empty">
@@ -181,6 +191,8 @@ const exitOptions = computed(() =>
 
 const isActive = computed(() => status.value?.state === 'active')
 const splitRu = computed(() => !!status.value?.split_ru)
+const cascadeMode = computed(() => preflight.value?.mode || status.value?.mode || '')
+const isNginxMode = computed(() => cascadeMode.value === 'nginx')
 
 const canApply = computed(
   () => preflight.value?.ok && preflight.value?.entry_server_id === props.serverId,

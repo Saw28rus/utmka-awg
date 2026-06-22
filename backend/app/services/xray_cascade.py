@@ -16,6 +16,7 @@ TLS-handshake через entry обязан вернуть сертификат 
 from __future__ import annotations
 
 import json
+import re
 import shlex
 from datetime import datetime, timezone
 from typing import Optional
@@ -92,6 +93,106 @@ def _relay_alive(ssh, relay_port: int) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# nginx-режим каскада (entry на :443 через SNI-ветку резерва)
+#
+# Резерв :443 (app.services.panel_ssl.STREAM_CONF) — это уже SNI-роутер. Каскад
+# добавляет в него ещё одну ветку: SNI маскировки exit → upstream на exit:443.
+# Тогда клиент заходит на entry:443 (классический HTTPS), а nginx прозрачно
+# проксирует TLS на exit, где терминируется Reality. Никакого socat и нестандартных
+# портов — лучшая маскировка (РКН видит entry:443 + обычный SNI).
+# ---------------------------------------------------------------------------
+
+# Пути совпадают с app.services.panel_ssl (там источник правды для резерва :443).
+ENTRY_STREAM_CONF = "/etc/nginx/stream.d/utmka-xray.conf"
+ENTRY_STREAM_MAP_DIR = "/etc/nginx/stream.d/cascade-maps"
+ENTRY_STREAM_INCLUDE_GLOB = "/etc/nginx/stream.d/cascade-maps/*.map"
+
+
+def _safe_id(value: str) -> str:
+    """Детерминированный nginx-безопасный идентификатор upstream/файла из id сервера."""
+    return "c" + re.sub(r"[^0-9a-zA-Z]", "", value or "")[:24]
+
+
+def _nginx_route_files(safe: str) -> tuple[str, str]:
+    """(map-фрагмент в cascade-maps, upstream-файл в stream.d)."""
+    map_file = f"{ENTRY_STREAM_MAP_DIR}/{safe}.map"
+    upstream_file = f"/etc/nginx/stream.d/utmka-cascade-{safe}.conf"
+    return map_file, upstream_file
+
+
+def _entry_has_reservation(ssh) -> bool:
+    """На entry активен nginx-резерв :443 (есть STREAM_CONF) → доступен nginx-режим."""
+    res = ssh_exec.run(
+        ssh,
+        f"test -f {shlex.quote(ENTRY_STREAM_CONF)} && echo yes || echo no",
+        timeout=15,
+    )
+    return res.stdout.strip().endswith("yes")
+
+
+def _nginx_apply_script(safe: str, sni: str, exit_host: str, exit_port: int) -> str:
+    map_file, upstream_file = _nginx_route_files(safe)
+    conf = ENTRY_STREAM_CONF
+    return f"""
+set -e
+mkdir -p {shlex.quote(ENTRY_STREAM_MAP_DIR)}
+
+cat > {shlex.quote(upstream_file)} <<'EOF'
+upstream cascade_{safe} {{
+    server {exit_host}:{int(exit_port)};
+}}
+EOF
+
+cat > {shlex.quote(map_file)} <<'EOF'
+{sni} cascade_{safe};
+EOF
+
+# Идемпотентно вставляем include map-фрагментов в map-блок резерва (перед default).
+if ! grep -qF 'cascade-maps/*.map' {shlex.quote(conf)} 2>/dev/null; then
+  sed -i 's#^\\([[:space:]]*\\)default \\(.*\\);#\\1include /etc/nginx/stream.d/cascade-maps/*.map;\\n\\1default \\2;#' {shlex.quote(conf)}
+fi
+
+nginx -t
+systemctl reload nginx
+echo OK_NGINX_RELAY
+"""
+
+
+def _nginx_remove_script(safe: str) -> str:
+    map_file, upstream_file = _nginx_route_files(safe)
+    return (
+        f"rm -f {shlex.quote(map_file)} {shlex.quote(upstream_file)}; "
+        f"nginx -t && systemctl reload nginx; echo DOWN_NGINX_RELAY\n"
+    )
+
+
+def _nginx_route_alive(ssh, safe: str) -> bool:
+    map_file, upstream_file = _nginx_route_files(safe)
+    res = ssh_exec.run(
+        ssh,
+        f"test -f {shlex.quote(map_file)} && test -f {shlex.quote(upstream_file)} "
+        f"&& systemctl is-active --quiet nginx && echo ok || echo no",
+        timeout=15,
+    )
+    return res.stdout.strip().endswith("ok")
+
+
+def _sni_conflicts_entry(entry_rec: dict, sni: str) -> bool:
+    """SNI exit не должен совпадать с доменом панели/чата entry (иначе дубль ключа в map)."""
+    sni_l = (sni or "").strip().lower()
+    if not sni_l:
+        return False
+    names: set[str] = set()
+    panel_domain = ((entry_rec.get("panel_ssl") or {}).get("domain") or "").strip().lower()
+    if panel_domain:
+        names.add(panel_domain)
+    chat_domain = ((entry_rec.get("chat_domain") or {}).get("domain") or "").strip().lower()
+    if chat_domain:
+        names.add(chat_domain)
+    return sni_l in names
+
+
+# ---------------------------------------------------------------------------
 # Preflight
 # ---------------------------------------------------------------------------
 
@@ -129,16 +230,42 @@ def xray_cascade_preflight(entry_id: str, exit_id: str, relay_port: Optional[int
         exit_ssh.close()
 
     exit_host = exit_rec.get("host")
-    port = int(relay_port or exit_port or DEFAULT_RELAY_PORT)
+    user_port = int(relay_port) if relay_port else None
 
     entry_ssh = _connect(entry_id)
     try:
-        busy = port_busy(entry_ssh, port, proto="tcp")
-        checks.append({"id": "relay_port", "label": f"Entry: TCP-порт {port}",
-                       "status": "danger" if busy else "ok",
-                       "value": "занят" if busy else "свободен"})
-        if busy:
-            blockers.append(f"TCP-порт {port} на entry занят — выбери другой relay-порт.")
+        # Режим: если на entry активен резерв :443 и юзер не навязал иной порт —
+        # вход живёт на :443 как SNI-ветка nginx (лучшая маскировка). Иначе socat.
+        has_reservation = _entry_has_reservation(entry_ssh)
+        use_nginx = has_reservation and (user_port is None or user_port == 443)
+
+        if use_nginx:
+            mode = "nginx"
+            port = 443
+            checks.append({"id": "entry_reserve", "label": "Entry: резерв :443 (nginx)",
+                           "status": "ok", "value": "активен"})
+            conflict = _sni_conflicts_entry(entry_rec, sni)
+            checks.append({"id": "entry_sni", "label": "Entry: SNI-ветка",
+                           "status": "danger" if (conflict or not sni) else "ok",
+                           "value": (f"SNI {sni} конфликтует с доменом панели/чата"
+                                     if conflict else f"SNI {sni or '—'} → exit:{exit_port}")})
+            if not sni:
+                blockers.append("У exit не задан Reality-SNI — nginx-режим каскада требует SNI.")
+            if conflict:
+                blockers.append(
+                    f"SNI exit ({sni}) совпадает с доменом панели/чата на entry — "
+                    "выбери другой маскировочный домен на exit."
+                )
+        else:
+            mode = "socat"
+            port = user_port or exit_port or DEFAULT_RELAY_PORT
+            busy = port_busy(entry_ssh, port, proto="tcp")
+            checks.append({"id": "relay_port", "label": f"Entry: TCP-порт {port}",
+                           "status": "danger" if busy else "ok",
+                           "value": "занят" if busy else "свободен"})
+            if busy:
+                blockers.append(f"TCP-порт {port} на entry занят — выбери другой relay-порт.")
+
         reach = _tcp_reachable(entry_ssh, exit_host, exit_port)
         checks.append({"id": "entry_to_exit", "label": "Entry → Exit (TCP)",
                        "status": "ok" if reach else "danger",
@@ -150,6 +277,10 @@ def xray_cascade_preflight(entry_id: str, exit_id: str, relay_port: Optional[int
 
     ok = not blockers
     state = "preflight_ok" if ok else "preflight_failed"
+    _msg_ok = (
+        "Проверка пройдена — вход встанет на :443 (nginx)." if (ok and mode == "nginx")
+        else "Проверка пройдена — можно включать relay."
+    )
     xray_cascade_store.upsert_link(
         entry_id,
         exit_server_id=exit_id,
@@ -157,15 +288,15 @@ def xray_cascade_preflight(entry_id: str, exit_id: str, relay_port: Optional[int
         exit_port=exit_port,
         exit_host=exit_host,
         sni=sni,
+        mode=mode,
         state=state,
         last_preflight_at=datetime.now(timezone.utc).isoformat(),
         last_preflight_ok=ok,
-        message="Проверка пройдена — можно включать relay." if ok
-                else "Проверка выявила блокеры.",
+        message=_msg_ok if ok else "Проверка выявила блокеры.",
     )
     return {
         "ok": ok, "entry_server_id": entry_id, "exit_server_id": exit_id,
-        "relay_port": port, "exit_port": exit_port, "sni": sni,
+        "relay_port": port, "exit_port": exit_port, "sni": sni, "mode": mode,
         "checks": checks, "blockers": blockers,
         "message": "Preflight пройден." if ok else "Preflight выявил блокеры.",
     }
@@ -218,42 +349,67 @@ def xray_cascade_apply(entry_id: str) -> dict:
     exit_port = int(link.get("exit_port") or DEFAULT_RELAY_PORT)
     relay_port = int(link.get("relay_port") or DEFAULT_RELAY_PORT)
     sni = link.get("sni") or ""
+    mode = link.get("mode") or "socat"
     if not exit_host:
         raise XrayCascadeError("Не задан exit-сервер.")
 
     steps: list[dict] = []
     entry_ssh = _connect(entry_id)
     try:
-        res = ssh_exec.run(entry_ssh, _relay_up_script(relay_port, exit_host, exit_port), timeout=120)
-        if res.exit_code != 0 or "OK_RELAY" not in res.stdout:
-            ssh_exec.run(entry_ssh, _relay_down_script(relay_port), timeout=30)
-            raise XrayCascadeError(
-                f"Не удалось поднять relay на entry: {res.stderr.strip() or res.stdout.strip()[-300:]}"
-            )
-        steps.append({"name": "Entry: TCP-relay на exit", "status": "ok"})
-
-        healthy = _health_handshake(entry_ssh, relay_port, sni)
-        if not healthy:
-            ssh_exec.run(entry_ssh, _relay_down_script(relay_port), timeout=30)
-            steps.append({"name": "Health: Reality-handshake через entry", "status": "failed"})
-            xray_cascade_store.upsert_link(entry_id, state="rolled_back",
-                                           message="Health не пройден — relay снят (откат).")
-            raise XrayCascadeError(
-                "Health-check провален: TLS-handshake через entry не дошёл до Reality exit. Relay снят."
-            )
-        steps.append({"name": "Health: Reality-handshake через entry", "status": "ok",
-                      "detail": f"TLS к {sni} через entry:{relay_port} → exit OK"})
+        if mode == "nginx":
+            if not sni:
+                raise XrayCascadeError("nginx-режим каскада требует Reality-SNI exit.")
+            safe = _safe_id(link.get("exit_server_id") or exit_host)
+            res = ssh_exec.run(entry_ssh, _nginx_apply_script(safe, sni, exit_host, exit_port), timeout=120)
+            if res.exit_code != 0 or "OK_NGINX_RELAY" not in res.stdout:
+                ssh_exec.run(entry_ssh, _nginx_remove_script(safe), timeout=60)
+                raise XrayCascadeError(
+                    f"Не удалось включить SNI-ветку nginx на entry: "
+                    f"{res.stderr.strip() or res.stdout.strip()[-300:]}"
+                )
+            steps.append({"name": "Entry: SNI-ветка nginx :443 → exit", "status": "ok"})
+            healthy = _health_handshake(entry_ssh, 443, sni)
+            if not healthy:
+                ssh_exec.run(entry_ssh, _nginx_remove_script(safe), timeout=60)
+                steps.append({"name": "Health: Reality-handshake через entry", "status": "failed"})
+                xray_cascade_store.upsert_link(entry_id, state="rolled_back",
+                                               message="Health не пройден — SNI-ветка снята (откат).")
+                raise XrayCascadeError(
+                    "Health-check провален: TLS-handshake через entry:443 не дошёл до Reality exit. Ветка снята."
+                )
+            steps.append({"name": "Health: Reality-handshake через entry", "status": "ok",
+                          "detail": f"TLS к {sni} через entry:443 → exit OK"})
+        else:
+            res = ssh_exec.run(entry_ssh, _relay_up_script(relay_port, exit_host, exit_port), timeout=120)
+            if res.exit_code != 0 or "OK_RELAY" not in res.stdout:
+                ssh_exec.run(entry_ssh, _relay_down_script(relay_port), timeout=30)
+                raise XrayCascadeError(
+                    f"Не удалось поднять relay на entry: {res.stderr.strip() or res.stdout.strip()[-300:]}"
+                )
+            steps.append({"name": "Entry: TCP-relay на exit", "status": "ok"})
+            healthy = _health_handshake(entry_ssh, relay_port, sni)
+            if not healthy:
+                ssh_exec.run(entry_ssh, _relay_down_script(relay_port), timeout=30)
+                steps.append({"name": "Health: Reality-handshake через entry", "status": "failed"})
+                xray_cascade_store.upsert_link(entry_id, state="rolled_back",
+                                               message="Health не пройден — relay снят (откат).")
+                raise XrayCascadeError(
+                    "Health-check провален: TLS-handshake через entry не дошёл до Reality exit. Relay снят."
+                )
+            steps.append({"name": "Health: Reality-handshake через entry", "status": "ok",
+                          "detail": f"TLS к {sni} через entry:{relay_port} → exit OK"})
     finally:
         entry_ssh.close()
 
     xray_cascade_store.upsert_link(
         entry_id, state="active", desired="up",
         last_applied_at=datetime.now(timezone.utc).isoformat(),
-        message="Xray-каскад активен: клиент → entry → exit.",
+        message=("Xray-каскад активен (вход :443 через nginx): клиент → entry → exit."
+                 if mode == "nginx" else "Xray-каскад активен: клиент → entry → exit."),
     )
     return {"ok": True, "state": "active", "entry_server_id": entry_id,
             "exit_server_id": link.get("exit_server_id"), "relay_port": relay_port,
-            "steps": steps, "message": "Xray-каскад включён."}
+            "mode": mode, "steps": steps, "message": "Xray-каскад включён."}
 
 
 def xray_cascade_rollback(entry_id: str) -> dict:
@@ -261,13 +417,21 @@ def xray_cascade_rollback(entry_id: str) -> dict:
     if not link:
         raise XrayCascadeError("Xray-каскад для этого сервера не найден.")
     relay_port = int(link.get("relay_port") or DEFAULT_RELAY_PORT)
+    mode = link.get("mode") or "socat"
     entry_ssh = _connect(entry_id)
     try:
-        ssh_exec.run(entry_ssh, _relay_down_script(relay_port), timeout=30)
+        if mode == "nginx":
+            safe = _safe_id(link.get("exit_server_id") or link.get("exit_host") or "")
+            ssh_exec.run(entry_ssh, _nginx_remove_script(safe), timeout=60)
+        else:
+            ssh_exec.run(entry_ssh, _relay_down_script(relay_port), timeout=30)
     finally:
         entry_ssh.close()
-    xray_cascade_store.upsert_link(entry_id, state="down", desired="down",
-                                   message="Relay снят. Каскад выключен.")
+    xray_cascade_store.upsert_link(
+        entry_id, state="down", desired="down",
+        message=("SNI-ветка снята. Каскад выключен." if mode == "nginx"
+                 else "Relay снят. Каскад выключен."),
+    )
     return {"ok": True, "state": "down", "entry_server_id": entry_id,
             "message": "Xray-каскад выключен."}
 
@@ -300,32 +464,43 @@ def reconcile_xray_cascade(entry_id: str, *, heal: bool = True) -> dict:
     relay_port = int(link.get("relay_port") or DEFAULT_RELAY_PORT)
     exit_host = link.get("exit_host")
     exit_port = int(link.get("exit_port") or DEFAULT_RELAY_PORT)
+    mode = link.get("mode") or "socat"
+    sni = link.get("sni") or ""
+    safe = _safe_id(link.get("exit_server_id") or exit_host or "")
 
     try:
         ssh = _connect(entry_id)
     except XrayCascadeError:
         return {"entry": entry_id, "ok": False, "error": "ssh-unreachable"}
     try:
-        if _relay_alive(ssh, relay_port):
+        alive = _nginx_route_alive(ssh, safe) if mode == "nginx" else _relay_alive(ssh, relay_port)
+        if alive:
             if (link.get("state") or "") != "active":
                 xray_cascade_store.upsert_link(entry_id, state="active",
-                                               message="Relay активен.")
+                                               message="Каскад активен.")
             return {"entry": entry_id, "ok": True, "healed": False, "state": "active"}
         if not heal:
             xray_cascade_store.upsert_link(entry_id, state="down",
-                                           message="Relay не обнаружен на entry.")
+                                           message="Каскад не обнаружен на entry.")
             return {"entry": entry_id, "ok": False, "healed": False, "state": "down"}
-        res = ssh_exec.run(ssh, _relay_up_script(relay_port, exit_host, exit_port), timeout=120)
-        healed = res.exit_code == 0 and "OK_RELAY" in res.stdout and _relay_alive(ssh, relay_port)
+
+        if mode == "nginx" and sni:
+            res = ssh_exec.run(ssh, _nginx_apply_script(safe, sni, exit_host, exit_port), timeout=120)
+            healed = (res.exit_code == 0 and "OK_NGINX_RELAY" in res.stdout
+                      and _nginx_route_alive(ssh, safe))
+        else:
+            res = ssh_exec.run(ssh, _relay_up_script(relay_port, exit_host, exit_port), timeout=120)
+            healed = (res.exit_code == 0 and "OK_RELAY" in res.stdout
+                      and _relay_alive(ssh, relay_port))
         if healed:
             xray_cascade_store.upsert_link(
                 entry_id, state="active",
                 last_healed_at=datetime.now(timezone.utc).isoformat(),
-                message="Relay восстановлен автоматически (self-heal).",
+                message="Каскад восстановлен автоматически (self-heal).",
             )
             return {"entry": entry_id, "ok": True, "healed": True, "state": "active"}
         xray_cascade_store.upsert_link(entry_id, state="down",
-                                       message="Relay упал, авто-восстановление не удалось.")
+                                       message="Каскад упал, авто-восстановление не удалось.")
         return {"entry": entry_id, "ok": False, "healed": False, "state": "down"}
     finally:
         ssh.close()
@@ -370,6 +545,7 @@ def xray_cascade_status(entry_id: str) -> dict:
         "relay_port": link.get("relay_port"),
         "exit_port": link.get("exit_port"),
         "sni": link.get("sni"),
+        "mode": link.get("mode") or "socat",
         "split_ru": bool(link.get("split_ru")),
         "state": state,
         "live_active": live_active,
