@@ -106,10 +106,30 @@ def ensure_monitoring_config(server_config: dict) -> bool:
 
     config["inbounds"] = inbounds
 
-    for key, value in _STATS_BLOCK.items():
-        if config.get(key) != value:
-            config[key] = deepcopy(value)
+    # stats/api/policy — как раньше; routing НЕ затираем целиком (иначе ломается
+    # Xray-каскад: ensure_monitoring_config вызывается при каждом create_client).
+    for key in ("stats", "api", "policy"):
+        if config.get(key) != _STATS_BLOCK[key]:
+            config[key] = deepcopy(_STATS_BLOCK[key])
             changed = True
+
+    routing = dict(config.get("routing") or {})
+    rules = list(routing.get("rules") or [])
+    api_rule = dict(_STATS_BLOCK["routing"]["rules"][0])
+    has_api = any(
+        isinstance(r, dict)
+        and r.get("type") == "field"
+        and r.get("outboundTag") == API_INBOUND_TAG
+        and API_INBOUND_TAG in (r.get("inboundTag") or [])
+        for r in rules
+    )
+    if not has_api:
+        rules.insert(0, api_rule)
+        changed = True
+    routing["rules"] = rules
+    if config.get("routing") != routing:
+        config["routing"] = routing
+        changed = True
 
     if changed:
         server_config.clear()

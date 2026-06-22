@@ -42,6 +42,34 @@ from app.services.xray_cascade_store import DEFAULT_RELAY_PORT, xray_cascade_sto
 EXIT_OUTBOUND_TAG = "cascade-exit"
 DIRECT_OUTBOUND_TAG = "cascade-direct"
 
+# Legacy nginx SNI-relay (v1.23) — в chain-модели не используется, но файлы могли
+# остаться после обновления и ломать вход (SNI exit → NL вместо локального Xray).
+ENTRY_STREAM_MAP_DIR = "/etc/nginx/stream.d/cascade-maps"
+
+
+def _cleanup_legacy_nginx_relay(ssh) -> None:
+    """Удалить все nginx-ветки старого relay-каскада на entry."""
+    script = """
+set -e
+rm -f /etc/nginx/stream.d/cascade-maps/*.map /etc/nginx/stream.d/utmka-cascade-*.conf 2>/dev/null || true
+if command -v nginx >/dev/null 2>&1 && [ -d /etc/nginx ]; then
+  nginx -t && systemctl reload nginx
+fi
+echo NGINX_CLEANED
+"""
+    ssh_exec.run(ssh, script, timeout=60)
+
+
+def reapply_entry_chain_config(ssh, link: dict) -> None:
+    """Переписать outbound+routing на entry из сохранённого link (self-heal / после create_client)."""
+    exit_host = link.get("exit_host")
+    exit_port = int(link.get("exit_port") or DEFAULT_RELAY_PORT)
+    uplink_uuid = link.get("uplink_uuid")
+    if not exit_host or not uplink_uuid:
+        raise XrayCascadeError("Каскад не сконфигурирован — включите заново.")
+    outbound = _build_exit_outbound(_profile_from_link(link), exit_host, exit_port, uplink_uuid)
+    _apply_entry_chain(ssh, outbound, bool(link.get("split_ru")))
+
 
 class XrayCascadeError(Exception):
     pass
@@ -383,9 +411,11 @@ def xray_cascade_apply(entry_id: str) -> dict:
     finally:
         exit_ssh.close()
 
-    # 2) Прописываем на entry outbound→exit + split-routing.
+    # 2) Снимаем legacy nginx-relay (v1.23) и прописываем outbound→exit + split-routing.
     entry_ssh = _connect(entry_id)
     try:
+        _cleanup_legacy_nginx_relay(entry_ssh)
+        steps.append({"name": "Entry: снят legacy nginx-relay", "status": "ok"})
         outbound = _build_exit_outbound(profile, exit_host, exit_port, uplink_uuid)
         try:
             _apply_entry_chain(entry_ssh, outbound, bool(split_ru))
@@ -436,6 +466,7 @@ def xray_cascade_rollback(entry_id: str) -> dict:
     entry_ssh = _connect(entry_id)
     try:
         _remove_entry_chain(entry_ssh)
+        _cleanup_legacy_nginx_relay(entry_ssh)
     finally:
         entry_ssh.close()
 
@@ -468,6 +499,20 @@ def _desired_up(link: dict) -> bool:
     return (link.get("state") or "") == "active"
 
 
+def _routing_needs_heal(ssh) -> bool:
+    """True, если cascade-exit пропал из routing (типично после create_client до фикса)."""
+    raw = read_container_file(ssh, XRAY_CONTAINER, SERVER_CONFIG_PATH)
+    if not raw:
+        return True
+    try:
+        rules = (json.loads(raw).get("routing") or {}).get("rules") or []
+    except json.JSONDecodeError:
+        return True
+    return not any(
+        isinstance(r, dict) and r.get("outboundTag") == EXIT_OUTBOUND_TAG for r in rules
+    )
+
+
 def reconcile_xray_cascade(entry_id: str, *, heal: bool = True) -> dict:
     """Сверяет цепочку на entry с намерением и (при heal) восстанавливает её.
 
@@ -491,7 +536,13 @@ def reconcile_xray_cascade(entry_id: str, *, heal: bool = True) -> dict:
     except XrayCascadeError:
         return {"entry": entry_id, "ok": False, "error": "ssh-unreachable"}
     try:
+        _cleanup_legacy_nginx_relay(ssh)
         if _chain_alive(ssh):
+            if _routing_needs_heal(ssh) and uplink_uuid:
+                try:
+                    reapply_entry_chain_config(ssh, link)
+                except XrayCascadeError:
+                    pass
             if (link.get("state") or "") != "active":
                 xray_cascade_store.upsert_link(entry_id, state="active", message="Каскад активен.")
             return {"entry": entry_id, "ok": True, "healed": False, "state": "active"}
@@ -500,6 +551,7 @@ def reconcile_xray_cascade(entry_id: str, *, heal: bool = True) -> dict:
                                            message="Цепочка каскада не обнаружена на entry.")
             return {"entry": entry_id, "ok": False, "healed": False, "state": "down"}
 
+        _cleanup_legacy_nginx_relay(ssh)
         outbound = _build_exit_outbound(_profile_from_link(link), exit_host, exit_port, uplink_uuid)
         try:
             _apply_entry_chain(ssh, outbound, split_ru)
@@ -595,8 +647,8 @@ def set_xray_cascade_rules(entry_id: str, enabled: bool) -> dict:
 
     entry_ssh = _connect(entry_id)
     try:
-        outbound = _build_exit_outbound(_profile_from_link(link), exit_host, exit_port, uplink_uuid)
-        _apply_entry_chain(entry_ssh, outbound, bool(enabled))
+        link_apply = {**link, "split_ru": bool(enabled)}
+        reapply_entry_chain_config(entry_ssh, link_apply)
         if not _chain_alive(entry_ssh):
             raise XrayCascadeError("Не удалось применить split-правило на entry.")
     finally:

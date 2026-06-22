@@ -88,6 +88,20 @@ def create_xray_client(
         client_uuid = str(uuid.uuid4())
         _append_client_to_server(ssh, server_config, client_uuid, flow)
 
+        # Если на entry активен Xray-каскад — восстановить split-routing (create_client
+        # не должен его затирать, но перестраховка после ensure_monitoring_config).
+        from app.services.xray_cascade_store import xray_cascade_store
+
+        cascade_link = xray_cascade_store.get_link(server_id)
+        if (
+            cascade_link
+            and (cascade_link.get("state") or "") == "active"
+            and cascade_link.get("uplink_uuid")
+        ):
+            from app.services.xray_cascade import reapply_entry_chain_config
+
+            reapply_entry_chain_config(ssh, cascade_link)
+
         # По умолчанию ведём клиента на домен панели (он DNS-проверен на этот
         # сервер), а не на голый IP: SNI у Reality — это маскировочный домен,
         # поэтому host в Endpoint лишь определяет TCP-адрес и :443 одинаково
