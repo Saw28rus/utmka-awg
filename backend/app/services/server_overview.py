@@ -172,6 +172,9 @@ def run_protocol_action(server_id: str, protocol_id: str, action: str) -> str:
             result = ssh_exec.run(ssh, f"docker rm -f {shlex.quote(container)}", timeout=60)
             if result.exit_code != 0:
                 raise RuntimeError(result.stderr.strip() or "Не удалось удалить контейнер.")
+            # Чистим стор, иначе карточки сервера продолжат показывать протокол
+            # установленным (badge берётся из installed_protocols/container_names).
+            _forget_protocol_in_store(server_id, protocol_id, container)
             return f"Протокол {entry['name']} удалён (контейнер {container})."
 
         result = ssh_exec.run(ssh, f"docker {action} {shlex.quote(container)}", timeout=60)
@@ -278,29 +281,64 @@ def _build_protocols(server_id: str, record: dict, containers: list[ContainerInf
     return result
 
 
-def _sync_xray_metadata(server_id: str, record: dict, containers: list[ContainerInfo]) -> None:
-    """Подтягиваем amnezia-xray в store, если контейнер есть на VPS."""
-    xray = next((c for c in containers if c.name == "amnezia-xray"), None)
-    if not xray:
-        return
-    names = list(record.get("container_names") or [])
-    changed = False
-    if "amnezia-xray" not in names:
-        names.append("amnezia-xray")
-        changed = True
-    protocols = dict(record.get("installed_protocols") or {})
-    if "xray" not in protocols:
-        port = 443
-        if xray.ports:
-            import re
+def _forget_protocol_in_store(server_id: str, protocol_id: str, container: str) -> None:
+    """Убирает протокол из стора после удаления контейнера на VPS.
 
-            match = re.search(r":(\d+)->", xray.ports)
-            if match:
-                port = int(match.group(1))
-        protocols["xray"] = {"port": port, "container": "amnezia-xray"}
-        changed = True
-    if changed:
-        server_store.update_runtime(server_id, container_names=names, installed_protocols=protocols)
+    Без этого `_has_xray` (карточки серверов) продолжает считать протокол
+    установленным по осиротевшим installed_protocols/container_names.
+    """
+    record = server_store.get_record(server_id) or {}
+    names = [n for n in (record.get("container_names") or []) if n != container]
+    protocols = dict(record.get("installed_protocols") or {})
+    protocols.pop(protocol_id, None)
+    server_store.update_runtime(
+        server_id, container_names=names, installed_protocols=protocols
+    )
+
+
+def _sync_xray_metadata(server_id: str, record: dict, containers: list[ContainerInfo]) -> None:
+    """Сверяем amnezia-xray со стором в обе стороны.
+
+    Есть контейнер → дописываем Xray в стор. Контейнера нет, а в сторе он числится
+    → чистим расхождение (иначе карточки сервера врут после удаления Xray).
+
+    Защита от ложного срабатывания: пустой список контейнеров означает, что docker
+    не ответил (а не «Xray точно нет») — в этом случае ничего не трогаем.
+    """
+    if not containers:
+        return
+    xray = next((c for c in containers if c.name == "amnezia-xray"), None)
+    names = list(record.get("container_names") or [])
+    protocols = dict(record.get("installed_protocols") or {})
+
+    if xray:
+        changed = False
+        if "amnezia-xray" not in names:
+            names.append("amnezia-xray")
+            changed = True
+        if "xray" not in protocols:
+            port = 443
+            if xray.ports:
+                import re
+
+                match = re.search(r":(\d+)->", xray.ports)
+                if match:
+                    port = int(match.group(1))
+            protocols["xray"] = {"port": port, "container": "amnezia-xray"}
+            changed = True
+        if changed:
+            server_store.update_runtime(
+                server_id, container_names=names, installed_protocols=protocols
+            )
+        return
+
+    # Контейнера нет — снимаем осиротевшие метки Xray, если они остались в сторе.
+    if ("amnezia-xray" in names) or ("xray" in protocols):
+        names = [n for n in names if n != "amnezia-xray"]
+        protocols.pop("xray", None)
+        server_store.update_runtime(
+            server_id, container_names=names, installed_protocols=protocols
+        )
 
 
 def _match_container(entry: dict, names: list[str]) -> Optional[str]:
