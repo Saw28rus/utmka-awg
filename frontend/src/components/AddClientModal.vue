@@ -152,8 +152,7 @@ type ServerListItem = {
 
 const PROTOCOL_LABELS: Record<string, string> = {
   awg2: 'AmneziaWG 2.0',
-  xray: 'Xray (VLESS-Reality)',
-  xray_cascade: 'Xray через каскад'
+  xray: 'Xray (VLESS-Reality)'
 }
 
 const props = defineProps<{
@@ -192,9 +191,7 @@ const visible = computed({
 
 const eligibleServers = computed(() =>
   servers.value.filter(
-    (server) =>
-      (server.client_protocols?.length || (server.awg2_imported ? 1 : 0)) > 0 ||
-      server.xray_cascade_active
+    (server) => (server.client_protocols?.length || (server.awg2_imported ? 1 : 0)) > 0
   )
 )
 
@@ -207,23 +204,10 @@ const availableProtocols = computed(() => {
     : server?.awg2_imported
       ? ['awg2']
       : []
-  const opts = ids.map((id) => ({ id, label: PROTOCOL_LABELS[id] || id }))
-  // Узел-вход активного Xray-каскада: можно выдать Xray-клиента через каскад,
-  // даже если локального Xray на нём нет (ключи живут на exit).
-  if (server?.xray_cascade_active) {
-    const exit = server.xray_cascade_exit_name
-    opts.push({
-      id: 'xray_cascade',
-      label: exit ? `Xray через каскад → ${exit}` : 'Xray через каскад'
-    })
-  }
-  return opts
+  return ids.map((id) => ({ id, label: PROTOCOL_LABELS[id] || id }))
 })
 
-const isXrayLike = computed(
-  () => form.protocol === 'xray' || form.protocol === 'xray_cascade'
-)
-const isCascade = computed(() => form.protocol === 'xray_cascade')
+const isXrayLike = computed(() => form.protocol === 'xray')
 
 const formatOptions = computed(() => {
   if (isXrayLike.value) {
@@ -249,10 +233,9 @@ const serverDomain = computed(() => {
 const showEndpointChoice = computed(() => form.protocol === 'xray' && !!serverDomain.value)
 
 const cascadeHint = computed(() => {
-  if (!isCascade.value) return ''
-  const s = selectedServer.value
-  const exit = s?.xray_cascade_exit_name || 'exit'
-  return `Клиент подключается к «${s?.name}» (вход): РФ-трафик выходит здесь напрямую, остальное уходит на «${exit}» (выход). Маршрутизация серверная — работает в любом клиенте.`
+  if (form.protocol !== 'xray' || !selectedServer.value?.xray_cascade_active) return ''
+  const exit = selectedServer.value.xray_cascade_exit_name || 'exit'
+  return `На этом сервере включён Xray-каскад → ${exit}: достаточно обычного Xray-клиента. РФ-трафик выходит здесь, остальное уходит на exit (правило на сервере).`
 })
 
 const endpointChoices = computed(() => {
@@ -265,7 +248,6 @@ const endpointChoices = computed(() => {
 })
 
 const savingText = computed(() => {
-  if (isCascade.value) return 'Создаю клиента на exit и собираю конфиг каскада…'
   if (form.protocol === 'xray') return 'Добавляю клиента в Xray и генерирую конфиг…'
   return 'Генерирую ключи и добавляю peer на сервере…'
 })
