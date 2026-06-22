@@ -712,6 +712,29 @@ def set_xray_cascade_rules(entry_id: str, enabled: bool) -> dict:
     }
 
 
+def active_entry_map() -> dict[str, dict]:
+    """entry_id → инфо активного Xray-каскада (для выдачи клиентов из общей формы).
+
+    Только state == active: каскад реально работает и `create_xray_cascade_client`
+    не упадёт. Используется страницей «Серверы»/«Клиенты», чтобы предложить выдачу
+    Xray-клиента через каскад на узлах-входах, где локального Xray нет.
+    """
+    out: dict[str, dict] = {}
+    for link in xray_cascade_store.list_links():
+        if (link.get("state") or "") != "active":
+            continue
+        entry_id = link.get("entry_server_id")
+        if not entry_id:
+            continue
+        exit_id = link.get("exit_server_id")
+        exit_rec = server_store.get_record(exit_id) if exit_id else None
+        out[entry_id] = {
+            "exit_server_id": exit_id,
+            "exit_name": (exit_rec.get("name") if exit_rec else None),
+        }
+    return out
+
+
 def list_xray_cascades() -> list[dict]:
     out: list[dict] = []
     for link in xray_cascade_store.list_links():

@@ -51,6 +51,7 @@
               </option>
             </select>
           </label>
+          <p v-if="cascadeHint" class="field-wide hint-text hint-cascade">{{ cascadeHint }}</p>
           <label v-if="showEndpointChoice" class="field field-wide">
             <span>Адрес подключения (Endpoint)</span>
             <select v-model="form.endpointHost">
@@ -145,11 +146,14 @@ type ServerListItem = {
   client_protocols?: string[]
   endpoint_host?: string | null
   panel_domain?: string | null
+  xray_cascade_active?: boolean
+  xray_cascade_exit_name?: string | null
 }
 
 const PROTOCOL_LABELS: Record<string, string> = {
   awg2: 'AmneziaWG 2.0',
-  xray: 'Xray (VLESS-Reality)'
+  xray: 'Xray (VLESS-Reality)',
+  xray_cascade: 'Xray через каскад'
 }
 
 const props = defineProps<{
@@ -187,22 +191,42 @@ const visible = computed({
 })
 
 const eligibleServers = computed(() =>
-  servers.value.filter((server) => (server.client_protocols?.length || (server.awg2_imported ? 1 : 0)) > 0)
+  servers.value.filter(
+    (server) =>
+      (server.client_protocols?.length || (server.awg2_imported ? 1 : 0)) > 0 ||
+      server.xray_cascade_active
+  )
 )
 
 const selectedServer = computed(() => servers.value.find((s) => s.id === form.server_id))
 
 const availableProtocols = computed(() => {
-  const ids = selectedServer.value?.client_protocols?.length
-    ? selectedServer.value.client_protocols
-    : selectedServer.value?.awg2_imported
+  const server = selectedServer.value
+  const ids = server?.client_protocols?.length
+    ? [...server.client_protocols]
+    : server?.awg2_imported
       ? ['awg2']
       : []
-  return ids.map((id) => ({ id, label: PROTOCOL_LABELS[id] || id }))
+  const opts = ids.map((id) => ({ id, label: PROTOCOL_LABELS[id] || id }))
+  // Узел-вход активного Xray-каскада: можно выдать Xray-клиента через каскад,
+  // даже если локального Xray на нём нет (ключи живут на exit).
+  if (server?.xray_cascade_active) {
+    const exit = server.xray_cascade_exit_name
+    opts.push({
+      id: 'xray_cascade',
+      label: exit ? `Xray через каскад → ${exit}` : 'Xray через каскад'
+    })
+  }
+  return opts
 })
 
+const isXrayLike = computed(
+  () => form.protocol === 'xray' || form.protocol === 'xray_cascade'
+)
+const isCascade = computed(() => form.protocol === 'xray_cascade')
+
 const formatOptions = computed(() => {
-  if (form.protocol === 'xray') {
+  if (isXrayLike.value) {
     return [
       { value: 'both', label: 'Оба (VLESS + AmneziaVPN)' },
       { value: 'config', label: 'VLESS (vless://, сторонние клиенты)' },
@@ -224,6 +248,13 @@ const serverDomain = computed(() => {
 
 const showEndpointChoice = computed(() => form.protocol === 'xray' && !!serverDomain.value)
 
+const cascadeHint = computed(() => {
+  if (!isCascade.value) return ''
+  const s = selectedServer.value
+  const exit = s?.xray_cascade_exit_name || 'exit'
+  return `Клиент подключается к «${s?.name}» (вход), трафик уходит на «${exit}» (выход), где живут ключи Reality. Локальный Xray на входе не нужен.`
+})
+
 const endpointChoices = computed(() => {
   const host = selectedServer.value?.host || ''
   const domain = serverDomain.value
@@ -233,11 +264,11 @@ const endpointChoices = computed(() => {
   return opts
 })
 
-const savingText = computed(() =>
-  form.protocol === 'xray'
-    ? 'Добавляю клиента в Xray и генерирую конфиг…'
-    : 'Генерирую ключи и добавляю peer на сервере…'
-)
+const savingText = computed(() => {
+  if (isCascade.value) return 'Создаю клиента на exit и собираю конфиг каскада…'
+  if (form.protocol === 'xray') return 'Добавляю клиента в Xray и генерирую конфиг…'
+  return 'Генерирую ключи и добавляю peer на сервере…'
+})
 
 watch(visible, async (open) => {
   if (open) {
@@ -267,7 +298,7 @@ watch(
 watch(
   () => form.protocol,
   () => {
-    if (form.protocol === 'xray' && form.format === 'awg') form.format = 'both'
+    if (isXrayLike.value && form.format === 'awg') form.format = 'both'
     if (form.protocol === 'awg2' && form.format === 'config') form.format = 'both'
   }
 )
@@ -424,6 +455,14 @@ function close() {
   color: var(--color-muted);
   font-size: 12.5px;
   font-weight: 400;
+}
+
+.hint-cascade {
+  padding: 9px 11px;
+  border-left: 2px solid var(--color-accent);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--color-text);
 }
 
 .field input,

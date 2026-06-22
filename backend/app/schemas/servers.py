@@ -36,6 +36,10 @@ class ServerRead(BaseModel):
     vpn_port: Optional[int] = None
     endpoint_host: Optional[str] = None
     panel_domain: Optional[str] = None
+    # Узел — вход активного Xray-каскада: можно выдавать Xray-клиентов через каскад,
+    # даже если локального Xray на нём нет.
+    xray_cascade_active: bool = False
+    xray_cascade_exit_name: Optional[str] = None
     last_detect_message: Optional[str] = None
     created_at: Optional[str] = None
     former_entry: bool = False
@@ -74,6 +78,8 @@ class ServerMinimal(BaseModel):
     awg2_imported: bool = False
     client_protocols: list[str] = []
     panel_domain: Optional[str] = None
+    xray_cascade_active: bool = False
+    xray_cascade_exit_name: Optional[str] = None
 
 
 class DetectCheck(BaseModel):

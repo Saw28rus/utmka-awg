@@ -23,6 +23,7 @@ from app.schemas.clients import (
 from app.services.awg_client import ClientCreateError
 from app.services.awg_transport import apply_keepalive
 from app.services.xray_client import ClientCreateError as XrayClientCreateError
+from app.services.xray_cascade import XrayCascadeError
 from app.services.awg_enforce import enforce_server_by_id
 from app.services.client_store import client_store
 from app.services.protocol_engine import ClientSpec, get_engine
@@ -169,19 +170,34 @@ async def create_client(
     db: AsyncSession = Depends(get_db),
 ) -> ClientDetail:
     protocol = (payload.protocol or "awg2").lower()
-    spec = ClientSpec(
-        server_id=payload.server_id,
-        name=payload.name.strip(),
-        protocol=protocol,
-        format=payload.format,
-        traffic_limit_bytes=payload.traffic_limit_bytes,
-        expires_at=payload.expires_at,
-        keepalive=payload.keepalive,
-        link_host=(payload.link_host or "").strip() or None,
-    )
     try:
-        detail = await asyncio.to_thread(get_engine(protocol).create_client, spec)
-    except (ClientCreateError, XrayClientCreateError) as exc:
+        if protocol == "xray_cascade":
+            # Каскадная выдача: server_id — это entry (РФ), а UUID/ключи живут на
+            # exit (NL). Прогоняем через тот же эндпоинт, чтобы переиспользовать
+            # тариф/лимиты/аудит ниже. Сам Xray на entry не нужен.
+            from app.services.xray_cascade import create_xray_cascade_client
+
+            detail = await asyncio.to_thread(
+                create_xray_cascade_client,
+                payload.server_id,
+                payload.name.strip(),
+                format=payload.format,
+                traffic_limit_bytes=payload.traffic_limit_bytes,
+                expires_at=payload.expires_at,
+            )
+        else:
+            spec = ClientSpec(
+                server_id=payload.server_id,
+                name=payload.name.strip(),
+                protocol=protocol,
+                format=payload.format,
+                traffic_limit_bytes=payload.traffic_limit_bytes,
+                expires_at=payload.expires_at,
+                keepalive=payload.keepalive,
+                link_host=(payload.link_host or "").strip() or None,
+            )
+            detail = await asyncio.to_thread(get_engine(protocol).create_client, spec)
+    except (ClientCreateError, XrayClientCreateError, XrayCascadeError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     if payload.billing_mode == "paid" and not payload.billing_amount_kopecks:

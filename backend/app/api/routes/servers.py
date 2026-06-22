@@ -109,10 +109,24 @@ from app.services.server_store import server_store
 router = APIRouter()
 
 
+def _attach_xray_cascade(items: list[ServerListItem]) -> None:
+    """Помечаем узлы-входы активного Xray-каскада (для выдачи клиентов в общей форме)."""
+    from app.services.xray_cascade import active_entry_map
+
+    cmap = active_entry_map()
+    for item in items:
+        info = cmap.get(item.id)
+        if info:
+            item.xray_cascade_active = True
+            item.xray_cascade_exit_name = info.get("exit_name")
+
+
 @router.get("/minimal", response_model=list[ServerMinimal])
 async def list_servers_minimal(
     _: CurrentUser = Depends(get_current_user),
 ) -> list[ServerMinimal]:
+    items = server_store.list()
+    _attach_xray_cascade(items)
     return [
         ServerMinimal(
             id=s.id,
@@ -123,14 +137,18 @@ async def list_servers_minimal(
             awg2_imported=s.awg2_imported,
             client_protocols=s.client_protocols,
             panel_domain=s.panel_domain,
+            xray_cascade_active=s.xray_cascade_active,
+            xray_cascade_exit_name=s.xray_cascade_exit_name,
         )
-        for s in server_store.list()
+        for s in items
     ]
 
 
 @router.get("", response_model=list[ServerListItem])
 async def list_servers(_: CurrentUser = Depends(require_admin)) -> list[ServerListItem]:
-    return server_store.list()
+    items = server_store.list()
+    _attach_xray_cascade(items)
+    return items
 
 
 @router.get("/metrics", response_model=list[ServerMetrics])
