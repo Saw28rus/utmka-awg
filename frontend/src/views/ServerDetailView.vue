@@ -26,7 +26,10 @@
         <div class="hero-id">
           <span class="entity-avatar entity-avatar--xl">{{ server.name.charAt(0).toUpperCase() }}</span>
           <div class="hero-text">
-            <h2>{{ server.name }}</h2>
+            <h2>
+              <span v-if="serverFlag" class="hero-flag" :title="server.country_name || ''">{{ serverFlag }}</span>
+              {{ server.name }}
+            </h2>
             <span class="mono">{{ server.host }}:{{ server.ssh_port }}</span>
           </div>
           <StatusBadge
@@ -1176,6 +1179,7 @@ import StatusBadge from '@/components/StatusBadge.vue'
 import AppShell from '@/layouts/AppShell.vue'
 import { useServerDetailCache } from '@/stores/serverDetailCache'
 import { labelCascadeState, toneCascadeState } from '@/utils/cascadeLabels'
+import { flagEmoji } from '@/utils/flag'
 import { formatBytes, formatUptime, percentOf } from '@/utils/format'
 
 type ServerRead = {
@@ -1189,6 +1193,8 @@ type ServerRead = {
   created_at: string | null
   awg2_imported?: boolean
   client_protocols?: string[]
+  country_code?: string | null
+  country_name?: string | null
 }
 
 type ServerMetrics = {
@@ -1426,6 +1432,7 @@ const loading = ref(true)
 const refreshing = ref(false)
 const overviewLoading = ref(true)
 const server = ref<ServerRead | null>(null)
+const serverFlag = computed(() => flagEmoji(server.value?.country_code))
 const metrics = ref<ServerMetrics | null>(null)
 const overview = ref<ServerOverview | null>(null)
 
@@ -2803,6 +2810,12 @@ function confirmDeleteServer() {
 .hero-text h2 {
   margin: 0;
   font-size: 17px;
+}
+
+.hero-flag {
+  margin-right: 4px;
+  font-size: 17px;
+  line-height: 1;
 }
 
 .hero-text .mono {

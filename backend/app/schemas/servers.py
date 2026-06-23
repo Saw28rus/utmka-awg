@@ -36,6 +36,9 @@ class ServerRead(BaseModel):
     vpn_port: Optional[int] = None
     endpoint_host: Optional[str] = None
     panel_domain: Optional[str] = None
+    # Страна сервера по IP (ISO alpha-2, нижний регистр) + имя — для флага на карточке.
+    country_code: Optional[str] = None
+    country_name: Optional[str] = None
     # Узел — вход активного Xray-каскада: можно выдавать Xray-клиентов через каскад,
     # даже если локального Xray на нём нет.
     xray_cascade_active: bool = False

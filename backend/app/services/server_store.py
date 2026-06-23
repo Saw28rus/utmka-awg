@@ -165,6 +165,8 @@ class ServerStore:
             vpn_port=record.get("vpn_port"),
             endpoint_host=record.get("endpoint_host"),
             panel_domain=self._panel_domain(record),
+            country_code=record.get("country_code"),
+            country_name=record.get("country_name"),
             last_detect_message=record.get("last_detect_message"),
             created_at=record.get("created_at"),
             former_entry=record.get("former_entry", False),

@@ -109,6 +109,57 @@ from app.services.server_store import server_store
 router = APIRouter()
 
 
+def _detect_country(server_id: str, host: str) -> None:
+    """Best-effort гео по IP при добавлении сервера (флаг на карточке).
+
+    Делаем в фоне, чтобы сетевой запрос к гео-провайдеру не задерживал ответ.
+    """
+    from app.services.geoip import lookup_country
+
+    async def _run() -> None:
+        try:
+            geo = await asyncio.to_thread(lookup_country, host)
+        except Exception:  # noqa: BLE001 — гео не критично
+            geo = None
+        if geo:
+            server_store.update_runtime(
+                server_id,
+                country_code=geo["country_code"],
+                country_name=geo["country_name"],
+                geo_checked=True,
+            )
+        else:
+            server_store.update_runtime(server_id, geo_checked=True)
+
+    try:
+        asyncio.get_running_loop().create_task(_run())
+    except RuntimeError:
+        pass
+
+
+def _schedule_country_backfill() -> None:
+    """Если у части серверов нет страны — тихо дозаполнить в фоне (флаги подтянутся)."""
+    from app.services.geoip import backfill_countries
+
+    needs = any(
+        not r.get("country_code") and not r.get("geo_checked")
+        for r in server_store.list_records()
+    )
+    if not needs:
+        return
+
+    async def _run() -> None:
+        try:
+            await asyncio.to_thread(backfill_countries)
+        except Exception:  # noqa: BLE001
+            pass
+
+    try:
+        asyncio.get_running_loop().create_task(_run())
+    except RuntimeError:
+        pass
+
+
 def _attach_xray_cascade(items: list[ServerListItem]) -> None:
     """Помечаем узлы-входы активного Xray-каскада (для выдачи клиентов в общей форме)."""
     from app.services.xray_cascade import active_entry_map
@@ -148,6 +199,7 @@ async def list_servers_minimal(
 async def list_servers(_: CurrentUser = Depends(require_admin)) -> list[ServerListItem]:
     items = server_store.list()
     _attach_xray_cascade(items)
+    _schedule_country_backfill()
     return items
 
 
@@ -166,6 +218,7 @@ async def create_server(
     _: CurrentUser = Depends(require_admin),
 ) -> ServerRead:
     server = server_store.create(payload, message="Сервер добавлен после detect.")
+    _detect_country(server.id, server.host)
     if payload.detect_branch == "import":
         imported_count, vpn_port = await asyncio.to_thread(
             run_awg_import, server.id, server.name, payload
@@ -183,7 +236,7 @@ async def create_server(
             "Сервер подключен. Клиенты в конфиге не найдены — проверь awg0.conf.",
             vpn_port=vpn_port,
         )
-    return server
+    return server_store.get(server.id) or server
 
 
 @router.get("/{server_id}", response_model=ServerRead)

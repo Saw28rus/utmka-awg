@@ -9,6 +9,7 @@
         <span class="entity-avatar entity-avatar--lg">{{ server.name.charAt(0).toUpperCase() }}</span>
         <div class="server-text">
           <div class="name-row">
+            <span v-if="flag" class="server-flag" :title="server.country_name || ''">{{ flag }}</span>
             <strong class="server-name">{{ server.name }}</strong>
             <span v-if="roleLabel" class="role-pill" :class="`role-pill--${roleLabel}`">{{ roleLabelText }}</span>
             <span
@@ -122,6 +123,7 @@ import { RouterLink, type RouteLocationRaw } from 'vue-router'
 import MetricBar from '@/components/MetricBar.vue'
 import StatusBadge from '@/components/StatusBadge.vue'
 import { labelCascadeRole, labelCascadeState, toneCascadeState } from '@/utils/cascadeLabels'
+import { flagEmoji } from '@/utils/flag'
 import { formatBytes, formatUptime, percentOf } from '@/utils/format'
 
 export type ServerListItem = {
@@ -133,6 +135,8 @@ export type ServerListItem = {
   protocols: string[]
   active_peers: number
   former_entry?: boolean
+  country_code?: string | null
+  country_name?: string | null
 }
 
 export type ServerMetrics = {
@@ -176,6 +180,8 @@ const props = defineProps<{
 }>()
 
 defineEmits<{ delete: []; check: []; 'migrate-node': [] }>()
+
+const flag = computed(() => flagEmoji(props.server.country_code))
 
 const healthProblem = computed(
   () => props.health && (props.health.state === 'degraded' || props.health.state === 'down')
@@ -318,6 +324,12 @@ const trafficText = computed(() => formatBytes(props.metrics?.total_traffic_byte
   gap: 6px;
   min-width: 0;
   flex-wrap: wrap;
+}
+
+.server-flag {
+  flex-shrink: 0;
+  font-size: 15px;
+  line-height: 1;
 }
 
 .server-name {
