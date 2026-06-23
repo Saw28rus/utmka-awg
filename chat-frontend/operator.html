@@ -1,0 +1,193 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
+<meta name="robots" content="noindex, nofollow">
+<meta name="theme-color" content="#131618">
+<meta name="color-scheme" content="dark light">
+<title>Оператор · чат поддержки</title>
+
+<link rel="icon" href="/icons/favicon-64.png" sizes="64x64" type="image/png">
+<link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Оператор">
+<meta name="mobile-web-app-capable" content="yes">
+
+<script>
+  (function () {
+    try {
+      var t = localStorage.getItem('chat_theme');
+      if (t === 'light' || t === 'dark') document.documentElement.setAttribute('data-theme', t);
+    } catch (e) {}
+  })();
+</script>
+<link rel="stylesheet" href="/style.css?v=15">
+<style>
+  /* Операторская оболочка (mobile-first), поверх переменных темы из style.css */
+  body { position: fixed; inset: 0; overflow: hidden; }
+  .op-screen { height: 100%; min-height: 100dvh; display: none; flex-direction: column; }
+  .op-screen.active { display: flex; }
+
+  /* Вход */
+  .op-login { align-items: center; justify-content: center; padding: 24px; }
+  .op-card {
+    width: 100%; max-width: 380px; background: var(--panel); border: 1px solid var(--border);
+    border-radius: 16px; padding: 24px; display: flex; flex-direction: column; gap: 14px;
+  }
+  .op-card h1 { font-size: 19px; margin: 0; }
+  .op-card .sub { color: var(--muted); margin: 0 0 4px; font-size: 13px; }
+  .op-card label { display: flex; flex-direction: column; gap: 5px; font-size: 13px; color: var(--muted); }
+  .op-card input, .op-field input, .op-field select, .op-field textarea {
+    background: var(--bg2); border: 1px solid var(--border); color: var(--text);
+    border-radius: 10px; padding: 11px 12px; font: inherit; width: 100%;
+  }
+  .op-btn {
+    background: var(--accent); color: var(--accent-ink); border: none; border-radius: 10px;
+    padding: 12px 14px; font: inherit; font-weight: 600; cursor: pointer;
+  }
+  .op-btn:disabled { opacity: .6; cursor: default; }
+  .op-btn.ghost { background: transparent; color: var(--text); border: 1px solid var(--border); }
+  .op-btn.sm { padding: 8px 10px; font-size: 13px; border-radius: 9px; }
+  .op-error { color: var(--danger); font-size: 13px; margin: 0; }
+  .op-hint { color: var(--muted); font-size: 12px; margin: 0; }
+  .op-foot-link { text-align: center; margin-top: 8px; }
+  .op-foot-link a { color: var(--accent); text-decoration: none; font-size: 13px; }
+
+  /* Шапка */
+  .op-header {
+    display: flex; align-items: center; gap: 10px; padding: calc(var(--safe-top) + 8px) 12px 8px;
+    background: var(--panel); border-bottom: 1px solid var(--border); min-height: var(--header-h);
+  }
+  .op-header strong { font-size: 16px; }
+  .op-header .spacer { flex: 1; }
+  .icon-btn {
+    background: transparent; border: none; color: var(--text); cursor: pointer; padding: 8px;
+    border-radius: 9px; display: inline-flex; align-items: center; justify-content: center;
+  }
+  .icon-btn:hover { background: var(--panel2); }
+  .op-back { font-size: 22px; line-height: 1; }
+
+  /* Список диалогов */
+  .op-list { flex: 1; overflow-y: auto; -webkit-overflow-scrolling: touch; }
+  .op-thread {
+    display: flex; gap: 10px; align-items: center; padding: 12px 14px;
+    border-bottom: 1px solid var(--border); cursor: pointer;
+  }
+  .op-thread:hover { background: var(--panel); }
+  .op-thread .av {
+    width: 42px; height: 42px; border-radius: 50%; background: var(--panel2);
+    display: flex; align-items: center; justify-content: center; font-weight: 600; flex: none;
+  }
+  .op-thread .mid { flex: 1; min-width: 0; }
+  .op-thread .nm { font-weight: 600; display: flex; align-items: center; gap: 6px; }
+  .op-thread .pv { color: var(--muted); font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .op-thread .rt { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; flex: none; }
+  .op-thread .tm { color: var(--muted); font-size: 11px; }
+  .op-badge { background: var(--accent); color: var(--accent-ink); border-radius: 999px; min-width: 20px; height: 20px; padding: 0 6px; font-size: 12px; font-weight: 700; display: inline-flex; align-items: center; justify-content: center; }
+  .vpn-chip { font-size: 11px; padding: 1px 7px; border-radius: 999px; background: var(--panel2); color: var(--muted); }
+  .vpn-chip.ok { color: var(--accent); }
+  .vpn-chip.none { color: var(--danger); }
+  .op-empty { padding: 40px 20px; text-align: center; color: var(--muted); }
+
+  /* Диалог */
+  .op-sub { display: flex; flex-direction: column; }
+  .op-sub .who { font-size: 15px; font-weight: 600; }
+  .op-sub .meta { font-size: 12px; color: var(--muted); }
+  .op-actions { display: flex; gap: 8px; padding: 8px 12px; overflow-x: auto; border-bottom: 1px solid var(--border); background: var(--panel); }
+  .op-actions .op-btn { flex: none; white-space: nowrap; }
+  .op-messages { flex: 1; overflow-y: auto; padding: 14px 12px; display: flex; flex-direction: column; gap: 8px; background: var(--bg2); }
+  .op-msg { max-width: 82%; padding: 8px 11px; border-radius: 14px; font-size: 14px; word-wrap: break-word; white-space: pre-wrap; }
+  .op-msg.client { align-self: flex-start; background: var(--panel); border: 1px solid var(--border); border-bottom-left-radius: 5px; }
+  .op-msg.admin { align-self: flex-end; background: var(--accent); color: var(--accent-ink); border-bottom-right-radius: 5px; }
+  .op-msg.system { align-self: center; background: transparent; color: var(--muted); font-size: 12px; }
+  .op-msg .tm { display: block; font-size: 10px; opacity: .7; margin-top: 3px; text-align: right; }
+  .op-msg .att { margin-top: 4px; font-size: 12px; opacity: .9; }
+  .op-day { align-self: center; color: var(--muted); font-size: 11px; padding: 2px 10px; }
+  .op-compose { display: flex; gap: 8px; padding: 10px 12px calc(var(--safe-bottom) + 10px); border-top: 1px solid var(--border); background: var(--panel); }
+  .op-compose textarea { flex: 1; resize: none; max-height: 130px; background: var(--bg2); border: 1px solid var(--border); color: var(--text); border-radius: 12px; padding: 10px 12px; font: inherit; }
+  .op-send { flex: none; width: 44px; border-radius: 12px; }
+
+  /* Модалки */
+  .op-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.5); display: flex; align-items: flex-end; justify-content: center; z-index: 50; }
+  .op-overlay.center { align-items: center; }
+  .op-modal { width: 100%; max-width: 460px; background: var(--panel); border: 1px solid var(--border); border-radius: 16px 16px 0 0; padding: 18px 18px calc(var(--safe-bottom) + 18px); max-height: 88vh; overflow-y: auto; }
+  .op-overlay.center .op-modal { border-radius: 16px; }
+  .op-modal h3 { margin: 0 0 4px; font-size: 17px; }
+  .op-field { display: flex; flex-direction: column; gap: 5px; font-size: 13px; color: var(--muted); margin-top: 12px; }
+  .op-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .op-modal .row { display: flex; gap: 8px; margin-top: 16px; }
+  .op-modal .row .op-btn { flex: 1; }
+  .op-check { display: flex; align-items: center; gap: 8px; margin-top: 12px; font-size: 13px; color: var(--text); }
+  .op-search { width: 100%; margin-top: 10px; }
+  .op-clients { margin-top: 10px; display: flex; flex-direction: column; gap: 6px; max-height: 46vh; overflow-y: auto; }
+  .op-client { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 10px; cursor: pointer; }
+  .op-client.sel { border-color: var(--accent); }
+  .op-client .nm { flex: 1; }
+  .op-client .sv { font-size: 12px; color: var(--muted); }
+  .op-toast { position: fixed; left: 50%; bottom: calc(var(--safe-bottom) + 20px); transform: translateX(-50%); background: var(--panel2); color: var(--text); border: 1px solid var(--border); padding: 10px 16px; border-radius: 10px; z-index: 100; font-size: 14px; box-shadow: 0 8px 24px rgba(0,0,0,.3); }
+</style>
+</head>
+<body>
+  <!-- Вход оператора -->
+  <div id="op-login" class="op-screen login op-login active">
+    <form id="op-login-form" class="op-card" autocomplete="off">
+      <h1>Вход оператора</h1>
+      <p class="sub">Войдите данными панели (email и пароль администратора/модератора).</p>
+      <label>
+        <span>Email</span>
+        <input id="op-email" type="email" autocapitalize="none" autocorrect="off" autocomplete="username" required>
+      </label>
+      <label>
+        <span>Пароль</span>
+        <input id="op-password" type="password" autocomplete="current-password" required>
+      </label>
+      <p id="op-login-error" class="op-error" hidden></p>
+      <button id="op-login-btn" type="submit" class="op-btn">Войти</button>
+      <p class="op-foot-link"><a href="/">← Вход для клиента</a></p>
+    </form>
+  </div>
+
+  <!-- Список диалогов -->
+  <div id="op-threads" class="op-screen">
+    <header class="op-header">
+      <strong>Диалоги</strong>
+      <span class="spacer"></span>
+      <button id="op-refresh" type="button" class="icon-btn" title="Обновить" aria-label="Обновить">
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 4v6h-6"/><path d="M1 20v-6h6"/><path d="M3.5 9a9 9 0 0 1 14.9-3.4L23 10M1 14l4.6 4.4A9 9 0 0 0 20.5 15"/></svg>
+      </button>
+      <button id="op-theme" type="button" class="icon-btn" title="Тема" aria-label="Тема">
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
+      </button>
+      <button id="op-logout" type="button" class="icon-btn" title="Выйти" aria-label="Выйти">
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+      </button>
+    </header>
+    <div id="op-thread-list" class="op-list"></div>
+  </div>
+
+  <!-- Диалог -->
+  <div id="op-thread" class="op-screen">
+    <header class="op-header">
+      <button id="op-back" type="button" class="icon-btn op-back" aria-label="Назад">‹</button>
+      <div class="op-sub">
+        <span id="op-thread-who" class="who">—</span>
+        <span id="op-thread-meta" class="meta"></span>
+      </div>
+    </header>
+    <div class="op-actions">
+      <button id="op-act-sendkey" type="button" class="op-btn sm ghost">Выдать ключ</button>
+      <button id="op-act-create" type="button" class="op-btn sm ghost">Создать ключ</button>
+      <button id="op-act-link" type="button" class="op-btn sm ghost">Привязать ключ</button>
+    </div>
+    <div id="op-thread-messages" class="op-messages"></div>
+    <footer class="op-compose">
+      <textarea id="op-draft" rows="1" maxlength="4000" placeholder="Сообщение…"></textarea>
+      <button id="op-send" type="button" class="op-btn op-send" aria-label="Отправить">➤</button>
+    </footer>
+  </div>
+
+  <script src="/operator.js?v=1"></script>
+</body>
+</html>

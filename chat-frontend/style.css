@@ -491,3 +491,8 @@ input:focus, textarea:focus { border-color: var(--accent); }
 .ios-steps { margin: 0; padding-left: 20px; font-size: 14px; line-height: 1.7; }
 .ios-steps b { color: var(--text); }
 .ios-share { display: inline-block; transform: translateY(2px); }
+
+/* Ссылка на операторский вход под формой входа клиента */
+.op-entry { text-align: center; margin: 10px 0 0; }
+.op-entry a { color: var(--muted); text-decoration: none; font-size: 13px; }
+.op-entry a:hover { color: var(--accent); }

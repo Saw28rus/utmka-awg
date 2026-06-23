@@ -366,13 +366,20 @@ nginx -t && systemctl reload nginx || true
 
 
 def _isolation_checks(ssh, domain: str) -> list[dict]:
-    """Проверки §6.4: mini-app отдаётся, admin-поверхность через чат-домен закрыта."""
+    """Проверки изоляции chat-домена.
+
+    Серверный/панельный API (servers), docs, openapi через чат-домен по-прежнему
+    закрыты (404). Операторский режим открывает ТОЛЬКО админ-API чата и логин
+    панели — и они защищены panel JWT, поэтому без токена отдают 401 (открыто,
+    но закрыто для анонима). Это и проверяем.
+    """
     q = shlex.quote(domain)
     checks = [
         ("mini-app отдаётся", f"curl -sk -o /dev/null -w '%{{http_code}}' --max-time 10 https://{q}/", "200"),
-        ("admin API закрыт", f"curl -sk -o /dev/null -w '%{{http_code}}' --max-time 10 https://{q}/api/v1/servers", "404"),
+        ("server API закрыт", f"curl -sk -o /dev/null -w '%{{http_code}}' --max-time 10 https://{q}/api/v1/servers", "404"),
         ("docs закрыт", f"curl -sk -o /dev/null -w '%{{http_code}}' --max-time 10 https://{q}/docs", "404"),
         ("openapi закрыт", f"curl -sk -o /dev/null -w '%{{http_code}}' --max-time 10 https://{q}/openapi.json", "404"),
+        ("operator API под защитой", f"curl -sk -o /dev/null -w '%{{http_code}}' --max-time 10 https://{q}/api/v1/chat/admin/threads", "401"),
     ]
     results = []
     for label, cmd, expected in checks:

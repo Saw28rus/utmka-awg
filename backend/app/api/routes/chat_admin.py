@@ -35,12 +35,14 @@ from app.schemas.chat import (
     ChatUserRead,
     ChatUserWithPassword,
 )
-from app.schemas.clients import ClientCreate
+from app.schemas.clients import ClientCreate, ClientListItem
+from app.schemas.servers import ServerMinimal
 from app.services import push_service
 from app.services.audit_service import AuditService
 from app.services.chat_service import ChatService, ChatServiceError
 from app.services.client_store import client_store
 from app.services.panel_settings_service import PanelSettingsService
+from app.services.server_store import server_store
 
 router = APIRouter()
 
@@ -252,6 +254,44 @@ async def chat_threads(
     _: CurrentUser = Depends(require_chat_access), db: AsyncSession = Depends(get_db)
 ) -> list[ChatThreadRead]:
     return [ChatThreadRead(**t) for t in await ChatService(db).admin_threads()]
+
+
+# Лёгкие списки для операторского чата на chat-домене: там /servers и /clients
+# закрыты nginx (404), поэтому минимальные данные для форм «Создать»/«Привязать»
+# отдаём через открытый префикс /chat/admin/. Права — те же (admin/moderator).
+@router.get("/servers", response_model=list[ServerMinimal])
+async def chat_admin_servers(
+    _: CurrentUser = Depends(require_chat_access),
+) -> list[ServerMinimal]:
+    from app.services.xray_cascade import active_entry_map
+
+    items = server_store.list()
+    cmap = active_entry_map()
+    out: list[ServerMinimal] = []
+    for s in items:
+        info = cmap.get(s.id)
+        out.append(
+            ServerMinimal(
+                id=s.id,
+                name=s.name,
+                host=s.host,
+                status=s.status,
+                protocols=s.protocols,
+                awg2_imported=s.awg2_imported,
+                client_protocols=s.client_protocols,
+                panel_domain=s.panel_domain,
+                xray_cascade_active=bool(info),
+                xray_cascade_exit_name=(info or {}).get("exit_name"),
+            )
+        )
+    return out
+
+
+@router.get("/clients", response_model=list[ClientListItem])
+async def chat_admin_clients(
+    _: CurrentUser = Depends(require_chat_access),
+) -> list[ClientListItem]:
+    return client_store.list_all()
 
 
 # --- папки диалогов (CH7) ----------------------------------------------------
