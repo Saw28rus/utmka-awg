@@ -20,10 +20,12 @@ from app.schemas.chat import (
     ChatFolderUpdate,
     ChatInsertInvoiceRequest,
     ChatInvoiceItem,
+    ChatLinkAndSendRequest,
     ChatLinkRequest,
     ChatMessageRead,
     ChatMessagesPage,
     ChatMoveThreadRequest,
+    ChatProvisionClientRequest,
     ChatResetPasswordRequest,
     ChatSendRequest,
     ChatStatusRead,
@@ -33,6 +35,7 @@ from app.schemas.chat import (
     ChatUserRead,
     ChatUserWithPassword,
 )
+from app.schemas.clients import ClientCreate
 from app.services import push_service
 from app.services.audit_service import AuditService
 from app.services.chat_service import ChatService, ChatServiceError
@@ -519,6 +522,123 @@ async def chat_thread_send_key(
         target_type="chat_thread",
         target_id=thread_id,
         detail={"client_id": chat_user.client_id, "attachment_id": str(msg.attachment_id)},
+        ip=client_ip(request),
+    )
+    att_map = await svc.attachments_map([msg.attachment_id] if msg.attachment_id else [])
+    return _msg_read(msg, att_map)
+
+
+@router.post("/threads/{thread_id}/link-and-send-key", response_model=ChatMessageRead)
+async def chat_thread_link_and_send_key(
+    thread_id: str,
+    payload: ChatLinkAndSendRequest,
+    request: Request,
+    background: BackgroundTasks,
+    user: CurrentUser = Depends(require_chat_access),
+    db: AsyncSession = Depends(get_db),
+) -> ChatMessageRead:
+    """Привязать существующего VPN-клиента к аккаунту диалога и сразу выдать ключ.
+
+    Если у аккаунта уже привязан клиент и replace=False — ошибка. Старый клиент
+    при перепривязке НЕ удаляется (остаётся в «Клиенты»), только отвязывается.
+    """
+    svc = ChatService(db)
+    thread, chat_user = await _thread_chat_user(svc, db, thread_id)
+    if chat_user.client_id and not payload.replace:
+        raise HTTPException(
+            status_code=400,
+            detail="У аккаунта уже привязан VPN-клиент. Включите замену или используйте «Выдать ключ».",
+        )
+    try:
+        await svc.link_client(chat_user.id, payload.client_id)
+        chat_user = await svc.get_user(chat_user.id) or chat_user
+        msg = await svc.issue_key_attachment(thread, chat_user, uuid.UUID(user.id))
+    except ChatServiceError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    background.add_task(push_service.notify, thread.chat_user_id, "key")
+    await AuditService(db).log(
+        "chat_client_linked_and_sent",
+        user_id=uuid.UUID(user.id),
+        user_email=user.email,
+        target_type="chat_thread",
+        target_id=thread_id,
+        detail={"client_id": chat_user.client_id, "attachment_id": str(msg.attachment_id)},
+        ip=client_ip(request),
+    )
+    att_map = await svc.attachments_map([msg.attachment_id] if msg.attachment_id else [])
+    return _msg_read(msg, att_map)
+
+
+@router.post("/threads/{thread_id}/provision-client", response_model=ChatMessageRead)
+async def chat_thread_provision_client(
+    thread_id: str,
+    payload: ChatProvisionClientRequest,
+    request: Request,
+    background: BackgroundTasks,
+    user: CurrentUser = Depends(require_chat_access),
+    db: AsyncSession = Depends(get_db),
+) -> ChatMessageRead:
+    """Создать VPN-клиента из чата, привязать к аккаунту диалога и выдать ключ.
+
+    Доступно admin и moderator (как и выдача ключа). Старый привязанный клиент при
+    replace=True не удаляется — только отвязывается; удаление — с ПК в «Клиенты».
+    """
+    from app.services.awg_client import ClientCreateError
+    from app.services.client_provision import ProvisionError, provision_client
+    from app.services.xray_cascade import XrayCascadeError
+    from app.services.xray_client import ClientCreateError as XrayClientCreateError
+
+    svc = ChatService(db)
+    thread, chat_user = await _thread_chat_user(svc, db, thread_id)
+    if chat_user.client_id and not payload.replace:
+        raise HTTPException(
+            status_code=400,
+            detail="У аккаунта уже привязан VPN-клиент. Включите замену или используйте «Выдать ключ».",
+        )
+
+    client_name = (payload.name or "").strip() or chat_user.display_name or chat_user.username
+    create_payload = ClientCreate(
+        name=client_name,
+        server_id=payload.server_id,
+        protocol=payload.protocol,
+        format=payload.format,
+        traffic_limit_bytes=payload.traffic_limit_bytes,
+        expires_at=payload.expires_at,
+        link_host=payload.link_host,
+        fingerprint=payload.fingerprint,
+        billing_mode=payload.billing_mode,
+        billing_amount_kopecks=payload.billing_amount_kopecks,
+        billing_period_months=payload.billing_period_months,
+    )
+    try:
+        detail = await provision_client(create_payload)
+    except (ProvisionError, ClientCreateError, XrayClientCreateError, XrayCascadeError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    try:
+        await svc.link_client(chat_user.id, detail.id)
+        chat_user = await svc.get_user(chat_user.id) or chat_user
+        msg = await svc.issue_key_attachment(thread, chat_user, uuid.UUID(user.id))
+    except ChatServiceError as exc:
+        # Клиент создан и доступен в «Клиенты», но привязка/выдача не удалась —
+        # сообщаем оператору, чтобы он привязал/выдал вручную.
+        raise HTTPException(
+            status_code=400,
+            detail=f"Клиент создан, но не удалось привязать/выдать ключ: {exc}",
+        )
+    background.add_task(push_service.notify, thread.chat_user_id, "key")
+    await AuditService(db).log(
+        "chat_client_provisioned",
+        user_id=uuid.UUID(user.id),
+        user_email=user.email,
+        target_type="chat_thread",
+        target_id=thread_id,
+        detail={
+            "client_id": detail.id,
+            "server_id": payload.server_id,
+            "protocol": payload.protocol,
+            "attachment_id": str(msg.attachment_id),
+        },
         ip=client_ip(request),
     )
     att_map = await svc.attachments_map([msg.attachment_id] if msg.attachment_id else [])

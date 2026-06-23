@@ -137,6 +137,15 @@
                 Выдать ключ
               </n-button>
               <n-button
+                v-if="canProvision"
+                size="tiny"
+                tertiary
+                @click="openProvision"
+              >
+                <template #icon><Plus :size="14" /></template>
+                Создать ключ
+              </n-button>
+              <n-button
                 v-if="activeThread.client_id && !activeThread.client_missing"
                 size="tiny"
                 tertiary
@@ -299,9 +308,77 @@
           placeholder="Выберите VPN-клиента (пусто — отвязать)"
           :loading="clientsLoading"
         />
+        <n-checkbox
+          v-if="linkFromThreadId && linkClientId"
+          v-model:checked="linkSendAfter"
+          style="margin-top: 12px"
+        >
+          Сразу отправить ключ в чат
+        </n-checkbox>
         <div class="modal-actions">
           <n-button @click="showLink = false">Отмена</n-button>
           <n-button type="primary" :loading="linkBusy" @click="saveLink">Сохранить</n-button>
+        </div>
+      </div>
+    </n-modal>
+
+    <!-- Создание VPN-клиента из чата (provision-client) -->
+    <n-modal v-model:show="showProvision">
+      <div class="panel modal-card">
+        <h3>Создать ключ и отправить в чат</h3>
+        <p class="hint">
+          Новый VPN-клиент будет создан, привязан к аккаунту
+          <span class="mono">@{{ activeThread?.username }}</span> и отправлен в диалог.
+          Если был привязан другой клиент — он отвяжется, но останется в «Клиенты».
+        </p>
+        <n-spin :show="provisionLoading">
+          <div class="prov-grid">
+            <label class="prov-field">
+              <span>Сервер</span>
+              <n-select
+                v-model:value="provForm.server_id"
+                :options="provisionServerOptions"
+                filterable
+                placeholder="Выберите сервер"
+              />
+            </label>
+            <label class="prov-field">
+              <span>Протокол</span>
+              <n-select
+                v-model:value="provForm.protocol"
+                :options="provisionProtocolOptions"
+                placeholder="Протокол"
+              />
+            </label>
+            <label class="prov-field">
+              <span>Имя клиента</span>
+              <n-input v-model:value="provForm.name" placeholder="Имя клиента" />
+            </label>
+            <label v-if="provIsXray" class="prov-field">
+              <span>Отпечаток TLS (fingerprint)</span>
+              <n-select v-model:value="provForm.fingerprint" :options="provFingerprintOptions" />
+            </label>
+            <label class="prov-field">
+              <span>Лимит трафика, ГБ (пусто — без лимита)</span>
+              <n-input v-model:value="provForm.traffic_gb" placeholder="например, 100" />
+            </label>
+            <label class="prov-field">
+              <span>Действует до (пусто — бессрочно)</span>
+              <input v-model="provForm.expires_at" type="date" class="prov-date" />
+            </label>
+          </div>
+          <p v-if="provCascadeHint" class="hint cascade-hint">{{ provCascadeHint }}</p>
+        </n-spin>
+        <div class="modal-actions">
+          <n-button @click="showProvision = false">Отмена</n-button>
+          <n-button
+            type="primary"
+            :loading="provisionBusy"
+            :disabled="!provForm.server_id || !provForm.protocol"
+            @click="submitProvision"
+          >
+            Создать и отправить
+          </n-button>
         </div>
       </div>
     </n-modal>
@@ -437,14 +514,25 @@ import {
   KeyRound,
   MessagesSquare,
   MoreHorizontal,
+  Plus,
   Receipt,
   Search,
   Send,
   Settings,
   UserPlus
 } from '@lucide/vue'
-import { NButton, NDropdown, NInput, NModal, NSelect, NSpin, useDialog, useMessage } from 'naive-ui'
-import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
+import {
+  NButton,
+  NCheckbox,
+  NDropdown,
+  NInput,
+  NModal,
+  NSelect,
+  NSpin,
+  useDialog,
+  useMessage
+} from 'naive-ui'
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 
 import { api } from '@/api/client'
 import AppShell from '@/layouts/AppShell.vue'
@@ -501,6 +589,16 @@ type AccountRow = {
 
 type ClientOption = { id: string; name: string; server_name?: string | null }
 
+type ServerRow = {
+  id: string
+  name: string
+  host?: string | null
+  client_protocols?: string[]
+  awg2_imported?: boolean
+  xray_cascade_active?: boolean
+  xray_cascade_exit_name?: string | null
+}
+
 type InvoiceRow = {
   id: string
   description: string | null
@@ -516,6 +614,9 @@ const dialog = useDialog()
 const auth = useAuthStore()
 const chatUnread = useChatUnreadStore()
 const isAdmin = computed(() => auth.user?.role === 'admin')
+// Операторские действия с клиентами (выдать/привязать/создать) доступны
+// admin и moderator — как и доступ к чату на бэкенде (require_chat_access).
+const canProvision = computed(() => auth.user?.role === 'admin' || auth.user?.role === 'moderator')
 
 const status = ref<ChatStatus | null>(null)
 const threads = ref<ThreadRow[]>([])
@@ -567,6 +668,67 @@ const linkClientId = ref<string | null>(null)
 const linkBusy = ref(false)
 const clientsLoading = ref(false)
 const clientOptions = ref<{ label: string; value: string }[]>([])
+// Привязка из диалога умеет сразу выдать ключ в чат (link-and-send-key).
+const linkFromThreadId = ref<string | null>(null)
+const linkSendAfter = ref(true)
+
+// --- создание клиента из чата (provision-client) -------------------------------
+const LAST_PROVISION_SERVER = 'chat.provision.lastServer'
+const showProvision = ref(false)
+const provisionBusy = ref(false)
+const provisionLoading = ref(false)
+const provisionServers = ref<ServerRow[]>([])
+const provForm = reactive({
+  server_id: '',
+  protocol: 'awg2',
+  name: '',
+  format: 'both',
+  fingerprint: 'chrome',
+  expires_at: '',
+  traffic_gb: ''
+})
+const PROVISION_PROTOCOL_LABELS: Record<string, string> = {
+  awg2: 'AmneziaWG',
+  awg_legacy: 'AmneziaWG (legacy)',
+  xray: 'Xray (VLESS-Reality)'
+}
+const provFingerprintOptions = [
+  { value: 'chrome', label: 'Chrome (рекомендуется)' },
+  { value: 'safari', label: 'Safari' },
+  { value: 'ios', label: 'iOS' },
+  { value: 'firefox', label: 'Firefox' },
+  { value: 'android', label: 'Android' },
+  { value: 'edge', label: 'Edge' },
+  { value: 'random', label: 'Случайный' }
+]
+const provisionServerOptions = computed(() =>
+  provisionServers.value
+    .filter((s) => (s.client_protocols?.length || (s.awg2_imported ? 1 : 0)) > 0)
+    .map((s) => ({ label: s.name, value: s.id }))
+)
+const provisionSelectedServer = computed(() =>
+  provisionServers.value.find((s) => s.id === provForm.server_id)
+)
+const provisionProtocolOptions = computed(() => {
+  const s = provisionSelectedServer.value
+  const ids = s?.client_protocols?.length
+    ? [...s.client_protocols]
+    : s?.awg2_imported
+      ? ['awg2']
+      : []
+  return ids.map((id) => ({ label: PROVISION_PROTOCOL_LABELS[id] || id, value: id }))
+})
+const provIsXray = computed(() => provForm.protocol === 'xray')
+const provCascadeHint = computed(() => {
+  const s = provisionSelectedServer.value
+  if (!provIsXray.value || !s?.xray_cascade_active) return ''
+  return `Xray-каскад → ${s.xray_cascade_exit_name || 'exit'}: РФ-трафик выходит на этом сервере, остальное уходит на exit (правило на сервере).`
+})
+
+watch(
+  () => provForm.server_id,
+  () => syncProvisionProtocol()
+)
 
 const showInvoices = ref(false)
 const invoices = ref<InvoiceRow[]>([])
@@ -1015,6 +1177,8 @@ function openLink(thread: ThreadRow) {
   if (!thread.chat_user_id) return
   linkTarget.value = { id: thread.chat_user_id, username: thread.username }
   linkClientId.value = thread.client_id
+  linkFromThreadId.value = thread.id
+  linkSendAfter.value = true
   showLink.value = true
   void loadClientOptions()
 }
@@ -1022,6 +1186,8 @@ function openLink(thread: ThreadRow) {
 function openLinkAccount(account: AccountRow) {
   linkTarget.value = { id: account.id, username: account.username }
   linkClientId.value = account.client_id
+  linkFromThreadId.value = null
+  linkSendAfter.value = false
   showLink.value = true
   void loadClientOptions()
 }
@@ -1030,16 +1196,106 @@ async function saveLink() {
   if (!linkTarget.value) return
   linkBusy.value = true
   try {
-    await api.post(`/chat/admin/users/${linkTarget.value.id}/link`, {
-      client_id: linkClientId.value || null
-    })
-    message.success(linkClientId.value ? 'VPN-клиент привязан.' : 'Привязка снята.')
+    // Из диалога с выбранным клиентом и галкой «отправить» — одним шагом
+    // привязываем и сразу выдаём ключ в чат (link-and-send-key).
+    if (linkFromThreadId.value && linkClientId.value && linkSendAfter.value) {
+      const { data } = await api.post<MessageRow>(
+        `/chat/admin/threads/${linkFromThreadId.value}/link-and-send-key`,
+        { client_id: linkClientId.value, replace: true }
+      )
+      appendMessages([data])
+      scrollToBottom()
+      message.success('VPN-клиент привязан, ключ отправлен в чат.')
+    } else {
+      await api.post(`/chat/admin/users/${linkTarget.value.id}/link`, {
+        client_id: linkClientId.value || null
+      })
+      message.success(linkClientId.value ? 'VPN-клиент привязан.' : 'Привязка снята.')
+    }
     showLink.value = false
     await Promise.all([loadThreads(), showAccounts.value ? loadAccounts() : Promise.resolve()])
   } catch (error: any) {
     message.error(error?.response?.data?.detail || 'Не удалось сохранить привязку.')
   } finally {
     linkBusy.value = false
+  }
+}
+
+// --- создание клиента из чата --------------------------------------------------
+
+async function loadProvisionServers() {
+  provisionLoading.value = true
+  try {
+    const endpoint = auth.user?.role === 'moderator' ? '/servers/minimal' : '/servers'
+    const { data } = await api.get<ServerRow[]>(endpoint)
+    provisionServers.value = data
+  } catch (error: any) {
+    message.error(error?.response?.data?.detail || 'Не удалось загрузить серверы.')
+  } finally {
+    provisionLoading.value = false
+  }
+}
+
+function syncProvisionProtocol() {
+  const opts = provisionProtocolOptions.value
+  if (!opts.length) {
+    provForm.protocol = ''
+    return
+  }
+  if (!opts.some((o) => o.value === provForm.protocol)) provForm.protocol = opts[0].value
+}
+
+async function openProvision() {
+  if (!activeThread.value) return
+  provForm.name = activeThread.value.display_name || activeThread.value.username || ''
+  provForm.protocol = 'awg2'
+  provForm.format = 'both'
+  provForm.fingerprint = 'chrome'
+  provForm.expires_at = ''
+  provForm.traffic_gb = ''
+  showProvision.value = true
+  await loadProvisionServers()
+  const remembered = localStorage.getItem(LAST_PROVISION_SERVER)
+  const options = provisionServerOptions.value
+  if (remembered && options.some((o) => o.value === remembered)) provForm.server_id = remembered
+  else if (options.length) provForm.server_id = options[0].value
+  syncProvisionProtocol()
+}
+
+async function submitProvision() {
+  if (!activeThread.value || !provForm.server_id || !provForm.protocol) {
+    message.error('Выберите сервер и протокол.')
+    return
+  }
+  provisionBusy.value = true
+  try {
+    let traffic: number | null = null
+    const gb = parseFloat(String(provForm.traffic_gb).replace(',', '.'))
+    if (provForm.traffic_gb && !Number.isNaN(gb) && gb > 0) traffic = Math.round(gb * 1024 ** 3)
+    const payload: Record<string, unknown> = {
+      server_id: provForm.server_id,
+      protocol: provForm.protocol,
+      name: provForm.name.trim() || null,
+      format: provForm.format,
+      traffic_limit_bytes: traffic,
+      expires_at: provForm.expires_at || null,
+      fingerprint: provIsXray.value ? provForm.fingerprint : null,
+      replace: true
+    }
+    const { data } = await api.post<MessageRow>(
+      `/chat/admin/threads/${activeThreadId.value}/provision-client`,
+      payload
+    )
+    appendMessages([data])
+    scrollToBottom()
+    localStorage.setItem(LAST_PROVISION_SERVER, provForm.server_id)
+    showProvision.value = false
+    message.success('Клиент создан и ключ отправлен в чат.')
+    void loadThreads()
+  } catch (error: any) {
+    message.error(error?.response?.data?.detail || 'Не удалось создать клиента.')
+  } finally {
+    provisionBusy.value = false
   }
 }
 
@@ -1127,6 +1383,43 @@ async function copyCredentials() {
 </script>
 
 <style scoped>
+.prov-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  margin-top: 8px;
+}
+
+.prov-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 13px;
+}
+
+.prov-field > span {
+  color: var(--text-muted, #8a8f98);
+}
+
+.prov-date {
+  padding: 6px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--border, #2a2f3a);
+  background: var(--input-bg, #1b1f27);
+  color: inherit;
+  font: inherit;
+}
+
+.cascade-hint {
+  margin-top: 10px;
+}
+
+@media (max-width: 560px) {
+  .prov-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
 .chat-layout {
   display: grid;
   grid-template-columns: 300px 1fr;

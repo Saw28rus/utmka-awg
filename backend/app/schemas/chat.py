@@ -201,3 +201,29 @@ class ChatInvoiceItem(BaseModel):
 
 class ChatInsertInvoiceRequest(BaseModel):
     invoice_id: str
+
+
+class ChatProvisionClientRequest(BaseModel):
+    """Создать VPN-клиента из чата, привязать к аккаунту и отправить ключ."""
+
+    server_id: str
+    protocol: str = "awg2"  # awg2 | xray | xray_cascade
+    name: Optional[str] = Field(default=None, max_length=80)  # пусто → имя аккаунта
+    format: str = "both"
+    traffic_limit_bytes: Optional[int] = Field(default=None, ge=0)
+    expires_at: Optional[str] = None
+    fingerprint: Optional[str] = Field(default=None, max_length=16)  # xray
+    link_host: Optional[str] = Field(default=None, max_length=255)  # xray
+    billing_mode: str = Field(default="free", pattern="^(free|paid)$")
+    billing_amount_kopecks: Optional[int] = Field(default=None, ge=100, le=100_000_00)
+    billing_period_months: int = Field(default=1, ge=1, le=12)
+    # Если у аккаунта уже привязан клиент: True — перепривязать на нового
+    # (старый VPN-клиент НЕ удаляется), False — вернуть ошибку.
+    replace: bool = True
+
+
+class ChatLinkAndSendRequest(BaseModel):
+    """Привязать уже существующего VPN-клиента к аккаунту и отправить его ключ."""
+
+    client_id: str = Field(min_length=1, max_length=64)
+    replace: bool = True
