@@ -35,8 +35,8 @@ from app.schemas.chat import (
     ChatUserRead,
     ChatUserWithPassword,
 )
-from app.schemas.clients import ClientCreate, ClientListItem
-from app.schemas.servers import ServerMinimal
+from app.schemas.clients import ClientCreate, ClientDetail, ClientListItem
+from app.schemas.servers import ServerListItem, ServerMinimal
 from app.services import push_service
 from app.services.audit_service import AuditService
 from app.services.chat_service import ChatService, ChatServiceError
@@ -292,6 +292,77 @@ async def chat_admin_clients(
     _: CurrentUser = Depends(require_chat_access),
 ) -> list[ClientListItem]:
     return client_store.list_all()
+
+
+@router.post("/clients", response_model=ClientDetail)
+async def chat_admin_create_client(
+    payload: ChatProvisionClientRequest,
+    request: Request,
+    user: CurrentUser = Depends(require_chat_access),
+    db: AsyncSession = Depends(get_db),
+) -> ClientDetail:
+    """Создать VPN-клиента из операторской вкладки «Клиенты» (без привязки к чату)."""
+    from app.services.awg_client import ClientCreateError
+    from app.services.client_provision import ProvisionError, provision_client
+    from app.services.xray_cascade import XrayCascadeError
+    from app.services.xray_client import ClientCreateError as XrayClientCreateError
+
+    name = (payload.name or "").strip() or "Клиент"
+    create_payload = ClientCreate(
+        name=name,
+        server_id=payload.server_id,
+        protocol=payload.protocol,
+        format=payload.format,
+        traffic_limit_bytes=payload.traffic_limit_bytes,
+        expires_at=payload.expires_at,
+        link_host=payload.link_host,
+        fingerprint=payload.fingerprint,
+        billing_mode=payload.billing_mode,
+        billing_amount_kopecks=payload.billing_amount_kopecks,
+        billing_period_months=payload.billing_period_months,
+    )
+    try:
+        detail = await provision_client(create_payload)
+    except (ProvisionError, ClientCreateError, XrayClientCreateError, XrayCascadeError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    await AuditService(db).log(
+        "chat_admin_client_created",
+        user_id=uuid.UUID(user.id),
+        user_email=user.email,
+        target_type="client",
+        target_id=detail.id,
+        detail={"server_id": payload.server_id, "protocol": payload.protocol},
+        ip=client_ip(request),
+    )
+    return detail
+
+
+@router.get("/clients/{client_id}", response_model=ClientDetail)
+async def chat_admin_client_detail(
+    client_id: str,
+    _: CurrentUser = Depends(require_chat_access),
+) -> ClientDetail:
+    detail = client_store.get_detail(client_id)
+    if not detail:
+        raise HTTPException(status_code=404, detail="Клиент не найден.")
+    return detail
+
+
+@router.get("/overview", response_model=list[ServerListItem])
+async def chat_admin_overview(
+    _: CurrentUser = Depends(require_chat_access),
+) -> list[ServerListItem]:
+    """Лёгкая сводка по серверам для вкладки «Состояние» операторского чата."""
+    from app.services.xray_cascade import active_entry_map
+
+    items = server_store.list()
+    cmap = active_entry_map()
+    for it in items:
+        info = cmap.get(it.id)
+        if info:
+            it.xray_cascade_active = True
+            it.xray_cascade_exit_name = info.get("exit_name")
+    return items
 
 
 # --- папки диалогов (CH7) ----------------------------------------------------

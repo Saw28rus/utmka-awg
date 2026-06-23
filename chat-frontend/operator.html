@@ -26,6 +26,7 @@
 <link rel="stylesheet" href="/style.css?v=15">
 <style>
   /* Операторская оболочка (mobile-first), поверх переменных темы из style.css */
+  :root { --op-nav-h: 76px; }
   body { position: fixed; inset: 0; overflow: hidden; }
   .op-screen { height: 100%; min-height: 100dvh; display: none; flex-direction: column; }
   .op-screen.active { display: flex; }
@@ -39,7 +40,7 @@
   .op-card h1 { font-size: 19px; margin: 0; }
   .op-card .sub { color: var(--muted); margin: 0 0 4px; font-size: 13px; }
   .op-card label { display: flex; flex-direction: column; gap: 5px; font-size: 13px; color: var(--muted); }
-  .op-card input, .op-field input, .op-field select, .op-field textarea {
+  .op-card input, .op-field input, .op-field select, .op-field textarea, .op-subbar input {
     background: var(--bg2); border: 1px solid var(--border); color: var(--text);
     border-radius: 10px; padding: 11px 12px; font: inherit; width: 100%;
   }
@@ -49,7 +50,7 @@
   }
   .op-btn:disabled { opacity: .6; cursor: default; }
   .op-btn.ghost { background: transparent; color: var(--text); border: 1px solid var(--border); }
-  .op-btn.sm { padding: 8px 10px; font-size: 13px; border-radius: 9px; }
+  .op-btn.sm { padding: 8px 11px; font-size: 13px; border-radius: 9px; }
   .op-error { color: var(--danger); font-size: 13px; margin: 0; }
   .op-hint { color: var(--muted); font-size: 12px; margin: 0; }
   .op-foot-link { text-align: center; margin-top: 8px; }
@@ -69,8 +70,14 @@
   .icon-btn:hover { background: var(--panel2); }
   .op-back { font-size: 22px; line-height: 1; }
 
+  /* Подшапка (поиск/создать) */
+  .op-subbar { display: flex; gap: 8px; align-items: center; padding: 8px 12px; background: var(--panel); border-bottom: 1px solid var(--border); }
+  .op-subbar .op-btn { flex: none; white-space: nowrap; }
+
+  /* Скролл-области вкладок */
+  .op-list, .op-scroll { flex: 1; overflow-y: auto; -webkit-overflow-scrolling: touch; padding-bottom: calc(var(--safe-bottom) + var(--op-nav-h) + 14px); }
+
   /* Список диалогов */
-  .op-list { flex: 1; overflow-y: auto; -webkit-overflow-scrolling: touch; }
   .op-thread {
     display: flex; gap: 10px; align-items: center; padding: 12px 14px;
     border-bottom: 1px solid var(--border); cursor: pointer;
@@ -91,6 +98,32 @@
   .vpn-chip.none { color: var(--danger); }
   .op-empty { padding: 40px 20px; text-align: center; color: var(--muted); }
 
+  /* Список клиентов */
+  .op-cli { display: flex; align-items: center; gap: 11px; padding: 12px 14px; border-bottom: 1px solid var(--border); cursor: pointer; }
+  .op-cli:hover { background: var(--panel); }
+  .op-cli .dot { width: 9px; height: 9px; border-radius: 50%; flex: none; background: var(--muted); }
+  .op-cli .dot.on { background: #2ecc71; }
+  .op-cli .dot.off { background: var(--danger); }
+  .op-cli .mid { flex: 1; min-width: 0; }
+  .op-cli .nm { font-weight: 600; display: flex; align-items: center; gap: 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .op-cli .sub2 { color: var(--muted); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .op-cli .rt { text-align: right; flex: none; color: var(--muted); font-size: 11px; }
+  .op-tag { font-size: 10px; padding: 1px 6px; border-radius: 999px; background: var(--panel2); color: var(--muted); flex: none; }
+  .op-tag.warn { color: var(--danger); }
+
+  /* Состояние серверов */
+  .op-summary { margin: 12px; padding: 14px 16px; border-radius: 12px; border: 1px solid var(--border); background: var(--panel); font-weight: 600; }
+  .op-summary.ok { color: #2ecc71; }
+  .op-summary.warn { color: var(--danger); }
+  .op-srv { display: flex; align-items: center; gap: 12px; padding: 13px 14px; border-bottom: 1px solid var(--border); }
+  .op-srv .flag { font-size: 26px; flex: none; line-height: 1; }
+  .op-srv .mid { flex: 1; min-width: 0; }
+  .op-srv .nm { font-weight: 600; }
+  .op-srv .meta { color: var(--muted); font-size: 12px; margin-top: 2px; }
+  .op-srv .st { font-size: 12px; font-weight: 700; padding: 4px 10px; border-radius: 999px; background: var(--panel2); flex: none; }
+  .op-srv .st.ok { color: #2ecc71; }
+  .op-srv .st.bad { color: var(--danger); }
+
   /* Диалог */
   .op-sub { display: flex; flex-direction: column; }
   .op-sub .who { font-size: 15px; font-weight: 600; }
@@ -109,6 +142,23 @@
   .op-compose textarea { flex: 1; resize: none; max-height: 130px; background: var(--bg2); border: 1px solid var(--border); color: var(--text); border-radius: 12px; padding: 10px 12px; font: inherit; }
   .op-send { flex: none; width: 44px; border-radius: 12px; }
 
+  /* Нижняя плавающая навигация */
+  .op-nav {
+    position: fixed; left: 50%; transform: translateX(-50%);
+    bottom: calc(var(--safe-bottom) + 12px); display: none; gap: 4px; z-index: 40;
+    background: var(--panel); border: 1px solid var(--border); border-radius: 20px;
+    padding: 6px; box-shadow: 0 12px 32px rgba(0,0,0,.34);
+  }
+  .op-nav.show { display: flex; }
+  .op-nav button {
+    background: transparent; border: none; color: var(--muted); cursor: pointer;
+    display: flex; flex-direction: column; align-items: center; gap: 3px;
+    padding: 7px 20px; border-radius: 15px; font: inherit; font-size: 11px; font-weight: 600;
+  }
+  .op-nav button svg { width: 21px; height: 21px; }
+  .op-nav button.active { color: var(--accent-ink); background: var(--accent); }
+  .op-nav .nav-badge { position: absolute; }
+
   /* Модалки */
   .op-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.5); display: flex; align-items: flex-end; justify-content: center; z-index: 50; }
   .op-overlay.center { align-items: center; }
@@ -119,14 +169,17 @@
   .op-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
   .op-modal .row { display: flex; gap: 8px; margin-top: 16px; }
   .op-modal .row .op-btn { flex: 1; }
-  .op-check { display: flex; align-items: center; gap: 8px; margin-top: 12px; font-size: 13px; color: var(--text); }
+  .op-kv { display: flex; justify-content: space-between; gap: 12px; padding: 7px 0; border-bottom: 1px solid var(--border); font-size: 13px; }
+  .op-kv .k { color: var(--muted); }
+  .op-kv .v { text-align: right; word-break: break-word; }
+  .op-config { margin-top: 10px; background: var(--bg2); border: 1px solid var(--border); border-radius: 10px; padding: 10px; font-size: 12px; white-space: pre-wrap; word-break: break-all; max-height: 36vh; overflow: auto; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
   .op-search { width: 100%; margin-top: 10px; }
   .op-clients { margin-top: 10px; display: flex; flex-direction: column; gap: 6px; max-height: 46vh; overflow-y: auto; }
   .op-client { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 10px; cursor: pointer; }
   .op-client.sel { border-color: var(--accent); }
   .op-client .nm { flex: 1; }
   .op-client .sv { font-size: 12px; color: var(--muted); }
-  .op-toast { position: fixed; left: 50%; bottom: calc(var(--safe-bottom) + 20px); transform: translateX(-50%); background: var(--panel2); color: var(--text); border: 1px solid var(--border); padding: 10px 16px; border-radius: 10px; z-index: 100; font-size: 14px; box-shadow: 0 8px 24px rgba(0,0,0,.3); }
+  .op-toast { position: fixed; left: 50%; bottom: calc(var(--safe-bottom) + var(--op-nav-h) + 16px); transform: translateX(-50%); background: var(--panel2); color: var(--text); border: 1px solid var(--border); padding: 10px 16px; border-radius: 10px; z-index: 100; font-size: 14px; box-shadow: 0 8px 24px rgba(0,0,0,.3); max-width: 90%; text-align: center; }
 </style>
 </head>
 <body>
@@ -149,25 +202,53 @@
     </form>
   </div>
 
-  <!-- Список диалогов -->
-  <div id="op-threads" class="op-screen">
+  <!-- Вкладка: Чаты -->
+  <div id="op-chats" class="op-screen">
     <header class="op-header">
       <strong>Диалоги</strong>
       <span class="spacer"></span>
-      <button id="op-refresh" type="button" class="icon-btn" title="Обновить" aria-label="Обновить">
+      <button type="button" class="icon-btn op-act-refresh" title="Обновить" aria-label="Обновить">
         <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 4v6h-6"/><path d="M1 20v-6h6"/><path d="M3.5 9a9 9 0 0 1 14.9-3.4L23 10M1 14l4.6 4.4A9 9 0 0 0 20.5 15"/></svg>
       </button>
-      <button id="op-theme" type="button" class="icon-btn" title="Тема" aria-label="Тема">
+      <button type="button" class="icon-btn op-act-theme" title="Тема" aria-label="Тема">
         <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
       </button>
-      <button id="op-logout" type="button" class="icon-btn" title="Выйти" aria-label="Выйти">
+      <button type="button" class="icon-btn op-act-logout" title="Выйти" aria-label="Выйти">
         <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
       </button>
     </header>
     <div id="op-thread-list" class="op-list"></div>
   </div>
 
-  <!-- Диалог -->
+  <!-- Вкладка: Клиенты -->
+  <div id="op-clients" class="op-screen">
+    <header class="op-header">
+      <strong>Клиенты</strong>
+      <span class="spacer"></span>
+      <button type="button" class="icon-btn op-act-refresh" title="Обновить" aria-label="Обновить">
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 4v6h-6"/><path d="M1 20v-6h6"/><path d="M3.5 9a9 9 0 0 1 14.9-3.4L23 10M1 14l4.6 4.4A9 9 0 0 0 20.5 15"/></svg>
+      </button>
+    </header>
+    <div class="op-subbar">
+      <input id="op-cli-search" type="text" placeholder="Поиск по имени/серверу…">
+      <button id="op-cli-create" type="button" class="op-btn sm">+ Создать</button>
+    </div>
+    <div id="op-client-list" class="op-list"></div>
+  </div>
+
+  <!-- Вкладка: Состояние -->
+  <div id="op-status" class="op-screen">
+    <header class="op-header">
+      <strong>Состояние</strong>
+      <span class="spacer"></span>
+      <button type="button" class="icon-btn op-act-refresh" title="Обновить" aria-label="Обновить">
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 4v6h-6"/><path d="M1 20v-6h6"/><path d="M3.5 9a9 9 0 0 1 14.9-3.4L23 10M1 14l4.6 4.4A9 9 0 0 0 20.5 15"/></svg>
+      </button>
+    </header>
+    <div id="op-status-body" class="op-scroll"></div>
+  </div>
+
+  <!-- Диалог (drill-down, без нижней навигации) -->
   <div id="op-thread" class="op-screen">
     <header class="op-header">
       <button id="op-back" type="button" class="icon-btn op-back" aria-label="Назад">‹</button>
@@ -188,6 +269,22 @@
     </footer>
   </div>
 
-  <script src="/operator.js?v=1"></script>
+  <!-- Нижняя плавающая навигация -->
+  <nav id="op-nav" class="op-nav" aria-label="Навигация">
+    <button type="button" data-tab="chats">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg>
+      <span>Чаты</span>
+    </button>
+    <button type="button" data-tab="clients">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+      <span>Клиенты</span>
+    </button>
+    <button type="button" data-tab="status">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
+      <span>Состояние</span>
+    </button>
+  </nav>
+
+  <script src="/operator.js?v=2"></script>
 </body>
 </html>

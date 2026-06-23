@@ -1,6 +1,5 @@
 /* Операторский режим чата на chat-домене.
-   Вход — данными панели (admin/moderator), затем диалоги всех клиентов и
-   действия: написать, выдать ключ, создать ключ, привязать ключ.
+   Вход — данными панели (admin/moderator). Нижняя навигация: Чаты, Клиенты, Состояние.
    Использует открытые на chat-домене префиксы: /api/v1/auth/* и /api/v1/chat/admin/*. */
 
 (function () {
@@ -9,6 +8,7 @@
   var API = '/api/v1';
   var THREADS_POLL_MS = 8000;
   var MSG_POLL_MS = 4000;
+  var STATUS_POLL_MS = 20000;
   var LAST_SERVER_KEY = 'op_last_server';
 
   var FINGERPRINTS = [
@@ -20,6 +20,7 @@
   var state = {
     access: localStorage.getItem('op_access') || '',
     refresh: localStorage.getItem('op_refresh') || '',
+    tab: 'chats',
     threads: [],
     activeId: '',
     activeThread: null,
@@ -27,19 +28,40 @@
     lastDateKey: '',
     threadsTimer: null,
     msgTimer: null,
+    statusTimer: null,
     sending: false,
     servers: [],
-    clients: []
+    clients: [],
+    allClients: [],
+    clientFilter: ''
   };
 
   function $(id) { return document.getElementById(id); }
 
-  // --- экраны -----------------------------------------------------------------
+  // --- экраны / навигация ------------------------------------------------------
+  var SCREENS = ['op-login', 'op-chats', 'op-clients', 'op-status', 'op-thread'];
+  var TAB_SCREEN = { chats: 'op-chats', clients: 'op-clients', status: 'op-status' };
+
   function showScreen(id) {
-    ['op-login', 'op-threads', 'op-thread'].forEach(function (s) {
-      $(s).classList.toggle('active', s === id);
-    });
+    SCREENS.forEach(function (s) { $(s).classList.toggle('active', s === id); });
+    var navTabs = ['op-chats', 'op-clients', 'op-status'];
+    $('op-nav').classList.toggle('show', navTabs.indexOf(id) >= 0);
   }
+
+  function switchTab(tab) {
+    state.tab = tab;
+    showScreen(TAB_SCREEN[tab]);
+    [].forEach.call($('op-nav').querySelectorAll('button'), function (b) {
+      b.classList.toggle('active', b.getAttribute('data-tab') === tab);
+    });
+    if (tab === 'chats') loadThreads();
+    else if (tab === 'clients') loadAllClients();
+    else if (tab === 'status') loadStatus();
+  }
+
+  [].forEach.call(document.querySelectorAll('#op-nav button'), function (b) {
+    b.addEventListener('click', function () { switchTab(b.getAttribute('data-tab')); });
+  });
 
   // --- тема --------------------------------------------------------------------
   function toggleTheme() {
@@ -127,20 +149,39 @@
     state.activeId = ''; state.activeThread = null; state.threads = [];
     if (state.threadsTimer) clearInterval(state.threadsTimer);
     if (state.msgTimer) clearInterval(state.msgTimer);
+    if (state.statusTimer) clearInterval(state.statusTimer);
     showScreen('op-login');
   }
 
-  $('op-logout').addEventListener('click', doLogout);
-  $('op-theme').addEventListener('click', toggleTheme);
-  $('op-refresh').addEventListener('click', function () { loadThreads(); });
+  [].forEach.call(document.querySelectorAll('.op-act-logout'), function (b) { b.addEventListener('click', doLogout); });
+  [].forEach.call(document.querySelectorAll('.op-act-theme'), function (b) { b.addEventListener('click', toggleTheme); });
+  [].forEach.call(document.querySelectorAll('.op-act-refresh'), function (b) {
+    b.addEventListener('click', function () {
+      if (state.tab === 'chats') loadThreads();
+      else if (state.tab === 'clients') loadAllClients();
+      else if (state.tab === 'status') loadStatus();
+    });
+  });
 
   function enterApp() {
-    showScreen('op-threads');
-    loadThreads();
+    switchTab('chats');
     if (state.threadsTimer) clearInterval(state.threadsTimer);
     state.threadsTimer = setInterval(function () {
-      if ($('op-threads').classList.contains('active')) loadThreads(true);
+      if ($('op-chats').classList.contains('active')) loadThreads(true);
     }, THREADS_POLL_MS);
+    if (state.statusTimer) clearInterval(state.statusTimer);
+    state.statusTimer = setInterval(function () {
+      if ($('op-status').classList.contains('active')) loadStatus(true);
+    }, STATUS_POLL_MS);
+    // подгрузим серверы заранее (для форм создания клиента)
+    loadServers();
+  }
+
+  function loadServers() {
+    return req('GET', '/chat/admin/servers', null, true).then(function (list) {
+      state.servers = list || [];
+      return state.servers;
+    }).catch(function () { return state.servers; });
   }
 
   // --- диалоги -----------------------------------------------------------------
@@ -148,7 +189,6 @@
     return req('GET', '/chat/admin/threads', null, true).then(function (list) {
       state.threads = list || [];
       renderThreads();
-      // если открыт диалог — обновим его шапку (привязка VPN могла измениться)
       if (state.activeId) {
         var t = findThread(state.activeId);
         if (t) { state.activeThread = t; renderThreadHeader(t); }
@@ -213,7 +253,7 @@
       mid.appendChild(nm);
       var pv = document.createElement('div');
       pv.className = 'pv';
-      var prefix = t.last_sender === 'admin' ? 'Вы: ' : (t.last_sender === 'system' ? '' : '');
+      var prefix = t.last_sender === 'admin' ? 'Вы: ' : '';
       pv.textContent = prefix + (t.last_preview || 'нет сообщений');
       mid.appendChild(pv);
       row.appendChild(mid);
@@ -235,12 +275,187 @@
     });
   }
 
+  // --- вкладка КЛИЕНТЫ ----------------------------------------------------------
+  function loadAllClients(silent) {
+    return req('GET', '/chat/admin/clients', null, true).then(function (list) {
+      state.allClients = list || [];
+      state.clients = state.allClients;
+      renderClients();
+    }).catch(function (err) {
+      if (err && err.message === 'session') return;
+      if (!silent) toast(err.message || 'Не удалось загрузить клиентов.');
+    });
+  }
+
+  function fmtBytes(n) {
+    n = n || 0;
+    if (n < 1024) return n + ' Б';
+    var u = ['КБ', 'МБ', 'ГБ', 'ТБ'], i = -1;
+    do { n /= 1024; i++; } while (n >= 1024 && i < u.length - 1);
+    return (n >= 100 ? Math.round(n) : n.toFixed(1)) + ' ' + u[i];
+  }
+
+  function renderClients() {
+    var box = $('op-client-list');
+    box.innerHTML = '';
+    var q = state.clientFilter.trim().toLowerCase();
+    var list = !q ? state.allClients : state.allClients.filter(function (c) {
+      return [c.name, c.server_name, c.protocol].some(function (v) { return (v || '').toLowerCase().indexOf(q) >= 0; });
+    });
+    if (!list.length) {
+      var e = document.createElement('div');
+      e.className = 'op-empty';
+      e.textContent = state.allClients.length ? 'Ничего не найдено.' : 'Пока нет клиентов. Нажмите «+ Создать».';
+      box.appendChild(e);
+      return;
+    }
+    list.forEach(function (c) {
+      var row = document.createElement('div');
+      row.className = 'op-cli';
+      row.addEventListener('click', function () { openClientDetail(c.id); });
+
+      var dot = document.createElement('div');
+      dot.className = 'dot ' + (c.online ? 'on' : (c.blocked ? 'off' : ''));
+      row.appendChild(dot);
+
+      var mid = document.createElement('div');
+      mid.className = 'mid';
+      var nm = document.createElement('div');
+      nm.className = 'nm';
+      nm.appendChild(document.createTextNode(c.name || '—'));
+      if (c.blocked) { var bt = document.createElement('span'); bt.className = 'op-tag warn'; bt.textContent = 'блок'; nm.appendChild(bt); }
+      mid.appendChild(nm);
+      var sub = document.createElement('div');
+      sub.className = 'sub2';
+      sub.textContent = (c.server_name || '—') + ' · ' + (PROTO_LABELS[c.protocol] || c.protocol || '');
+      mid.appendChild(sub);
+      row.appendChild(mid);
+
+      var rt = document.createElement('div');
+      rt.className = 'rt';
+      rt.textContent = fmtBytes(c.traffic_used_bytes) + (c.traffic_limit_bytes ? ' / ' + fmtBytes(c.traffic_limit_bytes) : '');
+      row.appendChild(rt);
+
+      box.appendChild(row);
+    });
+  }
+
+  $('op-cli-search').addEventListener('input', function () { state.clientFilter = this.value; renderClients(); });
+  $('op-cli-create').addEventListener('click', function () { openClientForm('create'); });
+
+  function openClientDetail(clientId) {
+    var overlay = buildOverlay(false);
+    var modal = overlay.querySelector('.op-modal');
+    modal.innerHTML = '<h3>Клиент</h3><p class="op-hint">Загрузка…</p>';
+    document.body.appendChild(overlay);
+    req('GET', '/chat/admin/clients/' + encodeURIComponent(clientId), null, true).then(function (c) {
+      var linkedThread = state.threads.filter(function (t) { return t.client_id === c.id; })[0];
+      var rows = '';
+      function kv(k, v) { return '<div class="op-kv"><span class="k">' + k + '</span><span class="v">' + escapeHtml(v) + '</span></div>'; }
+      rows += kv('Сервер', c.server_name || '—');
+      rows += kv('Протокол', PROTO_LABELS[c.protocol] || c.protocol || '—');
+      rows += kv('Статус', c.online ? 'онлайн' : (c.blocked ? 'заблокирован' : 'офлайн'));
+      rows += kv('Трафик', fmtBytes(c.traffic_used_bytes) + (c.traffic_limit_bytes ? ' из ' + fmtBytes(c.traffic_limit_bytes) : ' (без лимита)'));
+      if (c.expires_at) rows += kv('Действует до', fmtTime(c.expires_at));
+      rows += kv('Чат', linkedThread ? ('@' + linkedThread.username) : 'не привязан');
+
+      var conf = c.config_text || c.vpn_link || '';
+      var html =
+        '<h3>' + escapeHtml(c.name || 'Клиент') + '</h3>' +
+        rows +
+        (conf ? '<div class="op-config" id="cd-conf">' + escapeHtml(conf) + '</div>' : '<p class="op-hint" style="margin-top:10px">Конфигурация недоступна (импортированный клиент).</p>') +
+        '<div class="row">' +
+        '<button type="button" class="op-btn ghost" id="cd-close">Закрыть</button>' +
+        (conf ? '<button type="button" class="op-btn" id="cd-copy">Копировать конфиг</button>' : '') +
+        '</div>';
+      modal.innerHTML = html;
+      $('cd-close').addEventListener('click', function () { overlay.remove(); });
+      if (conf) {
+        $('cd-copy').addEventListener('click', function () {
+          copyText(conf).then(function (ok) { toast(ok ? 'Конфиг скопирован.' : 'Не удалось скопировать.'); });
+        });
+      }
+    }).catch(function (err) {
+      modal.innerHTML = '<h3>Клиент</h3><p class="op-error">' + escapeHtml(err.message || 'Не удалось загрузить.') + '</p>' +
+        '<div class="row"><button type="button" class="op-btn ghost" id="cd-close">Закрыть</button></div>';
+      $('cd-close').addEventListener('click', function () { overlay.remove(); });
+    });
+  }
+
+  // --- вкладка СОСТОЯНИЕ --------------------------------------------------------
+  function countryFlag(cc) {
+    if (!cc || cc.length !== 2) return '🖥';
+    var base = 0x1F1E6;
+    var a = cc.toUpperCase().charCodeAt(0) - 65;
+    var b = cc.toUpperCase().charCodeAt(1) - 65;
+    if (a < 0 || a > 25 || b < 0 || b > 25) return '🖥';
+    return String.fromCodePoint(base + a) + String.fromCodePoint(base + b);
+  }
+
+  function statusOk(s) { return (s || '').toLowerCase() === 'online'; }
+
+  function loadStatus(silent) {
+    return req('GET', '/chat/admin/overview', null, true).then(function (list) {
+      renderStatus(list || []);
+    }).catch(function (err) {
+      if (err && err.message === 'session') return;
+      if (!silent) toast(err.message || 'Не удалось загрузить состояние.');
+    });
+  }
+
+  function renderStatus(servers) {
+    var box = $('op-status-body');
+    box.innerHTML = '';
+    if (!servers.length) {
+      var e = document.createElement('div'); e.className = 'op-empty'; e.textContent = 'Серверов пока нет.'; box.appendChild(e);
+      return;
+    }
+    var bad = servers.filter(function (s) { return !statusOk(s.status); }).length;
+    var sum = document.createElement('div');
+    sum.className = 'op-summary ' + (bad ? 'warn' : 'ok');
+    sum.textContent = bad
+      ? ('Внимание: проблемы на ' + bad + ' из ' + servers.length + ' серверов')
+      : ('Все серверы в порядке (' + servers.length + ')');
+    box.appendChild(sum);
+
+    servers.forEach(function (s) {
+      var row = document.createElement('div');
+      row.className = 'op-srv';
+
+      var fl = document.createElement('div');
+      fl.className = 'flag';
+      fl.textContent = countryFlag(s.country_code);
+      row.appendChild(fl);
+
+      var mid = document.createElement('div');
+      mid.className = 'mid';
+      var nm = document.createElement('div'); nm.className = 'nm'; nm.textContent = s.name; mid.appendChild(nm);
+      var meta = document.createElement('div'); meta.className = 'meta';
+      var parts = [s.host];
+      if (s.country_name) parts.push(s.country_name);
+      if (typeof s.active_peers === 'number') parts.push(s.active_peers + ' клиентов');
+      if (typeof s.cpu_percent === 'number') parts.push('CPU ' + Math.round(s.cpu_percent) + '%');
+      if (s.mem_used_mb && s.mem_total_mb) parts.push('RAM ' + Math.round(s.mem_used_mb / s.mem_total_mb * 100) + '%');
+      if (s.xray_cascade_active) parts.push('каскад → ' + (s.xray_cascade_exit_name || '?'));
+      meta.textContent = parts.filter(Boolean).join(' · ');
+      mid.appendChild(meta);
+      row.appendChild(mid);
+
+      var st = document.createElement('div');
+      var ok = statusOk(s.status);
+      st.className = 'st ' + (ok ? 'ok' : 'bad');
+      st.textContent = ok ? 'онлайн' : (s.status === 'unknown' ? '—' : 'офлайн');
+      row.appendChild(st);
+
+      box.appendChild(row);
+    });
+  }
+
   // --- открытый диалог ---------------------------------------------------------
   $('op-back').addEventListener('click', function () {
     state.activeId = ''; state.activeThread = null;
     if (state.msgTimer) clearInterval(state.msgTimer);
-    showScreen('op-threads');
-    loadThreads(true);
+    switchTab('chats');
   });
 
   function openThread(id) {
@@ -267,7 +482,6 @@
     else if (t.client_missing) meta += ' · VPN-клиент удалён';
     else meta += ' · VPN не привязан';
     $('op-thread-meta').textContent = meta;
-    // «Выдать ключ» активна только если есть рабочая привязка
     $('op-act-sendkey').disabled = !(t.client_id && !t.client_missing);
   }
 
@@ -371,8 +585,8 @@
       .finally(function () { btn.disabled = false; renderThreadHeader(state.activeThread); });
   });
 
-  // --- создать ключ (provision) ------------------------------------------------
-  $('op-act-create').addEventListener('click', openProvision);
+  // --- форма «создать клиента» (общая: из чата и из вкладки Клиенты) -----------
+  $('op-act-create').addEventListener('click', function () { openClientForm('provision'); });
 
   function eligibleServers() {
     return state.servers.filter(function (s) {
@@ -386,14 +600,19 @@
     return s.awg2_imported ? ['awg2'] : [];
   }
 
-  function openProvision() {
-    if (!state.activeThread) return;
+  // mode: 'provision' (привязать к открытому чату + отправить) | 'create' (просто создать)
+  function openClientForm(mode) {
+    if (mode === 'provision' && !state.activeThread) return;
     var overlay = buildOverlay(false);
     var modal = overlay.querySelector('.op-modal');
+    var title = mode === 'provision' ? 'Создать ключ и отправить' : 'Создать клиента';
+    var hint = mode === 'provision'
+      ? 'Новый клиент будет создан, привязан к @' + escapeHtml(state.activeThread.username) + ' и отправлен в чат.'
+      : 'Новый VPN-клиент появится в списке «Клиенты».';
+    var submitLabel = mode === 'provision' ? 'Создать и отправить' : 'Создать';
     modal.innerHTML =
-      '<h3>Создать ключ и отправить</h3>' +
-      '<p class="op-hint">Новый клиент будет создан, привязан к @' + escapeHtml(state.activeThread.username) +
-      ' и отправлен в чат. Старый (если был) останется в «Клиенты».</p>' +
+      '<h3>' + title + '</h3>' +
+      '<p class="op-hint">' + hint + '</p>' +
       '<div class="op-field"><span>Сервер</span><select id="pv-server"></select></div>' +
       '<div class="op-field"><span>Протокол</span><select id="pv-proto"></select></div>' +
       '<div class="op-field"><span>Имя клиента</span><input id="pv-name" type="text"></div>' +
@@ -402,25 +621,22 @@
       '<div class="op-field"><span>Лимит, ГБ (пусто — без)</span><input id="pv-traffic" type="number" min="0" inputmode="decimal"></div>' +
       '<div class="op-field"><span>Действует до</span><input id="pv-exp" type="date"></div>' +
       '</div>' +
-      '<p class="op-hint" id="pv-cascade" hidden></p>' +
       '<div class="row"><button type="button" class="op-btn ghost" id="pv-cancel">Отмена</button>' +
-      '<button type="button" class="op-btn" id="pv-submit">Создать и отправить</button></div>';
+      '<button type="button" class="op-btn" id="pv-submit">' + submitLabel + '</button></div>';
     document.body.appendChild(overlay);
 
     var fpSel = $('pv-fp');
     FINGERPRINTS.forEach(function (f) {
       var o = document.createElement('option'); o.value = f[0]; o.textContent = f[1]; fpSel.appendChild(o);
     });
-    $('pv-name').value = state.activeThread.display_name || state.activeThread.username || '';
+    if (mode === 'provision') $('pv-name').value = state.activeThread.display_name || state.activeThread.username || '';
     $('pv-cancel').addEventListener('click', function () { overlay.remove(); });
     $('pv-server').addEventListener('change', syncProvProto);
     $('pv-proto').addEventListener('change', syncProvFp);
-    $('pv-submit').addEventListener('click', function () { submitProvision(overlay, this); });
+    $('pv-submit').addEventListener('click', function () { submitClientForm(mode, overlay, this); });
 
-    // загрузка серверов
     $('pv-server').innerHTML = '<option>Загрузка…</option>';
-    req('GET', '/chat/admin/servers', null, true).then(function (list) {
-      state.servers = list || [];
+    loadServers().then(function () {
       var sel = $('pv-server');
       sel.innerHTML = '';
       var elig = eligibleServers();
@@ -431,9 +647,6 @@
       var remembered = localStorage.getItem(LAST_SERVER_KEY);
       if (remembered && elig.some(function (s) { return s.id === remembered; })) sel.value = remembered;
       syncProvProto();
-    }).catch(function (err) {
-      $('pv-server').innerHTML = '<option value="">ошибка загрузки</option>';
-      toast(err.message || 'Не удалось загрузить серверы.');
     });
   }
 
@@ -451,7 +664,7 @@
     $('pv-fp-wrap').hidden = $('pv-proto').value !== 'xray';
   }
 
-  function submitProvision(overlay, btn) {
+  function submitClientForm(mode, overlay, btn) {
     var serverId = $('pv-server').value;
     var proto = $('pv-proto').value;
     if (!serverId || !proto) { toast('Выберите сервер и протокол.'); return; }
@@ -468,17 +681,31 @@
       fingerprint: proto === 'xray' ? $('pv-fp').value : null,
       replace: true
     };
+    var origLabel = btn.textContent;
     btn.disabled = true; btn.textContent = 'Создаю…';
-    req('POST', '/chat/admin/threads/' + state.activeId + '/provision-client', payload, true)
-      .then(function (m) {
-        localStorage.setItem(LAST_SERVER_KEY, serverId);
-        overlay.remove();
-        appendMessage(m);
-        $('op-thread-messages').scrollTop = $('op-thread-messages').scrollHeight;
-        toast('Клиент создан, ключ отправлен.');
-        loadThreads(true);
-      })
-      .catch(function (err) { btn.disabled = false; btn.textContent = 'Создать и отправить'; toast(err.message || 'Не удалось создать клиента.'); });
+
+    if (mode === 'provision') {
+      req('POST', '/chat/admin/threads/' + state.activeId + '/provision-client', payload, true)
+        .then(function (m) {
+          localStorage.setItem(LAST_SERVER_KEY, serverId);
+          overlay.remove();
+          appendMessage(m);
+          $('op-thread-messages').scrollTop = $('op-thread-messages').scrollHeight;
+          toast('Клиент создан, ключ отправлен.');
+          loadThreads(true);
+        })
+        .catch(function (err) { btn.disabled = false; btn.textContent = origLabel; toast(err.message || 'Не удалось создать клиента.'); });
+    } else {
+      req('POST', '/chat/admin/clients', payload, true)
+        .then(function (c) {
+          localStorage.setItem(LAST_SERVER_KEY, serverId);
+          overlay.remove();
+          toast('Клиент создан.');
+          loadAllClients(true);
+          openClientDetail(c.id);
+        })
+        .catch(function (err) { btn.disabled = false; btn.textContent = origLabel; toast(err.message || 'Не удалось создать клиента.'); });
+    }
   }
 
   // --- привязать существующего (link-and-send) --------------------------------
@@ -498,7 +725,6 @@
       '<div class="row"><button type="button" class="op-btn ghost" id="lk-cancel">Отмена</button>' +
       '<button type="button" class="op-btn" id="lk-submit" disabled>Привязать и отправить</button></div>';
     document.body.appendChild(overlay);
-    // стилизуем поиск как input
     $('lk-search').style.cssText = 'background:var(--bg2);border:1px solid var(--border);color:var(--text);border-radius:10px;padding:11px 12px;font:inherit;width:100%;';
     $('lk-cancel').addEventListener('click', function () { overlay.remove(); });
 
@@ -563,6 +789,24 @@
     overlay.appendChild(modal);
     overlay.addEventListener('click', function (e) { if (e.target === overlay) overlay.remove(); });
     return overlay;
+  }
+
+  function copyText(text) {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      return navigator.clipboard.writeText(text).then(function () { return true; }).catch(function () { return fallbackCopy(text); });
+    }
+    return Promise.resolve(fallbackCopy(text));
+  }
+
+  function fallbackCopy(text) {
+    try {
+      var ta = document.createElement('textarea');
+      ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
+      document.body.appendChild(ta); ta.select();
+      var ok = document.execCommand('copy');
+      document.body.removeChild(ta);
+      return ok;
+    } catch (e) { return false; }
   }
 
   function escapeHtml(s) {
