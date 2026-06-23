@@ -375,15 +375,24 @@ def _isolation_checks(ssh, domain: str) -> list[dict]:
     """
     q = shlex.quote(domain)
     checks = [
-        ("mini-app отдаётся", f"curl -sk -o /dev/null -w '%{{http_code}}' --max-time 10 https://{q}/", "200"),
-        ("server API закрыт", f"curl -sk -o /dev/null -w '%{{http_code}}' --max-time 10 https://{q}/api/v1/servers", "404"),
-        ("docs закрыт", f"curl -sk -o /dev/null -w '%{{http_code}}' --max-time 10 https://{q}/docs", "404"),
-        ("openapi закрыт", f"curl -sk -o /dev/null -w '%{{http_code}}' --max-time 10 https://{q}/openapi.json", "404"),
-        ("operator API под защитой", f"curl -sk -o /dev/null -w '%{{http_code}}' --max-time 10 https://{q}/api/v1/chat/admin/threads", "401"),
+        ("mini-app отдаётся", f"https://{q}/", "200"),
+        ("server API закрыт", f"https://{q}/api/v1/servers", "404"),
+        ("docs закрыт", f"https://{q}/docs", "404"),
+        ("openapi закрыт", f"https://{q}/openapi.json", "404"),
+        ("operator API под защитой", f"https://{q}/api/v1/chat/admin/threads", "401"),
     ]
     results = []
-    for label, cmd, expected in checks:
-        out = ssh_exec.run(ssh, cmd, timeout=25).stdout.strip()
+    for label, url, expected in checks:
+        # Ретраи: сразу после reload nginx stream-маршрутизация SNI чата может
+        # ещё «дозревать» (первые запросы успевают уйти на старый upstream — Xray
+        # passthrough), поэтому опрашиваем до совпадения с ожидаемым кодом, иначе
+        # фиксируем последний фактический. Это убирает ложные срабатывания гонки.
+        cmd = (
+            f"for i in $(seq 1 10); do "
+            f"code=$(curl -sk -o /dev/null -w '%{{http_code}}' --max-time 8 {url}); "
+            f"[ \"$code\" = \"{expected}\" ] && break; sleep 1; done; echo \"$code\""
+        )
+        out = ssh_exec.run(ssh, cmd, timeout=120).stdout.strip()
         results.append({"label": label, "expected": expected, "actual": out or "—", "ok": out == expected})
     return results
 
