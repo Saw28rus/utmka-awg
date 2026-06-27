@@ -5,6 +5,7 @@
 """
 
 import asyncio
+import logging
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -27,6 +28,7 @@ from app.services.node_migration import (
 from app.services.node_migration_store import node_migration_store as NM
 
 router = APIRouter()
+logger = logging.getLogger("utmka.node_migration")
 
 
 @router.get("/status", response_model=Optional[MigrationStatus])
@@ -66,7 +68,8 @@ async def migration_provision(_: CurrentUser = Depends(require_admin)) -> Migrat
         try:
             await asyncio.to_thread(provision)
         except Exception:  # noqa: BLE001
-            pass
+            # provision() уже записал статус FAILED со step'ом; логируем для диагностики.
+            logger.exception("Фоновый provision миграции завершился ошибкой")
 
     asyncio.create_task(_run())
     rec = NM.get_public() or {}
@@ -96,7 +99,7 @@ async def migration_activate(
         try:
             await asyncio.to_thread(activate, force=force)
         except Exception:  # noqa: BLE001
-            pass
+            logger.exception("Фоновая активация миграции завершилась ошибкой")
 
     asyncio.create_task(_run())
     rec = NM.get_public() or {}

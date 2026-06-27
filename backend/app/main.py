@@ -15,6 +15,12 @@ from app.workers.scheduler import shutdown_scheduler, start_scheduler
 async def lifespan(_app: FastAPI):
     async with AsyncSessionLocal() as session:
         await bootstrap_database(session)
+    try:
+        from app.services.node_migration import recover_orphaned_on_startup
+
+        recover_orphaned_on_startup()
+    except Exception:  # noqa: BLE001
+        pass
     start_scheduler()
     yield
     shutdown_scheduler()

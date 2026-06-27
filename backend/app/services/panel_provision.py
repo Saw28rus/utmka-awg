@@ -56,7 +56,7 @@ def public_ip(ssh: paramiko.SSHClient) -> Optional[str]:
     return ip[0] if ip else None
 
 
-def install_panel(ssh: paramiko.SSHClient, *, admin_password: Optional[str] = None, timeout: int = 1800) -> str:
+def install_panel(ssh: paramiko.SSHClient, *, admin_password: Optional[str] = None, timeout: int = 1200) -> str:
     """Развернуть свежий стек панели на узле (idempotent: повторный прогон = update).
 
     Стек поднимется в роли active со свежими секретами — это нормально: дальше

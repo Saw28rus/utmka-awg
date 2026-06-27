@@ -43,6 +43,10 @@ OPEN_STATUSES = {
 
 _HIDDEN = {"new_ssh_password_enc", "new_ssh_key_enc"}
 
+# Если шаг provision/activate не двигался дольше этого времени — помечаем «застрял»
+# (узел завис / поток убит рестартом). Это advisory-флаг для UI, а не авто-отмена.
+STALL_SECONDS = 25 * 60
+
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -170,7 +174,24 @@ class NodeMigrationStore:
     # --- утилиты --------------------------------------------------------------
 
     def _public(self, rec: dict) -> dict:
-        return {k: v for k, v in rec.items() if k not in _HIDDEN}
+        pub = {k: v for k, v in rec.items() if k not in _HIDDEN}
+        pub["stalled"] = self._is_stalled(rec)
+        return pub
+
+    @staticmethod
+    def _is_stalled(rec: dict) -> bool:
+        if rec.get("status") not in {STATUS_PROVISIONING, STATUS_ACTIVATING}:
+            return False
+        updated = rec.get("updated_at")
+        if not updated:
+            return False
+        try:
+            ts = datetime.fromisoformat(updated)
+        except ValueError:
+            return False
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        return (datetime.now(timezone.utc) - ts).total_seconds() > STALL_SECONDS
 
 
 node_migration_store = NodeMigrationStore()

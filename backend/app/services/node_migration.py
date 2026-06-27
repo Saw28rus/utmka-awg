@@ -170,6 +170,19 @@ def preflight(
                 raise NodeMigrationError(f"Мало места на диске нового сервера (~{int(df)//1024} МБ, нужно ≥ 3 ГБ).")
         except ValueError:
             pass
+        # RAM (+swap) ≥ ~1 ГБ: на меньшем установка стека часто зависает по OOM, и
+        # узел становится недоступен по SSH прямо во время провижининга.
+        mem_kb = ssh_exec.run(ssh, "awk '/MemTotal/{print $2}' /proc/meminfo", timeout=15).stdout.strip()
+        swap_kb = ssh_exec.run(ssh, "awk '/SwapTotal/{print $2}' /proc/meminfo", timeout=15).stdout.strip()
+        try:
+            total_mb = (int(mem_kb or 0) + int(swap_kb or 0)) // 1024
+        except ValueError:
+            total_mb = 0
+        if total_mb and total_mb < 900:
+            raise NodeMigrationError(
+                f"Мало оперативной памяти на новом сервере (~{total_mb} МБ с учётом swap). "
+                "Нужно ≥ 1 ГБ (или добавьте swap) — иначе установка зависнет по OOM."
+            )
         public_ip = panel_provision.public_ip(ssh)
     finally:
         try:
@@ -393,6 +406,52 @@ def activate(*, force: bool = False) -> dict:
 # --------------------------------------------------------------------------- #
 # Отмена / сброс
 # --------------------------------------------------------------------------- #
+
+
+def recover_orphaned_on_startup() -> None:
+    """Подхватить «осиротевшую» миграцию после рестарта панели.
+
+    Тяжёлые шаги (provision/activate) выполняются в фоновом потоке. Если панель
+    перезапустилась во время такого шага, поток убит, а запись осталась висеть в
+    статусе provisioning/activating «без движений». Здесь мы переводим её в
+    конечное состояние с понятной причиной, чтобы оператор мог отменить/повторить.
+    """
+    try:
+        rec = NM.get()
+    except Exception:  # noqa: BLE001
+        return
+    if not rec:
+        return
+    status = rec.get("status")
+    if status == store_mod.STATUS_PROVISIONING:
+        NM.add_step(
+            "provision",
+            "failed",
+            "Прервано перезапуском панели — провижининг не завершён. Отмените и запустите заново.",
+        )
+        NM.set_status(
+            store_mod.STATUS_FAILED,
+            error="Провижининг прерван перезапуском панели. Запустите шаг заново.",
+        )
+    elif status == store_mod.STATUS_ACTIVATING:
+        # Активация могла успеть заморозить ЭТОТ узел в standby — вернём active,
+        # чтобы планировщик и управление узлами не остались выключенными.
+        try:
+            from app.services.panel_role import ROLE_ACTIVE, set_role
+
+            set_role(ROLE_ACTIVE)
+        except Exception:  # noqa: BLE001
+            pass
+        NM.add_step(
+            "activate",
+            "failed",
+            "Прервано перезапуском панели во время активации. Узел возвращён в active.",
+        )
+        NM.set_status(
+            store_mod.STATUS_READY,
+            error="Активация прервана перезапуском панели; узел возвращён в active. "
+            "Проверьте состояние и активируйте заново.",
+        )
 
 
 def abort() -> dict:
