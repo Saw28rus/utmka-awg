@@ -17,18 +17,20 @@
       <div v-if="stage === 'intro'" class="intro">
         <div class="intro-icon"><ServerCog :size="28" /></div>
         <p class="intro-lead">
-          Переносит <strong>всю панель целиком</strong> на новый сервер: базу данных, клиентов,
-          конфиги, маскировки, сертификаты и секретный ключ. После переезда домен указывает на новый сервер.
+          Переносит <strong>весь узел целиком</strong> на новый сервер: панель, базу данных, клиентов,
+          а также <strong>VPN-вход</strong> (AmneziaWG и Xray) с теми же ключами и роль входа в каскаде.
+          Новый сервер становится точной копией старого — клиентам конфиги менять не нужно.
         </p>
         <ol class="intro-steps">
           <li>Выберите сервер из панели или введите SSH чистого VPS</li>
-          <li>Панель развернёт на нём копию и зальёт все данные (новый узел в режиме ожидания)</li>
+          <li>Панель развернёт на нём копию (панель + VPN из слепков ключей), новый узел в режиме ожидания</li>
           <li>Меняете <strong>A-запись домена</strong> у регистратора на новый IP</li>
-          <li>Нажимаете «Активировать» — старая панель замораживается, новая становится главной</li>
+          <li>Нажимаете «Активировать» — старая панель замораживается, новый сервер становится входом и главной панелью</li>
         </ol>
         <p class="hint intro-note">
-          Старый сервер <strong>не удаляется</strong> — это резерв на случай отката. Снесёте его вручную,
-          когда убедитесь, что всё работает на новом.
+          После активации <strong>панель открывается уже на новом сервере</strong>: обновите страницу и войдите
+          заново — вы увидите ход и итог миграции. Старый сервер <strong>не удаляется</strong> (резерв на откат),
+          снесёте его вручную позже.
         </p>
       </div>
 
@@ -106,6 +108,12 @@
         <div v-if="stage === 'preflight'" class="block-list ok">
           <strong>Сервер готов к развёртыванию.</strong>
           <p>Публичный IP: <span class="mono">{{ rec?.new_public_ip || '—' }}</span></p>
+          <p v-if="rec?.full_migration" class="vpn-note">
+            Это <strong>полная миграция</strong>: вместе с панелью переедет VPN-вход
+            «{{ rec?.entry_server_name || '—' }}» ({{ protoLabel }}) с теми же ключами и ролью входа в каскаде.
+            Клиентам менять конфиги не придётся.
+          </p>
+          <p v-else class="hint">Переносим только панель — отдельного VPN-входа на этом узле не найдено.</p>
         </div>
 
         <StepsTimeline v-if="rec?.steps?.length" :steps="rec.steps" />
@@ -127,9 +135,21 @@
           <p class="hint">
             После смены A-записи переключение идёт по мере истечения TTL (от пары минут до часа).
           </p>
+          <div class="reload-note">
+            <strong>Важно.</strong> После «Активировать» панель переедет на новый сервер
+            (<span class="mono">{{ rec?.new_public_ip || '—' }}</span>). Когда домен распространится,
+            <strong>обновите страницу</strong> и войдите заново — панель откроется уже с нового сервера
+            и покажет завершённый ход миграции. Если HTTPS на новом сервере не поднялся автоматически,
+            панель временно доступна по <span class="mono">http://{{ rec?.new_public_ip || '…' }}:8080</span>.
+          </div>
           <n-checkbox v-model:checked="forceActivate" class="force-box">
             Активировать принудительно (не дожидаясь DNS) — на свой риск
           </n-checkbox>
+        </div>
+
+        <div v-if="stage === 'activating'" class="reload-note">
+          Идёт переключение. Когда DNS укажет на новый сервер,
+          <strong>обновите страницу и войдите заново</strong> — вы увидите итог миграции на новой панели.
         </div>
 
         <div v-if="stage === 'active'" class="block-list ok">
@@ -213,6 +233,9 @@ type Migration = {
   dns_resolved_ips?: string[]
   health_ok?: boolean
   provision_ok?: boolean
+  full_migration?: boolean
+  entry_server_name?: string | null
+  entry_protocols?: Record<string, unknown>
   error?: string | null
   steps?: Array<{ name: string; status: string; detail?: string | null }>
 }
@@ -273,6 +296,14 @@ const statusTone = computed(() => {
 })
 
 const canActivate = computed(() => forceActivate.value || (!!rec.value?.dns_ok && !!rec.value?.health_ok))
+
+const protoLabel = computed(() => {
+  const p = rec.value?.entry_protocols || {}
+  const names: string[] = []
+  if ('awg2' in p) names.push('AmneziaWG')
+  if ('xray' in p) names.push('Xray')
+  return names.join(' + ') || 'VPN'
+})
 
 async function loadServers() {
   loadingServers.value = true
@@ -622,6 +653,21 @@ onUnmounted(stopPolling)
 
 .force-box {
   font-size: 12px;
+}
+
+.vpn-note {
+  margin: 6px 0 0;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.reload-note {
+  border-radius: 10px;
+  padding: 10px 12px;
+  font-size: 12px;
+  line-height: 1.5;
+  background: color-mix(in srgb, var(--color-accent) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-accent) 32%, transparent);
 }
 
 .hint {

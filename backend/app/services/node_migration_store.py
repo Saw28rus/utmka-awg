@@ -41,7 +41,14 @@ OPEN_STATUSES = {
     STATUS_ACTIVATING,
 }
 
-_HIDDEN = {"new_ssh_password_enc", "new_ssh_key_enc"}
+# Скрываем из публичного статуса: SSH-креды нового сервера + бэкапы серверных
+# записей для отката swap (в них лежат зашифрованные ssh_*_enc старого/запасного узла).
+_HIDDEN = {
+    "new_ssh_password_enc",
+    "new_ssh_key_enc",
+    "entry_swap_backup",
+    "target_swap_backup",
+}
 
 # Если шаг provision/activate не двигался дольше этого времени — помечаем «застрял»
 # (узел завис / поток убит рестартом). Это advisory-флаг для UI, а не авто-отмена.
