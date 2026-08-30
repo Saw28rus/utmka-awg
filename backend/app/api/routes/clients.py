@@ -276,6 +276,7 @@ async def delete_client(
     record = client_store.get_record_raw(client_id)
     if not record:
         raise HTTPException(status_code=404, detail="Клиент не найден.")
+    record = dict(record)
 
     server_id = record.get("server_id")
     protocol = (record.get("protocol") or "awg2").lower()
@@ -303,6 +304,25 @@ async def delete_client(
         )
 
     client_store.delete(client_id)
+
+    sibling_id = record.get("fallback_client_id") or record.get("fallback_of_client_id")
+    if sibling_id:
+        sib = client_store.get_record_raw(sibling_id)
+        if sib:
+            sib_proto = (sib.get("protocol") or "xray").lower()
+            sib_key = sib.get("public_key")
+            sib_server = sib.get("server_id")
+            if sib_key and sib_server:
+                try:
+                    await asyncio.to_thread(get_engine(sib_proto).delete_client, sib_server, sib_key)
+                except Exception:  # noqa: BLE001
+                    pass
+            client_store.delete(sibling_id)
+            if sib_server:
+                server_store.update_runtime(
+                    sib_server, active_peers=client_store.count_for_server(sib_server)
+                )
+
     if server_id:
         server_store.update_runtime(
             server_id, active_peers=client_store.count_for_server(server_id)

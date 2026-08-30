@@ -12,9 +12,8 @@ Policy routing, double-SNAT и структурный fail-closed добавля
 - health: из netns entry запрос с source = client addr через каскад обязан
   вернуть публичный IP exit. Иначе откат.
 
-НЕ входит в этот MVP (следующая веха): systemd-agent persistence (переживание
-reboot). См. AMNEZIA_CASCADE_PLAN.md §11. Сейчас каскад живёт до перезагрузки
-контейнера/сервера.
+Persist: systemd + hook в start.sh контейнера (см. cascade_persist.py). Конфиг
+транзита пишется в /opt/amnezia/awg/{iface}.conf (volume), не в /tmp.
 """
 
 from __future__ import annotations
@@ -414,14 +413,55 @@ def apply_cascade(entry_id: str) -> CascadeApplyResult:
             raise CascadeError("Health-check провален: транзит utmka-cas0 не установил handshake.")
 
         # split-слой (РФ напрямую), если включён в правилах
+        split_applied = False
         try:
             from app.services.cascade_rules import apply_split_after_cascade
 
             split_step = apply_split_after_cascade(entry_id)
             if split_step is not None:
                 steps.append(split_step)
+                split_applied = (split_step.status == "ok")
         except Exception:  # noqa: BLE001
             pass
+
+        # persist on both hosts (reboot / container restart)
+        try:
+            from app.services import cascade_persist
+
+            cascade_persist.persist_entry(
+                entry_ssh,
+                container=entry_ctn,
+                client_subnet=client_subnet,
+                profile=profile,
+                entry_ctn_ip=entry_ctn_ip,
+                entry_public_ip=entry_public_ip,
+                exit_public_ip=exit_public_ip,
+                entry_up_script=_entry_up_script(client_subnet, profile),
+                entry_host_nat_script=_entry_host_udp_nat(
+                    entry_ctn_ip, entry_public_ip, entry_host_port, exit_public_ip, port
+                ),
+                split_enabled=split_applied,
+            )
+            cascade_persist.persist_exit(
+                exit_ssh,
+                container=exit_ctn,
+                profile=profile,
+                exit_ctn_ip=exit_ctn_ip,
+                entry_public_ip=entry_public_ip,
+                exit_up_script=_exit_up_script(profile),
+            )
+            steps.append(CascadeStep(
+                name="Автозапуск после перезагрузки",
+                status="ok",
+                detail="systemd + hook в контейнере; на выходе UDP только с IP входа",
+            ))
+        except Exception as persist_exc:  # noqa: BLE001
+            steps.append(CascadeStep(
+                name="Автозапуск после перезагрузки",
+                status="info",
+                detail=f"Каскад работает, но persist не встал: {persist_exc}. "
+                "Панель поднимет его сама через ~90 с после ребута.",
+            ))
 
         # success
         cascade_store.upsert_link(
@@ -761,6 +801,13 @@ iptables -D FORWARD -i amn0 -o eth0 -p udp -s {ctn} --sport {hp} -m comment --co
 echo DOWN_ENTRY_HOST
 """
     errors = []
+    try:
+        from app.services import cascade_persist
+
+        cascade_persist.remove_entry(entry_ssh, entry_ctn)
+        cascade_persist.remove_exit(exit_ssh, exit_ctn, port, entry_public_ip or "")
+    except Exception:  # noqa: BLE001
+        pass
     # split-слой (ipset/mangle/fwmark в netns) снимаем первым — он висит на netns entry
     try:
         from app.services import cascade_split

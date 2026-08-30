@@ -487,11 +487,34 @@ class ChatService:
 
     # --- вложения (ключи подключения) -------------------------------------------
 
+    async def users_linked_to_clients(
+        self, client_ids: list[str]
+    ) -> list[tuple[ChatUser, ChatThread]]:
+        """Чат-аккаунты, привязанные к любому из client_ids, вместе с тредом."""
+        if not client_ids:
+            return []
+        rows = await self.session.execute(
+            select(ChatUser).where(
+                ChatUser.client_id.in_(client_ids),
+                ChatUser.is_active.is_(True),
+            )
+        )
+        result: list[tuple[ChatUser, ChatThread]] = []
+        for user in rows.scalars().all():
+            thread_row = await self.session.execute(
+                select(ChatThread).where(ChatThread.chat_user_id == user.id)
+            )
+            thread = thread_row.scalar_one_or_none()
+            if thread:
+                result.append((user, thread))
+        return result
+
     async def issue_key_attachment(
         self,
         thread: ChatThread,
         chat_user: ChatUser,
         created_by: Optional[uuid.UUID],
+        body: Optional[str] = None,
     ) -> ChatMessage:
         """Создаёт защищённое вложение с ключом привязанного VPN-клиента и
         сообщение в диалоге. Содержимое шифруется, живёт KEY_ATTACHMENT_TTL_HOURS."""
@@ -510,26 +533,47 @@ class ChatService:
                 "Перевыпустите конфиг на странице клиента."
             )
 
+        payload: dict = {"config_text": config_text, "vpn_link": vpn_link}
+        rec = client_store.get_record_raw(chat_user.client_id) or {}
+        fb_id = rec.get("fallback_client_id")
+        primary_id = rec.get("fallback_of_client_id")
+        if fb_id:
+            fb = client_store.get_detail(fb_id)
+            if fb and (fb.config_text or fb.vpn_link):
+                payload["fallback_config_text"] = fb.config_text
+                payload["fallback_vpn_link"] = fb.vpn_link
+                payload["fallback_label"] = "Reality (запасной канал, если UDP не проходит)"
+        elif primary_id:
+            primary = client_store.get_detail(primary_id)
+            if primary and (primary.config_text or primary.vpn_link):
+                payload["fallback_config_text"] = payload.get("config_text")
+                payload["fallback_vpn_link"] = payload.get("vpn_link")
+                payload["fallback_label"] = "Reality (запасной канал, если UDP не проходит)"
+                payload["config_text"] = primary.config_text
+                payload["vpn_link"] = primary.vpn_link
+
         safe_name = re.sub(r"[^a-zA-Z0-9_-]+", "_", (detail.name or chat_user.username))[:40]
         attachment = ChatAttachment(
             thread_id=thread.id,
             chat_user_id=chat_user.id,
             kind="vpn_key",
             filename=f"{safe_name or 'vpn'}.conf",
-            content_enc=encrypt(json.dumps({"config_text": config_text, "vpn_link": vpn_link})),
+            content_enc=encrypt(json.dumps(payload)),
             expires_at=_utcnow() + timedelta(hours=KEY_ATTACHMENT_TTL_HOURS),
             created_by_user_id=created_by,
         )
         self.session.add(attachment)
         await self.session.flush()
 
-        body = (
+        text = body or (
             "Ключ подключения готов. Скачайте файл конфигурации или отсканируйте QR "
             "в приложении AmneziaWG/AmneziaVPN.\n"
             f"Ссылка действует {KEY_ATTACHMENT_TTL_HOURS} ч."
         )
+        if payload.get("fallback_vpn_link") or payload.get("fallback_config_text"):
+            text += "\nВ том же вложении — запасной ключ Reality (TCP), если основной VPN не цепляется."
         return await self.send_message(
-            thread, "admin", body, sender_user_id=created_by, attachment_id=attachment.id
+            thread, "admin", text, sender_user_id=created_by, attachment_id=attachment.id
         )
 
     async def get_attachment(self, attachment_id: uuid.UUID) -> Optional[ChatAttachment]:

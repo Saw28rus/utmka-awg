@@ -48,8 +48,9 @@ from app.ssh import exec as ssh_exec
 SNAPSHOTS_FILE = "masking_snapshots.json"
 MAX_SNAPSHOTS_PER_SERVER = 5
 
-# Ключи, которые ротация меняет. I1-I5 не трогаем (если заданы — сохраняются).
+# Ключи, которые ротация меняет. I1-I5 — только если include_cps=True.
 ROTATED_KEYS = ("Jc", "Jmin", "Jmax", "S1", "S2", "S3", "S4", "H1", "H2", "H3", "H4")
+CPS_KEYS = ("I1", "I2", "I3", "I4", "I5")
 
 # H: избегаем зарезервированных значений WG (1-4) и нижнего мусора.
 H_MIN = 65_537
@@ -137,7 +138,26 @@ def _generate_h_ranges() -> list[str]:
     raise MaskingApplyError("Не удалось сгенерировать валидные H-диапазоны.")
 
 
-def generate_params(preset_id: str) -> dict[str, str]:
+def generate_cps_params() -> dict[str, str]:
+    """Опциональный CPS-слой (I1–I5): уникальный hex-префикс перед handshake.
+
+    Формат AmneziaWG: теги <b HEX> (байты) и <r lo-hi> (случайная длина).
+    Не входит в базовый strong-score; включается явно. При сбое apply — откат.
+    """
+
+    def blob(n: int) -> str:
+        return secrets.token_hex(n)
+
+    return {
+        "I1": f"<b 0x{blob(8)}><r 32-96><c>",
+        "I2": f"<b 0x{blob(8)}>",
+        "I3": f"<b 0x{blob(4)}>",
+        "I4": f"<b 0x{blob(4)}>",
+        "I5": f"<b 0x{blob(8)}>",
+    }
+
+
+def generate_params(preset_id: str, *, include_cps: bool = False) -> dict[str, str]:
     preset = PRESETS.get(preset_id)
     if not preset:
         raise MaskingApplyError("Неизвестный пресет маскировки.")
@@ -160,7 +180,7 @@ def generate_params(preset_id: str) -> dict[str, str]:
         s3 = 1
 
     h1, h2, h3, h4 = _generate_h_ranges()
-    return {
+    out = {
         "Jc": str(_rand_between(*preset["jc"])),
         "Jmin": str(jmin),
         "Jmax": str(jmax),
@@ -173,6 +193,18 @@ def generate_params(preset_id: str) -> dict[str, str]:
         "H3": h3,
         "H4": h4,
     }
+    if include_cps:
+        out.update(generate_cps_params())
+    return out
+
+
+def rotation_include_cps(server_id: str) -> bool:
+    """CPS на авто-ротации только если I1–I5 уже стоят на сервере."""
+    try:
+        resp = read_masking(server_id)
+        return bool(resp.state and resp.state.i_present)
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def validate_params(params: dict[str, str]) -> list[str]:
@@ -238,6 +270,12 @@ def validate_params(params: dict[str, str]) -> list[str]:
             break
     if all(str(params.get(k) or "").strip() == v for k, v in STATIC_FALLBACK_H.items()):
         errors.append("H совпадают с известным статическим fallback-профилем.")
+    for key in CPS_KEYS:
+        raw = str(params.get(key) or "").strip()
+        if not raw:
+            continue
+        if "<b" not in raw and "<r" not in raw:
+            errors.append(f"{key} — не похоже на CPS-тег AmneziaWG.")
     return errors
 
 
@@ -358,11 +396,16 @@ def _restart_interface(ssh, container: str, config_path: str, iface: str) -> tup
     return False, detail or "интерфейс не поднялся"
 
 
+def _apply_keys(params: dict[str, str]) -> tuple[str, ...]:
+    extra = tuple(k for k in CPS_KEYS if k in params and str(params.get(k) or "").strip())
+    return ROTATED_KEYS + extra
+
+
 def _render_new_config(config_text: str, params: dict[str, str]) -> str:
     """Заменяем только параметры маскировки, не трогая ключи/peers/прочее."""
     new_text = config_text
     missing: list[str] = []
-    for key in ROTATED_KEYS:
+    for key in _apply_keys(params):
         pattern = re.compile(rf"(?im)^([ \t]*){re.escape(key)}[ \t]*=.*$")
         if pattern.search(new_text):
             new_text = pattern.sub(rf"\g<1>{key} = {params[key]}", new_text, count=1)
@@ -420,7 +463,7 @@ def _client_reissue_stats(server_id: str) -> tuple[int, int, int]:
     return total, reissuable, skipped
 
 
-def preview_rotation(server_id: str, preset_id: str) -> MaskingPreviewResponse:
+def preview_rotation(server_id: str, preset_id: str, include_cps: bool = False) -> MaskingPreviewResponse:
     """Блокирующая (SSH) — вызывать через asyncio.to_thread."""
     if preset_id not in PRESETS:
         return MaskingPreviewResponse(ok=False, preset=preset_id, error="Неизвестный пресет.")
@@ -448,9 +491,9 @@ def preview_rotation(server_id: str, preset_id: str) -> MaskingPreviewResponse:
                 error="Сервер не AWG 2.0 (нет S3/S4) — ротация недоступна. Сначала установите AmneziaWG 2.0.",
             )
 
-        params = generate_params(preset_id)
+        params = generate_params(preset_id, include_cps=include_cps)
         errors = validate_params(params)
-        current = {k: v for k, v in info.awg_params.items() if k in ROTATED_KEYS}
+        current = {k: v for k, v in info.awg_params.items() if k in ROTATED_KEYS or k in CPS_KEYS}
         total, reissuable, skipped = _client_reissue_stats(server_id)
         return MaskingPreviewResponse(
             ok=not errors,
@@ -470,7 +513,13 @@ def preview_rotation(server_id: str, preset_id: str) -> MaskingPreviewResponse:
 # --- apply / rollback ----------------------------------------------------------
 
 
-def apply_rotation(server_id: str, preset_id: str, params: dict[str, str]) -> MaskingApplyResponse:
+def apply_rotation(
+    server_id: str,
+    preset_id: str,
+    params: dict[str, str],
+    *,
+    notify_chat: bool = True,
+) -> MaskingApplyResponse:
     """Блокирующая (SSH) — вызывать через asyncio.to_thread."""
     steps: list[MaskingStep] = []
 
@@ -526,7 +575,7 @@ def apply_rotation(server_id: str, preset_id: str, params: dict[str, str]) -> Ma
             dry_problems.append("ListenPort изменился")
         if new_peers != old_peers:
             dry_problems.append(f"число peer'ов изменилось ({old_peers} -> {new_peers})")
-        for key in ROTATED_KEYS:
+        for key in _apply_keys(params):
             if (new_info.awg_params.get(key) or "") != params[key]:
                 dry_problems.append(f"{key} не применился в рендере")
         if dry_problems:
@@ -573,7 +622,7 @@ def apply_rotation(server_id: str, preset_id: str, params: dict[str, str]) -> Ma
             )
 
         # reissue клиентов
-        reissued, skipped = _reissue_clients(
+        reissued, skipped, reissued_ids = _reissue_clients(
             ssh,
             container=container,
             iface=iface,
@@ -591,6 +640,25 @@ def apply_rotation(server_id: str, preset_id: str, params: dict[str, str]) -> Ma
                 detail=f"обновлено {reissued}, пропущено {skipped} (импортированные без ключей)",
             )
         )
+
+        chat_delivered = 0
+        if notify_chat and reissued_ids:
+            from app.services.chat_key_delivery import deliver_keys_for_clients
+
+            chat_delivered = deliver_keys_for_clients(
+                reissued_ids, reason="masking_rotation"
+            )
+            steps.append(
+                MaskingStep(
+                    name="Ключи в чат",
+                    status="ok" if chat_delivered else "info",
+                    detail=(
+                        f"отправлено в {chat_delivered} диалог(а)"
+                        if chat_delivered
+                        else "привязанных чат-аккаунтов нет — раздайте конфиги вручную"
+                    ),
+                )
+            )
 
         if cascade_store.get_link(server_id):
             steps.append(
@@ -612,6 +680,7 @@ def apply_rotation(server_id: str, preset_id: str, params: dict[str, str]) -> Ma
             snapshot_id=snapshot_id,
             reissued=reissued,
             reissue_skipped=skipped,
+            chat_delivered=chat_delivered,
             masking=fresh,
         )
     except MaskingApplyError as exc:
@@ -658,7 +727,7 @@ def rollback_rotation(server_id: str, snapshot_id: Optional[str] = None) -> Mask
             )
 
         info = parse_interface(conf_text)
-        reissued, skipped = _reissue_clients(
+        reissued, skipped, reissued_ids = _reissue_clients(
             ssh,
             container=container,
             iface=iface,
@@ -676,10 +745,17 @@ def rollback_rotation(server_id: str, snapshot_id: Optional[str] = None) -> Mask
                 detail=f"обновлено {reissued}, пропущено {skipped}",
             )
         )
+        chat_delivered = 0
+        if reissued_ids:
+            from app.services.chat_key_delivery import deliver_keys_for_clients
+
+            chat_delivered = deliver_keys_for_clients(
+                reissued_ids, reason="masking_rotation"
+            )
         fresh = read_masking(server_id)
         return MaskingApplyResponse(
             ok=True, steps=steps, snapshot_id=snap["id"], rolled_back=True,
-            reissued=reissued, reissue_skipped=skipped, masking=fresh,
+            reissued=reissued, reissue_skipped=skipped, chat_delivered=chat_delivered, masking=fresh,
         )
     except MaskingApplyError as exc:
         return MaskingApplyResponse(ok=False, steps=steps, error=str(exc))
@@ -710,7 +786,7 @@ def _reissue_clients(
     listen_port: int,
     server_private_key: Optional[str],
     awg_params: dict[str, str],
-) -> tuple[int, int]:
+) -> tuple[int, int, list[str]]:
     """Пере-рендер конфигов/ссылок клиентов с новыми параметрами (ключи не меняются)."""
     record = server_store.get_record(server_id) or {}
     server_name = record.get("name") or "Server"
@@ -720,6 +796,7 @@ def _reissue_clients(
     server_public_key = _server_public_key(ssh, container, iface, server_private_key)
 
     reissued = skipped = 0
+    reissued_ids: list[str] = []
     for item in client_store.list_all(server_id):
         if item.protocol not in ("awg2", "awg", "awg_legacy"):
             continue
@@ -761,4 +838,5 @@ def _reissue_clients(
             endpoint=f"{endpoint_host}:{listen_port}",
         )
         reissued += 1
-    return reissued, skipped
+        reissued_ids.append(item.id)
+    return reissued, skipped, reissued_ids

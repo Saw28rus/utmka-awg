@@ -111,37 +111,54 @@ def install_awg(server_id: str, *, variant: str = "awg2", port: int = DEFAULT_PO
 
 
 def _awg_params(with_s34: bool) -> dict[str, str]:
+    """Параметры обфускации для свежей установки.
+
+    AWG 2.0 — сразу сильная маскировка (пресет mask: H-диапазоны, S3/S4 > 0,
+    Jmin/Jmax в официальных 64–1024). Junk на сервере может быть высоким:
+    клиентским конфигам панель всё равно выдаёт mobile-safe Jc/Jmax, handshake
+    на телефоне не страдает.
+
+    Legacy — одиночные H без S3/S4, как раньше (совместимость).
+    """
+    if with_s34:
+        from app.services.awg_masking_apply import generate_params
+
+        gen = generate_params("mask")
+        return {
+            "$JUNK_PACKET_COUNT": gen["Jc"],
+            "$JUNK_PACKET_MIN_SIZE": gen["Jmin"],
+            "$JUNK_PACKET_MAX_SIZE": gen["Jmax"],
+            "$INIT_PACKET_JUNK_SIZE": gen["S1"],
+            "$RESPONSE_PACKET_JUNK_SIZE": gen["S2"],
+            "$COOKIE_REPLY_PACKET_JUNK_SIZE": gen["S3"],
+            "$TRANSPORT_PACKET_JUNK_SIZE": gen["S4"],
+            "$INIT_PACKET_MAGIC_HEADER": gen["H1"],
+            "$RESPONSE_PACKET_MAGIC_HEADER": gen["H2"],
+            "$UNDERLOAD_PACKET_MAGIC_HEADER": gen["H3"],
+            "$TRANSPORT_PACKET_MAGIC_HEADER": gen["H4"],
+        }
+
     headers = set()
     while len(headers) < 4:
         headers.add(_secrets.randbelow(2_147_483_640) + 5)
     h1, h2, h3, h4 = list(headers)
-
-    s1 = _secrets.randbelow(136) + 15  # 15..150
+    s1 = _secrets.randbelow(136) + 15
     s2 = _secrets.randbelow(136) + 15
     while s1 + 56 == s2:
         s2 = _secrets.randbelow(136) + 15
-
-    params = {
-        # Mobile-safe junk: AmneziaWG шлёт Jc junk-пакетов ПЕРЕД handshake-init.
-        # Большой залп (старый дефолт Jc 3..10 по 50..1000 байт = до ~10 КБ) на
-        # мобильных сетях частично режется оператором, и среди потерянных пакетов
-        # оказывается сам init → сервер его не видит → «вечное подключение».
-        # Доказано дампом: при Jc=7 доходило 5 из 8 пакетов, init терялся.
-        # Junk-параметры не обязаны совпадать у пиров, поэтому держим залп малым:
-        # Jc 3..4 и Jmax 500 — достаточно для обфускации, но init проходит.
-        "$JUNK_PACKET_COUNT": str(_secrets.randbelow(2) + 3),  # 3..4
-        "$JUNK_PACKET_MIN_SIZE": "50",
+    return {
+        "$JUNK_PACKET_COUNT": str(_secrets.randbelow(2) + 3),
+        "$JUNK_PACKET_MIN_SIZE": "64",
         "$JUNK_PACKET_MAX_SIZE": "500",
         "$INIT_PACKET_JUNK_SIZE": str(s1),
         "$RESPONSE_PACKET_JUNK_SIZE": str(s2),
-        "$COOKIE_REPLY_PACKET_JUNK_SIZE": str(_secrets.randbelow(136) + 15) if with_s34 else "0",
-        "$TRANSPORT_PACKET_JUNK_SIZE": str(_secrets.randbelow(136) + 15) if with_s34 else "0",
+        "$COOKIE_REPLY_PACKET_JUNK_SIZE": "0",
+        "$TRANSPORT_PACKET_JUNK_SIZE": "0",
         "$INIT_PACKET_MAGIC_HEADER": str(h1),
         "$RESPONSE_PACKET_MAGIC_HEADER": str(h2),
         "$UNDERLOAD_PACKET_MAGIC_HEADER": str(h3),
         "$TRANSPORT_PACKET_MAGIC_HEADER": str(h4),
     }
-    return params
 
 
 def _build_vars(host: str, port: int, cfg: dict) -> dict[str, str]:

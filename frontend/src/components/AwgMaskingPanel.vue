@@ -105,8 +105,8 @@
       </div>
       <p class="masking-hint">
         Генерация уникальных параметров обфускации под этот сервер. Перед применением создаётся
-        зашифрованный snapshot, после — конфиги всех клиентов перевыпускаются автоматически,
-        но их нужно заново раздать клиентам.
+        зашифрованный snapshot, после — конфиги всех клиентов перевыпускаются автоматически
+        и отправляются в чат тем, у кого есть привязка.
       </p>
       <p v-if="rotationAgeText" class="rotation-age">{{ rotationAgeText }}</p>
 
@@ -123,6 +123,14 @@
           <span class="preset-desc">{{ p.description }}</span>
         </button>
       </div>
+
+      <label class="cps-row">
+        <n-switch v-model:value="includeCps" size="small" />
+        <span>
+          Добавить CPS (I1–I5) — дополнительный слой маскировки handshake.
+          Если интерфейс не поднимется, панель откатится сама.
+        </span>
+      </label>
 
       <div class="rotation-actions">
         <n-button size="small" type="primary" secondary :loading="previewLoading" @click="makePreview">
@@ -185,8 +193,8 @@
       </div>
       <p class="masking-hint">
         Панель сама обновит параметры обфускации (snapshot → применение → health-проверка →
-        авто-откат при сбое). <b>Важно:</b> после ротации старые клиентские конфиги и QR перестают
-        работать — клиенту нужно переимпортировать конфиг. Поэтому функция включается осознанно.
+        авто-откат при сбое). После ротации новые конфиги уходят в чат привязанным клиентам;
+        остальным нужно переимпортировать ключ.
       </p>
 
       <div class="rotation-grid">
@@ -402,6 +410,7 @@ type MaskingApplyResult = {
   rolled_back: boolean
   reissued: number
   reissue_skipped: number
+  chat_delivered?: number
   error: string | null
   masking: MaskingResponse | null
 }
@@ -420,7 +429,8 @@ type RotationPolicy = {
   last_error: string | null
 }
 
-const rotatedKeys = ['Jc', 'Jmin', 'Jmax', 'S1', 'S2', 'S3', 'S4', 'H1', 'H2', 'H3', 'H4']
+const BASE_ROTATED_KEYS = ['Jc', 'Jmin', 'Jmax', 'S1', 'S2', 'S3', 'S4', 'H1', 'H2', 'H3', 'H4']
+const CPS_KEYS = ['I1', 'I2', 'I3', 'I4', 'I5']
 
 const message = useMessage()
 const dialog = useDialog()
@@ -430,6 +440,7 @@ const data = ref<MaskingResponse | null>(null)
 const presets = ref<MaskingPreset[]>([])
 const snapshots = ref<SnapshotInfo[]>([])
 const selectedPreset = ref('balance')
+const includeCps = ref(false)
 const preview = ref<MaskingPreview | null>(null)
 const previewLoading = ref(false)
 const applyLoading = ref(false)
@@ -449,6 +460,18 @@ const policy = reactive<RotationPolicy>({
 })
 const policyLoading = ref(false)
 const runLoading = ref(false)
+
+const rotatedKeys = computed(() => {
+  const params = preview.value?.params || {}
+  const extra = CPS_KEYS.filter((k) => params[k])
+  return extra.length ? [...BASE_ROTATED_KEYS, ...extra] : BASE_ROTATED_KEYS
+})
+
+function rotationSuccessText(resp: MaskingApplyResult) {
+  const chat = resp.chat_delivered || 0
+  if (chat) return `Ротация выполнена. Перевыпущено конфигов: ${resp.reissued}, в чат: ${chat}.`
+  return `Ротация выполнена. Перевыпущено конфигов: ${resp.reissued}.`
+}
 
 const state = computed(() => data.value?.state ?? null)
 const warnings = computed(() => data.value?.warnings ?? [])
@@ -597,8 +620,8 @@ function confirmRunNow() {
   dialog.warning({
     title: 'Ротировать маскировку сейчас?',
     content:
-      'Параметры обфускации сменятся немедленно. Клиенты потеряют связь до переимпорта новых ' +
-      'конфигов. Будет создан snapshot, при сбое выполнится авто-откат.',
+      'Параметры обфускации сменятся немедленно. Клиенты потеряют связь до получения новых ' +
+      'конфигов. Привязанным в чат ключи уйдут сами. Будет создан snapshot, при сбое — авто-откат.',
     positiveText: 'Ротировать',
     negativeText: 'Отмена',
     onPositiveClick: () => {
@@ -617,7 +640,7 @@ async function runNow() {
     )
     applyResult.value = resp
     if (resp.ok) {
-      message.success(`Ротация выполнена. Перевыпущено конфигов: ${resp.reissued}.`)
+      message.success(rotationSuccessText(resp))
       if (resp.masking) data.value = resp.masking
       void loadRotationMeta()
     } else {
@@ -639,7 +662,7 @@ async function makePreview() {
   try {
     const { data: resp } = await api.post<MaskingPreview>(
       `/servers/${props.serverId}/awg/masking/preview`,
-      { preset: selectedPreset.value }
+      { preset: selectedPreset.value, include_cps: includeCps.value }
     )
     preview.value = resp
     if (!resp.ok && resp.error) message.error(resp.error)
@@ -656,7 +679,7 @@ function confirmApply() {
     title: 'Применить новые параметры маскировки?',
     content:
       'Все подключённые клиенты потеряют связь до получения новых конфигов. ' +
-      'Панель перевыпустит конфиги автоматически, но раздать их клиентам нужно вручную. ' +
+      'Панель перевыпустит конфиги и отправит их в чат привязанным аккаунтам. ' +
       'Перед изменением будет создан snapshot для отката.',
     positiveText: 'Применить',
     negativeText: 'Отмена',
@@ -672,11 +695,15 @@ async function doApply() {
   try {
     const { data: resp } = await api.post<MaskingApplyResult>(
       `/servers/${props.serverId}/awg/masking/apply`,
-      { preset: preview.value.preset, params: preview.value.params }
+      { preset: preview.value.preset, params: preview.value.params, notify_chat: true }
     )
     applyResult.value = resp
     if (resp.ok) {
-      message.success(`Маскировка обновлена. Перевыпущено конфигов: ${resp.reissued}.`)
+      message.success(
+        resp.chat_delivered
+          ? `Маскировка обновлена. Перевыпущено: ${resp.reissued}, в чат: ${resp.chat_delivered}.`
+          : `Маскировка обновлена. Перевыпущено конфигов: ${resp.reissued}.`
+      )
       preview.value = null
       if (resp.masking) data.value = resp.masking
       void loadRotationMeta()
@@ -941,6 +968,20 @@ onMounted(() => {
   display: flex;
   gap: 10px;
   margin-bottom: 14px;
+}
+
+.cps-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin: 0 0 12px;
+  font-size: 13px;
+  line-height: 1.4;
+  color: var(--color-muted);
+}
+
+.cps-row span {
+  min-width: 0;
 }
 
 .preview-box {

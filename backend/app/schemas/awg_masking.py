@@ -118,6 +118,7 @@ class MaskingPreset(BaseModel):
 
 class MaskingPreviewRequest(BaseModel):
     preset: str
+    include_cps: bool = False
 
 
 class MaskingPreviewResponse(BaseModel):
@@ -136,6 +137,7 @@ class MaskingPreviewResponse(BaseModel):
 class MaskingApplyRequest(BaseModel):
     preset: str
     params: dict[str, str]
+    notify_chat: bool = True
 
 
 class MaskingStep(BaseModel):
@@ -151,6 +153,7 @@ class MaskingApplyResponse(BaseModel):
     rolled_back: bool = False
     reissued: int = 0
     reissue_skipped: int = 0
+    chat_delivered: int = 0
     error: Optional[str] = None
     masking: Optional[MaskingResponse] = None
 

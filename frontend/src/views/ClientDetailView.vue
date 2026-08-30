@@ -34,6 +34,8 @@
                     :pulse="presence.pulse"
                   />
                   <StatusBadge v-if="client.blocked" label="заблокирован на сервере" tone="danger" />
+                  <StatusBadge v-if="client.fallback_client_id" label="есть запасной Reality" tone="ok" />
+                  <StatusBadge v-if="client.fallback_of_client_id" label="запасной Reality" tone="neutral" />
                 </div>
               </div>
             </div>
@@ -98,6 +100,12 @@
             <div>
               <dt>Создан</dt>
               <dd>{{ formatDateTime(client.created_at) }}</dd>
+            </div>
+            <div v-if="pairClientId">
+              <dt>{{ client.fallback_client_id ? 'Запасной ключ' : 'Основной ключ' }}</dt>
+              <dd>
+                <button class="pair-link" type="button" @click="openPair">Открыть пару</button>
+              </dd>
             </div>
             <div v-if="client.protocol !== 'xray'">
               <dt>Public key</dt>
@@ -174,7 +182,7 @@
 <script setup lang="ts">
 import { ArrowLeft, Copy, Download, KeyRound, Pencil, Trash2 } from '@lucide/vue'
 import { NButton, NSelect, NSpin, NSwitch, useDialog, useMessage } from 'naive-ui'
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
 import { api } from '@/api/client'
@@ -209,6 +217,8 @@ type ClientDetail = {
   online: boolean
   blocked: boolean
   keepalive?: number
+  fallback_client_id?: string | null
+  fallback_of_client_id?: string | null
 }
 
 const keepaliveOptions = [
@@ -310,6 +320,9 @@ async function changeKeepalive(value: number) {
 }
 
 onMounted(load)
+watch(() => route.params.id, () => {
+  void load()
+})
 
 async function load() {
   loading.value = true
@@ -335,6 +348,15 @@ const hasShare = computed(() => Boolean(client.value?.config_text || client.valu
 const isXray = computed(() => client.value?.protocol === 'xray')
 
 const protocolLabel = computed(() => (isXray.value ? 'Xray' : 'AWG'))
+
+const pairClientId = computed(
+  () => client.value?.fallback_client_id || client.value?.fallback_of_client_id || ''
+)
+
+function openPair() {
+  if (!pairClientId.value) return
+  void router.push({ name: 'client-detail', params: { id: pairClientId.value } })
+}
 
 const configTabLabel = computed(() => (isXray.value ? 'VLESS' : 'AmneziaWG'))
 
@@ -461,7 +483,9 @@ function confirmDelete() {
   if (!client.value) return
   dialog.warning({
     title: 'Удалить клиента?',
-    content: 'Клиент будет удалён из панели, а его peer/UUID — убран с сервера.',
+    content: pairClientId.value
+      ? 'Клиент будет удалён из панели вместе с парным ключом (AWG + Reality), peer/UUID уберутся с сервера.'
+      : 'Клиент будет удалён из панели, а его peer/UUID — убран с сервера.',
     positiveText: 'Удалить',
     negativeText: 'Отмена',
     onPositiveClick: async () => {
@@ -622,6 +646,17 @@ dd.warn {
 
 .key {
   font-size: 12px;
+}
+
+.pair-link {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--color-accent, #63e2b7);
+  cursor: pointer;
+  font: inherit;
+  text-decoration: underline;
+  text-underline-offset: 2px;
 }
 
 .share-panel {

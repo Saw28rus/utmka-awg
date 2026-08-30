@@ -21,6 +21,8 @@ class ClientCreate(BaseModel):
     billing_mode: str = Field(default="free", pattern="^(free|paid)$")
     billing_amount_kopecks: Optional[int] = Field(default=None, ge=100, le=100_000_00)
     billing_period_months: int = Field(default=1, ge=1, le=12)
+    # Если на сервере есть Xray — сразу выдать запасной Reality-ключ (тот же человек).
+    with_reality_fallback: bool = True
 
 
 class ClientExportRequest(BaseModel):
@@ -114,6 +116,8 @@ class ClientListItem(BaseModel):
     billing_amount_kopecks: Optional[int] = None
     billing_period_months: int = 1
     last_paid_at: Optional[str] = None
+    fallback_client_id: Optional[str] = None
+    fallback_of_client_id: Optional[str] = None
 
 
 class ClientDetail(ClientListItem):

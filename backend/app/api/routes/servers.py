@@ -963,7 +963,7 @@ async def awg_masking_preview(
 ) -> MaskingPreviewResponse:
     if not server_store.get_record(server_id):
         raise HTTPException(status_code=404, detail="Сервер не найден.")
-    return await asyncio.to_thread(preview_rotation, server_id, payload.preset)
+    return await asyncio.to_thread(preview_rotation, server_id, payload.preset, payload.include_cps)
 
 
 @router.post("/{server_id}/awg/masking/apply", response_model=MaskingApplyResponse)
@@ -975,7 +975,9 @@ async def awg_masking_apply(
 ) -> MaskingApplyResponse:
     if not server_store.get_record(server_id):
         raise HTTPException(status_code=404, detail="Сервер не найден.")
-    result = await asyncio.to_thread(apply_rotation, server_id, payload.preset, payload.params)
+    result = await asyncio.to_thread(
+        apply_rotation, server_id, payload.preset, payload.params, notify_chat=payload.notify_chat
+    )
     audit = AuditService(db)
     await audit.log(
         "masking_apply",
@@ -1072,14 +1074,18 @@ async def awg_rotation_run(
         raise HTTPException(status_code=404, detail="Сервер не найден.")
     from datetime import datetime, timezone
 
-    from app.services.awg_masking_apply import PRESETS, generate_params
+    from app.services.awg_masking_apply import PRESETS, generate_params, rotation_include_cps
     from app.services.rotation_policy_store import rotation_policy_store
 
     preset = rotation_policy_store.get(server_id).get("preset") or "balance"
     if preset not in PRESETS:
         preset = "balance"
-    params = generate_params(preset)
-    result = await asyncio.to_thread(apply_rotation, server_id, preset, params)
+
+    def _run_now() -> MaskingApplyResponse:
+        params = generate_params(preset, include_cps=rotation_include_cps(server_id))
+        return apply_rotation(server_id, preset, params)
+
+    result = await asyncio.to_thread(_run_now)
     now_iso = datetime.now(timezone.utc).isoformat()
     rotation_policy_store.mark_rotated(
         server_id,

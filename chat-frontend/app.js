@@ -650,6 +650,21 @@
     var variants = [];
     if (data.config_text) variants.push({ id: 'awg', label: 'AmneziaWG', text: data.config_text, ext: '.txt' });
     if (data.vpn_link) variants.push({ id: 'vpn', label: 'AmneziaVPN', text: data.vpn_link, ext: '-vpn.txt' });
+    if (data.fallback_vpn_link) {
+      variants.push({
+        id: 'reality',
+        label: data.fallback_label || 'Reality',
+        text: data.fallback_vpn_link,
+        ext: '-reality.txt'
+      });
+    } else if (data.fallback_config_text) {
+      variants.push({
+        id: 'reality_conf',
+        label: data.fallback_label || 'Reality',
+        text: data.fallback_config_text,
+        ext: '-reality.txt'
+      });
+    }
     if (!variants.length) { alert('Текст конфигурации недоступен для этого ключа.'); return; }
 
     var current = variants[0];
@@ -672,7 +687,13 @@
 
     function activate(v) {
       current = v;
-      h.textContent = v.id === 'awg' ? 'Конфиг для AmneziaWG / WireGuard' : 'Ссылка для AmneziaVPN';
+      var titles = {
+        awg: 'Конфиг для AmneziaWG / WireGuard',
+        vpn: 'Ссылка для AmneziaVPN',
+        reality: 'Запасной Reality (vless)',
+        reality_conf: 'Запасной Reality — конфиг'
+      };
+      h.textContent = titles[v.id] || v.label;
       pre.textContent = v.text;
       tabs.querySelectorAll('button').forEach(function (b) {
         b.classList.toggle('primary', b.dataset.mode === v.id);
@@ -750,6 +771,7 @@
   function openQrOverlay(data) {
     var qrAwg = data.qr_awg_data_url || (data.has_conf ? data.qr_data_url : null);
     var qrVpn = data.qr_vpn_data_url || (!data.has_conf ? data.qr_data_url : null);
+    var qrFallback = data.qr_fallback_vpn_data_url;
 
     var overlay = document.createElement('div');
     overlay.className = 'qr-overlay';
@@ -779,6 +801,10 @@
         h.textContent = 'QR для AmneziaWG / WireGuard';
         img.src = qrAwg;
         hint.textContent = 'AmneziaWG → «+» → «Сканировать QR-код»';
+      } else if (mode === 'reality') {
+        h.textContent = 'QR запасного Reality';
+        img.src = qrFallback;
+        hint.textContent = 'Happ / v2rayNG / Streisand → сканировать QR';
       } else {
         h.textContent = 'QR для AmneziaVPN';
         img.src = qrVpn;
@@ -798,9 +824,12 @@
 
     if (qrAwg) addTab('AmneziaWG', 'awg');
     if (qrVpn) addTab('AmneziaVPN', 'vpn');
+    if (qrFallback) addTab((data.fallback_label || 'Reality').replace(/\s*\(.*\)\s*$/, '') || 'Reality', 'reality');
     if (qrAwg) activate('awg');
     else if (qrVpn) activate('vpn');
-    if ((qrAwg && !qrVpn) || (!qrAwg && qrVpn)) tabs.style.display = 'none';
+    else if (qrFallback) activate('reality');
+    var tabCount = (qrAwg ? 1 : 0) + (qrVpn ? 1 : 0) + (qrFallback ? 1 : 0);
+    if (tabCount < 2) tabs.style.display = 'none';
 
     var row = document.createElement('div');
     row.className = 'att-actions';

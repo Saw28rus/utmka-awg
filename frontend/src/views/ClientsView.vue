@@ -97,7 +97,7 @@
             class="row-cell proto-cell"
           >
             <span class="proto-badge" :class="`proto-${client.protocol || 'awg2'}`">
-              {{ protocolBadge(client.protocol) }}
+              {{ protocolBadge(client) }}
             </span>
           </RouterLink>
           <RouterLink
@@ -203,6 +203,8 @@ type ClientListItem = {
   billing_mode?: string
   billing_amount_kopecks?: number | null
   billing_period_months?: number
+  fallback_client_id?: string | null
+  fallback_of_client_id?: string | null
 }
 
 const router = useRouter()
@@ -337,9 +339,11 @@ function onClientCreated(payload: { clientId: string; format: string }) {
   router.push({ name: 'client-detail', params: { id: payload.clientId }, query: { format: payload.format } })
 }
 
-function protocolBadge(protocol?: string) {
-  if (protocol === 'xray') return 'Xray'
-  return 'AWG'
+function protocolBadge(client: ClientListItem) {
+  if (client.protocol === 'xray') {
+    return client.fallback_of_client_id ? 'Xray · запас' : 'Xray'
+  }
+  return client.fallback_client_id ? 'AWG+R' : 'AWG'
 }
 
 function trafficText(client: ClientListItem) {

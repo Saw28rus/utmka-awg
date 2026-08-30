@@ -52,6 +52,16 @@
             </select>
           </label>
           <p v-if="cascadeHint" class="field-wide hint-text hint-cascade">{{ cascadeHint }}</p>
+          <label v-if="showRealityFallback" class="field field-wide check-row">
+            <input v-model="form.withRealityFallback" type="checkbox" />
+            <span>
+              Сразу выдать запасной Reality (TCP/443)
+              <span class="hint-text">
+                Второй ключ на тот же сервер. Если UDP режут — клиент подключается этим ключом.
+                В списке появится «{{ form.name || 'имя' }} · Reality».
+              </span>
+            </span>
+          </label>
           <label v-if="isXrayLike" class="field">
             <span>Отпечаток TLS (fingerprint)</span>
             <select v-model="form.fingerprint">
@@ -193,7 +203,8 @@ const form = reactive({
   expiresAt: '',
   billingMode: 'free',
   billingAmountRub: '',
-  billingPeriodMonths: 1
+  billingPeriodMonths: 1,
+  withRealityFallback: true
 })
 
 const visible = computed({
@@ -260,6 +271,14 @@ const cascadeHint = computed(() => {
   return `На этом сервере включён Xray-каскад → ${exit}: достаточно обычного Xray-клиента. РФ-трафик выходит здесь, остальное уходит на exit (правило на сервере).`
 })
 
+const showRealityFallback = computed(() => {
+  if (form.protocol !== 'awg2') return false
+  const s = selectedServer.value
+  if (!s) return false
+  const protos = s.client_protocols || s.protocols || []
+  return protos.includes('xray') || !!s.xray_cascade_active
+})
+
 const endpointChoices = computed(() => {
   const host = selectedServer.value?.host || ''
   const domain = serverDomain.value
@@ -287,6 +306,7 @@ watch(visible, async (open) => {
     form.billingMode = 'free'
     form.billingAmountRub = ''
     form.billingPeriodMonths = 1
+    form.withRealityFallback = true
     await loadServers()
     if (eligibleServers.value.length) {
       form.server_id = eligibleServers.value[0].id
@@ -376,9 +396,14 @@ async function submit() {
       expires_at: form.expiresAt || null,
       billing_mode: form.billingMode,
       billing_amount_kopecks: billingAmountKopecks,
-      billing_period_months: form.billingPeriodMonths
+      billing_period_months: form.billingPeriodMonths,
+      with_reality_fallback: showRealityFallback.value && form.withRealityFallback
     })
-    message.success('Клиент создан. Конфиг и QR готовы.')
+    message.success(
+      showRealityFallback.value && form.withRealityFallback
+        ? 'Клиент создан: AmneziaWG и запасной Reality.'
+        : 'Клиент создан. Конфиг и QR готовы.'
+    )
     emit('created', { clientId: data.id, format: form.format })
     visible.value = false
   } catch (err: any) {
@@ -469,6 +494,20 @@ function close() {
   border-radius: 6px;
   background: rgba(255, 255, 255, 0.03);
   color: var(--color-text);
+}
+
+.check-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  font-weight: 500;
+}
+
+.check-row input[type='checkbox'] {
+  width: 16px;
+  height: 16px;
+  margin-top: 3px;
+  flex-shrink: 0;
 }
 
 .field input,

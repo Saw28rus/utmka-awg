@@ -51,6 +51,10 @@ class ChatAttachmentView(BaseModel):
     qr_data_url: Optional[str] = None  # legacy: QR первого доступного формата
     qr_awg_data_url: Optional[str] = None  # QR конфига для AmneziaWG/WireGuard
     qr_vpn_data_url: Optional[str] = None  # QR ссылки vpn:// для AmneziaVPN
+    fallback_config_text: Optional[str] = None
+    fallback_vpn_link: Optional[str] = None
+    fallback_label: Optional[str] = None
+    qr_fallback_vpn_data_url: Optional[str] = None
 
 
 class ChatMessagesPage(BaseModel):
@@ -220,6 +224,7 @@ class ChatProvisionClientRequest(BaseModel):
     # Если у аккаунта уже привязан клиент: True — перепривязать на нового
     # (старый VPN-клиент НЕ удаляется), False — вернуть ошибку.
     replace: bool = True
+    with_reality_fallback: bool = True
 
 
 class ChatLinkAndSendRequest(BaseModel):

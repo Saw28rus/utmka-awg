@@ -320,6 +320,7 @@ async def chat_admin_create_client(
         billing_mode=payload.billing_mode,
         billing_amount_kopecks=payload.billing_amount_kopecks,
         billing_period_months=payload.billing_period_months,
+        with_reality_fallback=payload.with_reality_fallback,
     )
     try:
         detail = await provision_client(create_payload)
@@ -720,6 +721,7 @@ async def chat_thread_provision_client(
         billing_mode=payload.billing_mode,
         billing_amount_kopecks=payload.billing_amount_kopecks,
         billing_period_months=payload.billing_period_months,
+        with_reality_fallback=payload.with_reality_fallback,
     )
     try:
         detail = await provision_client(create_payload)

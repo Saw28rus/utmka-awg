@@ -318,6 +318,8 @@ async def chat_attachment_view(
         raise HTTPException(status_code=410, detail=str(exc))
     config_text = content.get("config_text")
     vpn_link = content.get("vpn_link")
+    fallback_vpn = content.get("fallback_vpn_link")
+    fallback_conf = content.get("fallback_config_text")
     qr_source = config_text or vpn_link
     await AuditService(db).log(
         "chat_attachment_download",
@@ -335,6 +337,10 @@ async def chat_attachment_view(
         qr_data_url=build_qr_data_url(qr_source) if qr_source else None,
         qr_awg_data_url=build_qr_data_url(config_text) if config_text else None,
         qr_vpn_data_url=build_qr_data_url(vpn_link) if vpn_link else None,
+        fallback_config_text=fallback_conf,
+        fallback_vpn_link=fallback_vpn,
+        fallback_label=content.get("fallback_label"),
+        qr_fallback_vpn_data_url=build_qr_data_url(fallback_vpn) if fallback_vpn else None,
     )
 
 

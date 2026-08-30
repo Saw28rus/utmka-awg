@@ -368,6 +368,12 @@
             </label>
           </div>
           <p v-if="provCascadeHint" class="hint cascade-hint">{{ provCascadeHint }}</p>
+          <label v-if="provShowRealityFallback" class="prov-check">
+            <n-checkbox v-model:checked="provForm.withRealityFallback" />
+            <span>
+              Сразу выдать запасной Reality (TCP/443). Если UDP режут — клиент подключается этим ключом.
+            </span>
+          </label>
         </n-spin>
         <div class="modal-actions">
           <n-button @click="showProvision = false">Отмена</n-button>
@@ -685,7 +691,8 @@ const provForm = reactive({
   format: 'both',
   fingerprint: 'chrome',
   expires_at: '',
-  traffic_gb: ''
+  traffic_gb: '',
+  withRealityFallback: true
 })
 const PROVISION_PROTOCOL_LABELS: Record<string, string> = {
   awg2: 'AmneziaWG',
@@ -723,6 +730,13 @@ const provCascadeHint = computed(() => {
   const s = provisionSelectedServer.value
   if (!provIsXray.value || !s?.xray_cascade_active) return ''
   return `Xray-каскад → ${s.xray_cascade_exit_name || 'exit'}: РФ-трафик выходит на этом сервере, остальное уходит на exit (правило на сервере).`
+})
+
+const provShowRealityFallback = computed(() => {
+  if (provForm.protocol !== 'awg2') return false
+  const s = provisionSelectedServer.value
+  if (!s) return false
+  return (s.client_protocols || []).includes('xray') || !!s.xray_cascade_active
 })
 
 watch(
@@ -1253,6 +1267,7 @@ async function openProvision() {
   provForm.fingerprint = 'chrome'
   provForm.expires_at = ''
   provForm.traffic_gb = ''
+  provForm.withRealityFallback = true
   showProvision.value = true
   await loadProvisionServers()
   const remembered = localStorage.getItem(LAST_PROVISION_SERVER)
@@ -1280,7 +1295,8 @@ async function submitProvision() {
       traffic_limit_bytes: traffic,
       expires_at: provForm.expires_at || null,
       fingerprint: provIsXray.value ? provForm.fingerprint : null,
-      replace: true
+      replace: true,
+      with_reality_fallback: provShowRealityFallback.value && provForm.withRealityFallback
     }
     const { data } = await api.post<MessageRow>(
       `/chat/admin/threads/${activeThreadId.value}/provision-client`,
@@ -1412,6 +1428,16 @@ async function copyCredentials() {
 
 .cascade-hint {
   margin-top: 10px;
+}
+
+.prov-check {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin-top: 12px;
+  font-size: 13px;
+  line-height: 1.4;
+  color: var(--text-muted, #8a8f98);
 }
 
 @media (max-width: 560px) {

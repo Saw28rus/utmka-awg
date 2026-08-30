@@ -11,7 +11,12 @@ import logging
 from datetime import datetime, timezone
 from typing import Optional
 
-from app.services.awg_masking_apply import PRESETS, apply_rotation, generate_params
+from app.services.awg_masking_apply import (
+    PRESETS,
+    apply_rotation,
+    generate_params,
+    rotation_include_cps,
+)
 from app.services.dpi_store import dpi_store
 from app.services.notification_store import notification_store
 from app.services.rotation_policy_store import rotation_policy_store
@@ -73,7 +78,7 @@ def rotate_server(server_id: str, *, reason: str = "manual") -> dict:
     record = server_store.get_record(server_id)
     name = (record or {}).get("name") or server_id
 
-    params = generate_params(preset)
+    params = generate_params(preset, include_cps=rotation_include_cps(server_id))
     result = apply_rotation(server_id, preset, params)
     now_iso = _now().isoformat()
 
@@ -86,7 +91,8 @@ def rotate_server(server_id: str, *, reason: str = "manual") -> dict:
             title=f"Маскировка ротирована на «{name}»",
             message=(
                 f"Параметры маскировки обновлены ({reason_text}, пресет «{preset}»). "
-                "Клиентам нужно переимпортировать конфиги — старые QR больше не подойдут."
+                "Новые конфиги отправлены в чат тем, у кого есть привязка; "
+                "остальным нужно переимпортировать ключ."
             ),
             server_id=server_id,
         )

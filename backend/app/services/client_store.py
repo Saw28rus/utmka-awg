@@ -361,6 +361,30 @@ class ClientStore:
         if changed:
             self._persist()
 
+    def set_fallback_link(self, primary_id: str, fallback_id: str) -> None:
+        """Связать AWG-клиента с запасным Reality-клиентом (и обратно)."""
+        primary = self._clients.get(primary_id)
+        fallback = self._clients.get(fallback_id)
+        if not primary or not fallback:
+            return
+        primary["fallback_client_id"] = fallback_id
+        fallback["fallback_of_client_id"] = primary_id
+        self._persist()
+
+    def clear_fallback_link(self, client_id: str) -> Optional[str]:
+        """Снять связь. Возвращает id пары, если она была."""
+        record = self._clients.get(client_id)
+        if not record:
+            return None
+        other = record.get("fallback_client_id") or record.get("fallback_of_client_id")
+        record.pop("fallback_client_id", None)
+        record.pop("fallback_of_client_id", None)
+        if other and other in self._clients:
+            self._clients[other].pop("fallback_client_id", None)
+            self._clients[other].pop("fallback_of_client_id", None)
+        self._persist()
+        return other
+
     def delete(self, client_id: str) -> bool:
         if client_id in self._clients:
             del self._clients[client_id]
@@ -423,6 +447,8 @@ class ClientStore:
             "billing_mode": record.get("billing_mode", "free"),
             "billing_amount_kopecks": record.get("billing_amount_kopecks"),
             "billing_period_months": int(record.get("billing_period_months", 1) or 1),
+            "fallback_client_id": record.get("fallback_client_id"),
+            "fallback_of_client_id": record.get("fallback_of_client_id"),
         }
 
     def _to_list_item(self, record: dict) -> ClientListItem:

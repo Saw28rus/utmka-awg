@@ -64,7 +64,9 @@ def profile_for_slot(slot: int) -> TransitProfile:
         transit_port=port,
         entry_host_port=port + ENTRY_HOST_PORT_OFFSET,
         iface=iface,
-        conf_path=f"/tmp/{iface}.conf",
+        # Живёт рядом с awg0.conf в volume контейнера — переживает reboot,
+        # в отличие от прежнего /tmp/{iface}.conf.
+        conf_path=f"/opt/amnezia/awg/{iface}.conf",
         table=str(BASE_TABLE + slot),
         rule_priority=str(BASE_RULE_PRIORITY + slot),
     )
