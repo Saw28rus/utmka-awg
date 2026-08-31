@@ -47,7 +47,7 @@ VARIANTS = {
     },
 }
 
-DEFAULT_PORT = 39547
+DEFAULT_PORT = 55424
 DEFAULT_SUBNET_IP = "10.8.1.1"
 DEFAULT_CIDR = "24"
 
@@ -113,17 +113,17 @@ def install_awg(server_id: str, *, variant: str = "awg2", port: int = DEFAULT_PO
 def _awg_params(with_s34: bool) -> dict[str, str]:
     """Параметры обфускации для свежей установки.
 
-    AWG 2.0 — сразу сильная маскировка (пресет mask: H-диапазоны, S3/S4 > 0,
-    Jmin/Jmax в официальных 64–1024). Junk на сервере может быть высоким:
-    клиентским конфигам панель всё равно выдаёт mobile-safe Jc/Jmax, handshake
-    на телефоне не страдает.
+    AWG 2.0 — как приложение AmneziaVPN (installController.cpp): маленький junk
+    (Jc 4–6, Jmin=10, Jmax=50), случайные S3/S4 и H-диапазоны до INT32_MAX.
+    Так handshake проходит на мобильных сетях; «сильную» маскировку можно
+    включить отдельно в центре маскировки.
 
     Legacy — одиночные H без S3/S4, как раньше (совместимость).
     """
     if with_s34:
-        from app.services.awg_masking_apply import generate_params
+        from app.services.awg_masking_apply import generate_amnezia_app_params
 
-        gen = generate_params("mask")
+        gen = generate_amnezia_app_params()
         return {
             "$JUNK_PACKET_COUNT": gen["Jc"],
             "$JUNK_PACKET_MIN_SIZE": gen["Jmin"],

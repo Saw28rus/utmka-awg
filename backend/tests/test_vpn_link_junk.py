@@ -7,7 +7,12 @@ import json
 import zlib
 
 from app.services.amnezia_link import build_vpn_link
-from app.services.awg_config import CLIENT_JUNK_MAX_JC, CLIENT_JUNK_MAX_JMAX, build_client_config
+from app.services.awg_config import (
+    CLIENT_JUNK_JMAX,
+    CLIENT_JUNK_JMIN,
+    CLIENT_JUNK_MAX_JC,
+    build_client_config,
+)
 
 
 def _last_config(link: str) -> dict:
@@ -58,8 +63,10 @@ def test_vpn_link_clamps_server_junk() -> None:
     )
     last = _last_config(link)
     assert int(last["Jc"]) <= CLIENT_JUNK_MAX_JC
-    assert int(last["Jmax"]) <= CLIENT_JUNK_MAX_JMAX
-    assert "Jc = 4" in conf
-    assert "Jmax = 500" in conf
+    assert last["Jmin"] == str(CLIENT_JUNK_JMIN)
+    assert last["Jmax"] == str(CLIENT_JUNK_JMAX)
+    assert "Jc = 6" in conf
+    assert "Jmin = 10" in conf
+    assert "Jmax = 50" in conf
     assert last["S1"] == "60"
     assert last["H1"] == "100-200"

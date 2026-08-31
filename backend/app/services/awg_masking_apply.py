@@ -2,8 +2,8 @@
 
 Принципы (UNIFIED_IMPLEMENTATION_PLAN §5.5/§5.7):
 - per-server unique, crypto-random параметры; никаких глобальных дефолтов;
-- production safe policy: S1-S3 0-64, S4 0-32, Jc 0-10, Jmin/Jmax 64-1024,
-  H1-H4 — непересекающиеся диапазоны;
+- production safe policy: Jc 0-10, Jmin/Jmax 1-1024, S1/S2 0-150, S3 0-64,
+  S4 0-32, H1-H4 — непересекающиеся диапазоны до INT32_MAX (как AmneziaVPN);
 - apply: read -> snapshot (шифрованный) -> validate -> dry-run -> write ->
   restart -> health check -> reissue клиентов; при сбое — автооткат;
 - fail-closed: без валидного snapshot изменения не применяются.
@@ -52,13 +52,23 @@ MAX_SNAPSHOTS_PER_SERVER = 5
 ROTATED_KEYS = ("Jc", "Jmin", "Jmax", "S1", "S2", "S3", "S4", "H1", "H2", "H3", "H4")
 CPS_KEYS = ("I1", "I2", "I3", "I4", "I5")
 
-# H: избегаем зарезервированных значений WG (1-4) и нижнего мусора.
-H_MIN = 65_537
-H_MAX = 4_294_967_295
+# H: избегаем зарезервированных значений WG (1-4). Верх — INT32_MAX, как в
+# приложении AmneziaVPN: часть Android-клиентов не принимает uint32 > 2^31-1.
+H_MIN = 5
+H_MAX = 2_147_483_647
 H_RANGE_WIDTH_MIN = 65_536
 H_RANGE_WIDTH_MAX = 1_048_575
 
+# Как в amnezia-client installController.cpp (AWG 2.0).
+AWG_MSG_INIT = 148
+AWG_MSG_RESPONSE = 92
+AWG_MSG_COOKIE = 64
+
 PRESETS: dict[str, dict] = {
+    "amnezia": {
+        "label": "Как в Amnezia",
+        "description": "Те же параметры, что ставит приложение AmneziaVPN. Лучше проходит мобильные сети.",
+    },
     "mask": {
         "label": "Маскировка",
         "description": "Максимальная обфускация для жёстких сетей (РФ): высокий Jc, крупные S, широкие H-диапазоны.",
@@ -70,7 +80,7 @@ PRESETS: dict[str, dict] = {
     },
     "balance": {
         "label": "Баланс",
-        "description": "Компромисс маскировки и скорости. Рекомендуется по умолчанию.",
+        "description": "Компромисс маскировки и скорости.",
         "jc": (3, 6),
         "s123": (24, 48),
         "s4": (12, 24),
@@ -138,6 +148,71 @@ def _generate_h_ranges() -> list[str]:
     raise MaskingApplyError("Не удалось сгенерировать валидные H-диапазоны.")
 
 
+def generate_amnezia_app_params() -> dict[str, str]:
+    """Ровно то, что генерит приложение AmneziaVPN при установке AWG 2.0.
+
+    Источник: amnezia-client installController.cpp (DockerContainer::Awg2):
+    Jc 4–6, Jmin=10, Jmax=50, S1/S2 15–149, S3 1–63, S4 1–19,
+    H1–H4 — последовательные непересекающиеся диапазоны до INT32_MAX, без I1–I5.
+    """
+    jc = 4 + secrets.randbelow(3)
+
+    def _rand(lo: int, hi_exclusive: int) -> int:
+        return lo + secrets.randbelow(hi_exclusive - lo)
+
+    s1 = _rand(15, 150)
+    used = {s1}
+    s2 = _rand(15, 150)
+    while s2 in used or s1 + AWG_MSG_INIT == s2 + AWG_MSG_RESPONSE:
+        s2 = _rand(15, 150)
+    used.add(s2)
+    s3 = _rand(1, 64)
+    while (
+        s3 in used
+        or s1 + AWG_MSG_INIT == s3 + AWG_MSG_COOKIE
+        or s2 + AWG_MSG_RESPONSE == s3 + AWG_MSG_COOKIE
+    ):
+        s3 = _rand(1, 64)
+    used.add(s3)
+    s4 = _rand(1, 20)
+    while s4 in used:
+        s4 = _rand(1, 20)
+
+    headers: list[str] = []
+    for _ in range(50):
+        min_v = H_MIN
+        headers = []
+        ok = True
+        for _h in range(4):
+            if min_v >= H_MAX - 2:
+                ok = False
+                break
+            first = _rand(min_v, H_MAX)
+            second = _rand(first, H_MAX) if first < H_MAX - 1 else first + 1
+            if second <= first:
+                second = min(first + 1, H_MAX)
+            headers.append(f"{first}-{second}")
+            min_v = second + 1
+        if ok and len(headers) == 4:
+            break
+    else:
+        raise MaskingApplyError("Не удалось сгенерировать H-диапазоны Amnezia.")
+
+    return {
+        "Jc": str(jc),
+        "Jmin": "10",
+        "Jmax": "50",
+        "S1": str(s1),
+        "S2": str(s2),
+        "S3": str(s3),
+        "S4": str(s4),
+        "H1": headers[0],
+        "H2": headers[1],
+        "H3": headers[2],
+        "H4": headers[3],
+    }
+
+
 def generate_cps_params() -> dict[str, str]:
     """Опциональный CPS-слой (I1–I5): уникальный hex-префикс перед handshake.
 
@@ -158,8 +233,14 @@ def generate_cps_params() -> dict[str, str]:
 
 
 def generate_params(preset_id: str, *, include_cps: bool = False) -> dict[str, str]:
+    if preset_id == "amnezia":
+        out = generate_amnezia_app_params()
+        if include_cps:
+            out.update(generate_cps_params())
+        return out
+
     preset = PRESETS.get(preset_id)
-    if not preset:
+    if not preset or "jc" not in preset:
         raise MaskingApplyError("Неизвестный пресет маскировки.")
 
     jmin = _rand_between(*preset["jmin"])
@@ -231,14 +312,16 @@ def validate_params(params: dict[str, str]) -> list[str]:
     if jc is not None and not 0 <= jc <= 10:
         errors.append("Jc вне диапазона 0–10.")
     if jmin is not None and jmax is not None:
-        if not 64 <= jmin <= 1024 or not 64 <= jmax <= 1024:
-            errors.append("Jmin/Jmax вне диапазона 64–1024.")
+        if not 1 <= jmin <= 1024 or not 1 <= jmax <= 1024:
+            errors.append("Jmin/Jmax вне диапазона 1–1024.")
         if jmin > jmax:
             errors.append("Jmin больше Jmax.")
-    for key in ("S1", "S2", "S3"):
+    for key in ("S1", "S2"):
         val = s_vals[key]
-        if val is not None and not 0 <= val <= 64:
-            errors.append(f"{key} вне диапазона 0–64.")
+        if val is not None and not 0 <= val <= 150:
+            errors.append(f"{key} вне диапазона 0–150.")
+    if s_vals["S3"] is not None and not 0 <= s_vals["S3"] <= 64:
+        errors.append("S3 вне диапазона 0–64.")
     if s_vals["S4"] is not None and not 0 <= s_vals["S4"] <= 32:
         errors.append("S4 вне диапазона 0–32.")
     if (

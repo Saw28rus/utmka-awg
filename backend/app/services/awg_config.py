@@ -274,19 +274,15 @@ def resolve_endpoint_host(record: dict, fallback_host: str) -> str:
 # «подключилось, но сайты не грузятся» на мобильном интернете.
 CLIENT_MTU = 1280
 
-# Mobile-safe ограничения junk в КЛИЕНТСКОМ конфиге. AmneziaWG шлёт Jc junk-пакетов
-# (размером Jmin..Jmax) ПЕРЕД handshake-init. Большой залп на мобильных сетях
-# частично теряется, и среди потерянных пакетов оказывается сам init → сервер его
-# не видит → «вечное подключение». Junk-параметры по протоколу НЕ обязаны совпадать
-# у пиров, поэтому клиенту всегда выдаём малый залп — даже если на сервере остался
-# агрессивный дефолт (Jc до 10, Jmax 1000). Так старые установки чинятся простым
-# перевыпуском конфига, без переустановки AmneziaWG.
-CLIENT_JUNK_MAX_JC = 4
-CLIENT_JUNK_MAX_JMAX = 500
+# Как в приложении AmneziaVPN (AWG 2.0): Jc 4–6, Jmin=10, Jmax=50.
+# Большой залп (Jc 7–10 × до 1024 байт) на мобильном теряется вместе с handshake.
+CLIENT_JUNK_MAX_JC = 6
+CLIENT_JUNK_JMIN = 10
+CLIENT_JUNK_JMAX = 50
 
 
 def _mobile_safe_awg_params(awg_params: dict[str, str]) -> dict[str, str]:
-    """Ограничивает junk-параметры (Jc/Jmin/Jmax) до mobile-safe значений.
+    """Ограничивает junk-параметры (Jc/Jmin/Jmax) до значений приложения Amnezia.
 
     S1–S4 и H1–H4 НЕ трогаем: они обязаны совпадать с сервером, иначе AWG2 не
     распарсит пакеты. Меняем только junk, который приёмник всё равно отбрасывает.
@@ -300,14 +296,10 @@ def _mobile_safe_awg_params(awg_params: dict[str, str]) -> dict[str, str]:
             return None
 
     jc = _as_int("Jc")
-    if jc is not None and jc > CLIENT_JUNK_MAX_JC:
+    if jc is None or jc > CLIENT_JUNK_MAX_JC:
         safe["Jc"] = str(CLIENT_JUNK_MAX_JC)
-    jmax = _as_int("Jmax")
-    if jmax is not None and jmax > CLIENT_JUNK_MAX_JMAX:
-        safe["Jmax"] = str(CLIENT_JUNK_MAX_JMAX)
-        jmin = _as_int("Jmin")
-        if jmin is not None and jmin >= CLIENT_JUNK_MAX_JMAX:
-            safe["Jmin"] = str(max(1, CLIENT_JUNK_MAX_JMAX - 1))
+    safe["Jmin"] = str(CLIENT_JUNK_JMIN)
+    safe["Jmax"] = str(CLIENT_JUNK_JMAX)
     return safe
 
 

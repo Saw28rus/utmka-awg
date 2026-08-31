@@ -104,9 +104,10 @@
         </n-button>
       </div>
       <p class="masking-hint">
-        Генерация уникальных параметров обфускации под этот сервер. Перед применением создаётся
-        зашифрованный snapshot, после — конфиги всех клиентов перевыпускаются автоматически
-        и отправляются в чат тем, у кого есть привязка.
+        Генерация уникальных параметров обфускации под этот сервер. «Как в Amnezia» —
+        те же Jc/Jmin/Jmax/S/H, что ставит приложение AmneziaVPN (лучше проходит мобильные сети).
+        Перед применением создаётся зашифрованный snapshot, после — конфиги всех клиентов
+        перевыпускаются автоматически и отправляются в чат тем, у кого есть привязка.
       </p>
       <p v-if="rotationAgeText" class="rotation-age">{{ rotationAgeText }}</p>
 
@@ -439,7 +440,7 @@ const data = ref<MaskingResponse | null>(null)
 
 const presets = ref<MaskingPreset[]>([])
 const snapshots = ref<SnapshotInfo[]>([])
-const selectedPreset = ref('balance')
+const selectedPreset = ref('amnezia')
 const includeCps = ref(false)
 const preview = ref<MaskingPreview | null>(null)
 const previewLoading = ref(false)

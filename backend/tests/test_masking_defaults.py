@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import re
 
-from app.services.awg_install import _awg_params
+from app.services.awg_install import DEFAULT_PORT, _awg_params
 from app.services.awg_masking_apply import (
     CPS_KEYS,
+    H_MAX,
     ROTATED_KEYS,
     _render_new_config,
     generate_cps_params,
@@ -47,6 +48,24 @@ def test_generate_params_mask_uses_h_ranges() -> None:
     assert int(params["S3"]) > 0
     assert int(params["S4"]) > 0
     assert not validate_params(params)
+    for key in ("H1", "H2", "H3", "H4"):
+        hi = int(params[key].split("-")[1])
+        assert hi <= H_MAX
+
+
+def test_generate_params_amnezia_matches_app() -> None:
+    for _ in range(20):
+        params = generate_params("amnezia")
+        assert set(params) == set(ROTATED_KEYS)
+        assert params["Jmin"] == "10"
+        assert params["Jmax"] == "50"
+        assert 4 <= int(params["Jc"]) <= 6
+        assert 15 <= int(params["S1"]) <= 149
+        assert 15 <= int(params["S2"]) <= 149
+        assert 1 <= int(params["S3"]) <= 63
+        assert 1 <= int(params["S4"]) <= 19
+        _assert_h_ranges(params)
+        assert not validate_params(params)
 
 
 def test_generate_params_without_cps_by_default() -> None:
@@ -105,11 +124,22 @@ H4 = 700000-800000
     assert out.index("ListenPort") < out.index("I1 =")
 
 
-def test_awg_install_params_are_mask_preset() -> None:
+def test_awg_install_params_match_amnezia_app() -> None:
+    assert DEFAULT_PORT == 55424
     mapped = _awg_params(True)
+    assert mapped["$JUNK_PACKET_MIN_SIZE"] == "10"
+    assert mapped["$JUNK_PACKET_MAX_SIZE"] == "50"
+    assert 4 <= int(mapped["$JUNK_PACKET_COUNT"]) <= 6
     assert "-" in mapped["$INIT_PACKET_MAGIC_HEADER"]
     assert int(mapped["$COOKIE_REPLY_PACKET_JUNK_SIZE"]) > 0
-    assert int(mapped["$JUNK_PACKET_MIN_SIZE"]) >= 64
+    for key in (
+        "$INIT_PACKET_MAGIC_HEADER",
+        "$RESPONSE_PACKET_MAGIC_HEADER",
+        "$UNDERLOAD_PACKET_MAGIC_HEADER",
+        "$TRANSPORT_PACKET_MAGIC_HEADER",
+    ):
+        hi = int(mapped[key].split("-")[1])
+        assert hi <= H_MAX
     legacy = _awg_params(False)
     assert "-" not in legacy["$INIT_PACKET_MAGIC_HEADER"]
     assert legacy["$COOKIE_REPLY_PACKET_JUNK_SIZE"] == "0"

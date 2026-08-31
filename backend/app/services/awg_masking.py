@@ -57,6 +57,9 @@ STATIC_FALLBACK_H = {
 }
 
 DEFAULT_WG_PORT = 51820
+AMNEZIA_LEGACY_PORT = 39547
+# Приложение AmneziaVPN (Qt qint32) не принимает H > INT32_MAX.
+AMNEZIA_H_MAX = 2_147_483_647
 ROTATION_REMINDER_DAYS = 60
 
 # M6: Reality (Xray) — запасной канал по TCP/443 на случай полного UDP-бана.
@@ -432,31 +435,63 @@ def _collect_warnings(state: MaskingState) -> list[MaskingWarning]:
         warnings.append(
             MaskingWarning(level="danger", code="j_order", message="Jmin больше Jmax — некорректные параметры J.")
         )
-    if (jmin is not None and jmin < 64) or (jmax is not None and jmax > 1024):
+    if jmin == 10 and jmax == 50:
+        warnings.append(
+            MaskingWarning(
+                level="info",
+                code="j_amnezia",
+                message="Jmin=10, Jmax=50 — как в приложении AmneziaVPN. Так handshake лучше проходит на мобильном.",
+            )
+        )
+    elif (jmin is not None and jmin < 64) or (jmax is not None and jmax > 1024):
         warnings.append(
             MaskingWarning(
                 level="warning",
                 code="j_range",
-                message="Jmin/Jmax вне официального диапазона 64–1024 (extended, требует lab-подтверждения).",
+                message="Jmin/Jmax вне диапазона приложения Amnezia (10/50) и вне 64–1024.",
             )
         )
 
-    s123 = [_to_int(state.s1), _to_int(state.s2), _to_int(state.s3)]
+    s1, s2, s3 = _to_int(state.s1), _to_int(state.s2), _to_int(state.s3)
     s4 = _to_int(state.s4)
-    s_extended = any(v is not None and v > 64 for v in s123) or (s4 is not None and s4 > 32)
+    s_extended = (
+        (s1 is not None and s1 > 150)
+        or (s2 is not None and s2 > 150)
+        or (s3 is not None and s3 > 64)
+        or (s4 is not None and s4 > 32)
+    )
     if s_extended:
         warnings.append(
             MaskingWarning(
                 level="warning",
                 code="s_range",
-                message="S1–S3 > 64 или S4 > 32 — extended-значения вне официального диапазона "
-                "(работают на этом awg-go, но требуют lab-подтверждения; новый генератор их не выпускает).",
+                message="S1/S2 > 150, S3 > 64 или S4 > 32 — вне диапазона приложения AmneziaVPN "
+                "(на этом awg-go могут работать, новый генератор их не выпускает).",
+            )
+        )
+
+    if _h_exceeds_int32(state):
+        warnings.append(
+            MaskingWarning(
+                level="danger",
+                code="h_int32",
+                message="H1–H4 выше INT32_MAX (2147483647). Приложение AmneziaVPN на Android это не принимает. "
+                "Примените пресет «Как в Amnezia» — ключи клиентов перевыпустятся сами.",
             )
         )
 
     if state.listen_port == DEFAULT_WG_PORT:
         warnings.append(
             MaskingWarning(level="warning", code="default_port", message="Используется дефолтный WireGuard-порт 51820.")
+        )
+    if state.listen_port == AMNEZIA_LEGACY_PORT:
+        warnings.append(
+            MaskingWarning(
+                level="warning",
+                code="amnezia_legacy_port",
+                message="UDP 39547 — старый дефолт Amnezia 1.x, операторы его часто режут на мобильном. "
+                "Приложение AmneziaVPN сейчас ставит 55424. Смените порт, если мобильный интернет не цепляется.",
+            )
         )
 
     if _matches_static_fallback(state):
@@ -483,7 +518,7 @@ def _collect_warnings(state: MaskingState) -> list[MaskingWarning]:
 def _score(state: MaskingState, warnings: list[MaskingWarning]) -> MaskingScore:
     codes = {w.code for w in warnings}
 
-    if "h_overlap" in codes or "j_order" in codes:
+    if "h_overlap" in codes or "j_order" in codes or "h_int32" in codes:
         return MaskingScore(status=MASK_STATUS_INVALID, label=_LABELS[MASK_STATUS_INVALID])
 
     if state.version == MASK_VERSION_UNKNOWN:
@@ -531,6 +566,14 @@ def _range_bounds(value: Optional[str]) -> Optional[tuple[int, int]]:
     if num is None:
         return None
     return (num, num)
+
+
+def _h_exceeds_int32(state: MaskingState) -> bool:
+    for raw in (state.h1, state.h2, state.h3, state.h4):
+        bounds = _range_bounds(raw)
+        if bounds and (bounds[0] > AMNEZIA_H_MAX or bounds[1] > AMNEZIA_H_MAX):
+            return True
+    return False
 
 
 def _h_ranges_overlap(state: MaskingState) -> bool:

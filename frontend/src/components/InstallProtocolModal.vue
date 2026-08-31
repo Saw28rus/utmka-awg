@@ -158,8 +158,8 @@ const transportHint = computed(() => {
 const DEFAULT_PORTS: Record<string, number> = {
   xray: 443,
   telemt: 443,
-  awg2: 39547,
-  awg_legacy: 39547,
+  awg2: 55424,
+  awg_legacy: 55424,
   wireguard: 51820
 }
 
@@ -177,7 +177,7 @@ const portHint = computed(() => {
   if (id === 'telemt') return 'По умолчанию 443 — маскировка под HTTPS. Убедись, что порт свободен.'
   if (id === 'wireguard') return 'UDP-порт для подключений WireGuard. По умолчанию 51820.'
   if (id === 'awg2' || id === 'awg_legacy') {
-    return 'UDP-порт для AmneziaWG. 39547 — дефолт Amnezia, на мобильных РФ его часто режут. Если 443 свободен — лучше указать 443 (похоже на QUIC).'
+    return 'UDP-порт. Приложение AmneziaVPN ставит 55424. Старый 39547 на мобильных РФ часто режут; если 443 свободен — ещё лучше (похоже на QUIC).'
   }
 })
 
