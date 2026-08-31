@@ -179,6 +179,12 @@ def update_rules(
             name="Подготовка списка России", status="ok",
             detail=f"{build.total_count} адресов",
         ))
+        if build.warnings:
+            steps.append(CascadeStep(
+                name="Часть источников недоступна",
+                status="info",
+                detail="; ".join(build.warnings),
+            ))
     except SplitListError as exc:
         cascade_store.set_split(entry_id, last_error=str(exc))
         raise CascadeError(f"Не удалось собрать списки: {exc}")

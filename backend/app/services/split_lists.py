@@ -36,12 +36,21 @@ RFC1918_CIDRS = (
 )
 
 
+# CSV больше не лежит в git-репозитории sapics (raw.githubusercontent → 404).
+# Актуальная раздача — npm-пакет через CDN.
+SAPICS_RU_URLS = (
+    "https://cdn.jsdelivr.net/npm/@ip-location-db/geo-whois-asn-country/geo-whois-asn-country-ipv4.csv",
+    "https://unpkg.com/@ip-location-db/geo-whois-asn-country/geo-whois-asn-country-ipv4.csv",
+)
+
+
 @dataclass
 class SplitSource:
     id: str
     label: str
     description: str
     url: Optional[str] = None
+    urls: tuple[str, ...] = field(default_factory=tuple)
     parser: str = "cidr"  # cidr | sapics_csv | static_rfc1918
     static_cidrs: tuple[str, ...] = field(default_factory=tuple)
     default_enabled: bool = True
@@ -60,7 +69,7 @@ SOURCES: dict[str, SplitSource] = {
         id="sapics_ru",
         label="Дополнительная база",
         description="Расширяет список — меньше пропусков.",
-        url="https://raw.githubusercontent.com/sapics/ip-location-db/main/geo-whois-asn-country/geo-whois-asn-country-ipv4.csv",
+        urls=SAPICS_RU_URLS,
         parser="sapics_csv",
         default_enabled=True,
     ),
@@ -135,14 +144,32 @@ def _save_cache(cache: dict) -> None:
     write_json(CACHE_FILE, cache)
 
 
-def _fetch_text(url: str, *, timeout: int = 40) -> str:
-    try:
-        with httpx.Client(timeout=timeout, follow_redirects=True) as client:
-            resp = client.get(url, headers={"User-Agent": "utmka-cascade/1.0"})
-            resp.raise_for_status()
-            return resp.text
-    except httpx.HTTPError as exc:
-        raise SplitListError(f"Не удалось скачать {url}: {exc}") from exc
+def _source_urls(source: SplitSource) -> tuple[str, ...]:
+    if source.urls:
+        return source.urls
+    if source.url:
+        return (source.url,)
+    return ()
+
+
+def _fetch_text(urls: Iterable[str], *, timeout: int = 90) -> str:
+    last_exc: Optional[BaseException] = None
+    last_url = ""
+    headers = {"User-Agent": "utmka-cascade/1.0"}
+    for url in urls:
+        last_url = url
+        try:
+            with httpx.Client(timeout=timeout, follow_redirects=True) as client:
+                resp = client.get(url, headers=headers)
+                resp.raise_for_status()
+                text = resp.text or ""
+                if text.strip():
+                    return text
+                last_exc = SplitListError("пустой ответ")
+        except httpx.HTTPError as exc:
+            last_exc = exc
+            continue
+    raise SplitListError(f"Не удалось скачать {last_url}: {last_exc}") from last_exc
 
 
 def _source_networks(
@@ -152,7 +179,8 @@ def _source_networks(
     if source.parser == "static_rfc1918":
         return _parse_cidr_lines("\n".join(source.static_cidrs)), None
 
-    if not source.url:
+    urls = _source_urls(source)
+    if not urls:
         return [], None
 
     entry = cache.get(source.id) or {}
@@ -165,7 +193,7 @@ def _source_networks(
     if fresh:
         raw = entry["raw"]
     else:
-        raw = _fetch_text(source.url)
+        raw = _fetch_text(urls)
         cache[source.id] = {"raw": raw, "ts": now}
 
     if source.parser == "sapics_csv":
@@ -191,6 +219,7 @@ class SplitBuildResult:
     per_source: dict[str, int]
     custom_count: int
     fetched_at: dict[str, Optional[str]]
+    warnings: list[str] = field(default_factory=list)
 
 
 def _custom_networks(custom_cidrs: Iterable[str]) -> tuple[list[ipaddress.IPv4Network], list[str]]:
@@ -228,13 +257,20 @@ def build_direct_cidrs(
     cache = _load_cache()
     per_source: dict[str, int] = {}
     fetched_at: dict[str, Optional[str]] = {}
+    warnings: list[str] = []
     all_nets: list[ipaddress.IPv4Network] = []
 
     for sid in source_ids:
         source = SOURCES.get(sid)
         if not source:
             continue
-        nets, fetched = _source_networks(source, force_refresh=force_refresh, cache=cache)
+        try:
+            nets, fetched = _source_networks(source, force_refresh=force_refresh, cache=cache)
+        except SplitListError as exc:
+            warnings.append(str(exc))
+            per_source[sid] = 0
+            fetched_at[sid] = None
+            continue
         per_source[sid] = len(nets)
         fetched_at[sid] = fetched
         all_nets.extend(nets)
@@ -248,6 +284,11 @@ def build_direct_cidrs(
 
     _save_cache(cache)
 
+    if not all_nets:
+        raise SplitListError(
+            warnings[0] if warnings else "Нет адресов для правила — проверьте источники."
+        )
+
     collapsed = list(ipaddress.collapse_addresses(all_nets))
     cidrs = [str(net) for net in collapsed]
 
@@ -257,6 +298,7 @@ def build_direct_cidrs(
         per_source=per_source,
         custom_count=len(custom_nets),
         fetched_at=fetched_at,
+        warnings=warnings,
     )
 
 
