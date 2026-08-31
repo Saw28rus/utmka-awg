@@ -176,7 +176,9 @@ const portHint = computed(() => {
   if (id === 'xray') return 'По умолчанию 443 — маскировка под HTTPS. Убедись, что порт свободен.'
   if (id === 'telemt') return 'По умолчанию 443 — маскировка под HTTPS. Убедись, что порт свободен.'
   if (id === 'wireguard') return 'UDP-порт для подключений WireGuard. По умолчанию 51820.'
-  return 'UDP-порт для подключений AmneziaWG. Подойдёт любой свободный порт.'
+  if (id === 'awg2' || id === 'awg_legacy') {
+    return 'UDP-порт для AmneziaWG. 39547 — дефолт Amnezia, на мобильных РФ его часто режут. Если 443 свободен — лучше указать 443 (похоже на QUIC).'
+  }
 })
 
 const resultHint = computed(() => {

@@ -4,7 +4,7 @@ import zlib
 from typing import Optional
 from urllib.parse import quote, urlencode
 
-from app.services.awg_config import AWG_PARAM_KEYS
+from app.services.awg_config import AWG_PARAM_KEYS, _mobile_safe_awg_params
 
 DEFAULT_MTU = "1280"
 PROTOCOL_NAME = "awg"
@@ -63,9 +63,13 @@ def build_vpn_link(
     }
     if preshared_key:
         last_config["psk_key"] = preshared_key
+    # AmneziaVPN берёт Jc/Jmin/Jmax из last_config, а не из вложенного .conf.
+    # Без клампа vpn:// получает серверный junk (Jc до 10) — на мобильном
+    # залп теряется вместе с handshake, на Wi‑Fi работает.
+    safe_params = _mobile_safe_awg_params(awg_params)
     for key in AWG_PARAM_KEYS:
-        if key in awg_params:
-            last_config[key] = awg_params[key]
+        if key in safe_params:
+            last_config[key] = safe_params[key]
 
     awg_container: dict = {
         "last_config": json.dumps(last_config),
