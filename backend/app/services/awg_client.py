@@ -149,7 +149,11 @@ def create_awg_client(
         )
 
         new_count = client_store.count_for_server(server_id)
-        server_store.update_runtime(server_id, active_peers=new_count, vpn_port=endpoint_port)
+        runtime: dict = {"active_peers": new_count}
+        proto = (protocol or "awg2").lower()
+        if proto in ("awg2", "awg", "awg_legacy"):
+            runtime["vpn_port"] = endpoint_port
+        server_store.update_runtime(server_id, **runtime)
 
         if not sync_ok:
             server_store.update_runtime(

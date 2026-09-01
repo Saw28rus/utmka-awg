@@ -136,7 +136,10 @@
 
           <template v-if="hasShare">
             <img v-if="currentQr" class="qr" :src="currentQr" :alt="`QR ${activeFormat}`" />
-            <p class="qr-hint">{{ formatHint }}</p>
+          <p class="qr-hint">{{ formatHint }}</p>
+            <p v-if="client.protocol === 'awg31'" class="qr-hint qr-hint-warn">
+              3.1 работает только в Amnezia VPN 5.0.1.5+ по ключу vpn://. Приложение AmneziaWG и QR из .conf рукопожатие не соберут. UDP-порт 3.1 должен быть открыт в файрволе хостинга (это не порт 2.0).
+            </p>
             <div class="share-actions">
               <n-button size="small" tertiary @click="copyShare">
                 <template #icon><Copy :size="15" /></template>
@@ -384,6 +387,11 @@ const currentText = computed(() =>
 )
 
 const formatHint = computed(() => {
+  if (client.value?.protocol === 'awg31') {
+    return activeFormat.value === 'vpn'
+      ? 'Amnezia VPN 5.0.1.5+: добавь из QR или вставь vpn://. Не используй приложение AmneziaWG.'
+      : '.conf 3.1 многие клиенты импортируют как 2.0 и зависают на «Подключение». Бери вкладку AmneziaVPN.'
+  }
   if (activeFormat.value === 'vpn') {
     return isXray.value
       ? 'Только для AmneziaVPN: добавь из QR или вставь vpn:// ключ (не путай с vless://).'
@@ -718,6 +726,11 @@ dd.warn {
   color: var(--color-muted);
   font-size: 12px;
   max-width: 250px;
+}
+
+.qr-hint-warn {
+  max-width: 320px;
+  color: #fbbf24;
 }
 
 .share-actions {

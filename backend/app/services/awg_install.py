@@ -80,6 +80,27 @@ class AwgInstallError(Exception):
     pass
 
 
+def _first_free_udp(ssh, candidates: tuple[int, ...], *, skip: int) -> Optional[int]:
+    for candidate in candidates:
+        if candidate == skip:
+            continue
+        if not port_busy(ssh, candidate, proto="udp"):
+            return candidate
+    return None
+
+
+def _ensure_host_udp_allow(ssh, port: int) -> None:
+    """Если UFW активен — открыть UDP нового протокола (2.0 уже мог быть в правилах)."""
+    run_script(
+        ssh,
+        (
+            "if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -qi '^Status: active'; then "
+            f"ufw allow {int(port)}/udp comment 'utmka-awg' >/dev/null 2>&1 || true; fi"
+        ),
+        timeout=20,
+    )
+
+
 def install_awg(server_id: str, *, variant: str = "awg2", port: int = DEFAULT_PORT) -> AwgInstallResult:
     cfg = VARIANTS.get(variant)
     if not cfg:
@@ -98,7 +119,16 @@ def install_awg(server_id: str, *, variant: str = "awg2", port: int = DEFAULT_PO
             _ensure_docker(ssh, target.host, container, cfg["folder"])
 
         if port_busy(ssh, port, proto="udp"):
-            raise AwgInstallError(f"UDP-порт {port} уже занят на сервере.")
+            if variant == "awg31":
+                fallback = _first_free_udp(ssh, (443, 55425, 55426, 55427, 51820), skip=port)
+                if fallback is None:
+                    raise AwgInstallError(
+                        f"UDP-порт {port} занят (обычно это AmneziaWG 2.0). "
+                        "Укажи свободный порт, например 443."
+                    )
+                port = fallback
+            else:
+                raise AwgInstallError(f"UDP-порт {port} уже занят на сервере.")
 
         vars_map = _build_vars(target.host, port, cfg)
         _prepare_host(ssh, vars_map)
@@ -108,12 +138,19 @@ def install_awg(server_id: str, *, variant: str = "awg2", port: int = DEFAULT_PO
         _configure_container(ssh, cfg, vars_map)
         _startup_container(ssh, cfg, vars_map)
         _verify_running(ssh, container)
+        _ensure_host_udp_allow(ssh, port)
 
         public_key = read_container_file(ssh, container, "/opt/amnezia/awg/wireguard_server_public_key.key") or None
         _register(server_id, record, cfg, port)
 
+        extra = ""
+        if variant == "awg31":
+            extra = (
+                f" UDP {port} должен быть открыт в файрволе хостинга. "
+                "Ключ клиенту — только vpn:// в Amnezia VPN 5.0.1.5+, не приложение AmneziaWG."
+            )
         return AwgInstallResult(
-            message=f"{cfg['label']} установлен. Добавляй клиентов во вкладке «Клиенты».",
+            message=f"{cfg['label']} установлен на UDP {port}.{extra} Добавляй клиентов во вкладке «Клиенты».",
             container=container,
             port=port,
             public_key=public_key,

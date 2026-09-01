@@ -130,9 +130,11 @@ def test_vpn_link_and_conf_keep_awg31_keys() -> None:
     blob = base64.urlsafe_b64decode(raw)
     data = json.loads(zlib.decompress(blob[4:]).decode("utf-8"))
     container = data["containers"][0]
+    assert container["awg"]["protocol_version"] == "3.1"
     assert container["awg"]["protocolVersion"] == "3.1"
     last = json.loads(container["awg"]["last_config"])
     assert last["HeaderProtectionKey"] == "headerprotkeybase64value"
+    assert last["protocol_version"] == "3.1"
     assert last["RandomTrailers"] == "on"
     assert last["Jc"] == "5"
 

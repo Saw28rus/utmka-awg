@@ -54,7 +54,9 @@
           </label>
           <p v-if="cascadeHint" class="field-wide hint-text hint-cascade">{{ cascadeHint }}</p>
           <p v-if="form.protocol === 'awg31'" class="field-wide hint-text">
-            AmneziaWG 3.1: на телефоне нужен Amnezia VPN 5.0.1.5 или новее. Приложение AmneziaWG и клиенты 4.x этот ключ не откроют.
+            AmneziaWG 3.1: нужен Amnezia VPN 5.0.1.5 или новее. Ставь ключ через вкладку
+            AmneziaVPN (vpn://), не .conf и не приложение AmneziaWG. В файрволе VPS открой
+            UDP-порт 3.1 (он другой, чем у 2.0).
           </p>
           <label v-if="showRealityFallback" class="field field-wide check-row">
             <input v-model="form.withRealityFallback" type="checkbox" />
@@ -332,6 +334,7 @@ watch(
   () => {
     if (isXrayLike.value && form.format === 'awg') form.format = 'both'
     if ((form.protocol === 'awg2' || form.protocol === 'awg31') && form.format === 'config') form.format = 'both'
+    if (form.protocol === 'awg31') form.format = 'vpn'
   }
 )
 

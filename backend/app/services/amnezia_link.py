@@ -74,6 +74,8 @@ def build_vpn_link(
     for key in AWG_PARAM_KEYS:
         if key in safe_params:
             last_config[key] = safe_params[key]
+    if protocol_version:
+        last_config["protocol_version"] = protocol_version
 
     awg_container: dict = {
         "last_config": json.dumps(last_config),
@@ -82,6 +84,8 @@ def build_vpn_link(
         "transport_proto": "udp",
     }
     if protocol_version:
+        # AmneziaVPN: config_key::protocolVersion == "protocol_version".
+        awg_container["protocol_version"] = protocol_version
         awg_container["protocolVersion"] = protocol_version
 
     config = {
