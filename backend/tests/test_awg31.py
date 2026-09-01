@@ -135,3 +135,30 @@ def test_vpn_link_and_conf_keep_awg31_keys() -> None:
     assert last["HeaderProtectionKey"] == "headerprotkeybase64value"
     assert last["RandomTrailers"] == "on"
     assert last["Jc"] == "5"
+
+
+def test_client_protocols_see_awg31_from_container_name() -> None:
+    from app.services.server_store import ServerStore
+
+    store = ServerStore.__new__(ServerStore)
+    rec = {
+        "awg2_imported": True,
+        "container_names": ["amnezia-awg2", "amnezia-awg31"],
+        "installed_protocols": {},
+    }
+    assert store._client_protocols(rec) == ["awg31", "awg2"]
+    assert "AmneziaWG 3.1" in store._protocols(rec)
+
+
+def test_client_protocols_see_awg31_from_installed_map() -> None:
+    from app.services.server_store import ServerStore
+
+    store = ServerStore.__new__(ServerStore)
+    rec = {
+        "awg2_imported": True,
+        "container_names": ["amnezia-awg2"],
+        "installed_protocols": {"awg31": {"port": 55425, "container": "amnezia-awg31"}},
+    }
+    assert "awg31" in store._client_protocols(rec)
+    assert "awg2" in store._client_protocols(rec)
+

@@ -111,6 +111,7 @@ def get_server_overview(server_id: str) -> ServerOverview:
         protocols = _build_protocols(server_id, record, containers)
         security = _collect_security(ssh, record, server_id)
         _sync_xray_metadata(server_id, record, containers)
+        _sync_awg_metadata(server_id, record, containers)
         return ServerOverview(
             server_id=server_id,
             online=True,
@@ -346,6 +347,63 @@ def _sync_xray_metadata(server_id: str, record: dict, containers: list[Container
     if ("amnezia-xray" in names) or ("xray" in protocols):
         names = [n for n in names if n != "amnezia-xray"]
         protocols.pop("xray", None)
+        server_store.update_runtime(
+            server_id, container_names=names, installed_protocols=protocols
+        )
+
+
+def _host_port_from_bindings(ports: str, default: int) -> int:
+    if not ports:
+        return default
+    import re
+
+    match = re.search(r":(\d+)->", ports)
+    if match:
+        try:
+            return int(match.group(1))
+        except ValueError:
+            return default
+    return default
+
+
+def _sync_awg_metadata(server_id: str, record: dict, containers: list[ContainerInfo]) -> None:
+    """Дописываем awg2/awg31 в store, если контейнер уже есть на VPS.
+
+    Выдача клиентов читает installed_protocols/container_names, а карточка
+    протокола на странице сервера смотрит живой docker. Без сверки 3.1
+    «установлен» на борту, но в форме клиента его нет.
+    """
+    if not containers:
+        return
+    names = list(record.get("container_names") or [])
+    protocols = dict(record.get("installed_protocols") or {})
+    by_name = {c.name: c for c in containers}
+    changed = False
+
+    for pid, cname, default_port in (
+        ("awg31", "amnezia-awg31", 55424),
+        ("awg2", "amnezia-awg2", 55424),
+    ):
+        found = by_name.get(cname)
+        if not found:
+            continue
+        if cname not in names:
+            names.append(cname)
+            changed = True
+        if not protocols.get(pid):
+            protocols[pid] = {
+                "port": _host_port_from_bindings(found.ports, default_port),
+                "container": cname,
+            }
+            changed = True
+
+    awg31 = by_name.get("amnezia-awg31")
+    if not awg31 and (("amnezia-awg31" in names) or protocols.get("awg31")):
+        names = [n for n in names if n != "amnezia-awg31"]
+        protocols.pop("awg31", None)
+        changed = True
+
+    if changed:
         server_store.update_runtime(
             server_id, container_names=names, installed_protocols=protocols
         )

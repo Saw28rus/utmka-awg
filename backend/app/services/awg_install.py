@@ -89,6 +89,9 @@ def install_awg(server_id: str, *, variant: str = "awg2", port: int = DEFAULT_PO
     record, target, ssh = connect_target(server_id)
     try:
         if container_exists(ssh, container):
+            # Контейнер есть, а карточка/выдача клиентов смотрит в store —
+            # дописываем протокол, иначе 3.1 виден на сервере, но не в «Создать клиента».
+            _register(server_id, record, cfg, port)
             raise AwgInstallError(f"{cfg['label']} уже установлен (контейнер {container}).")
 
         if not docker_available(ssh):

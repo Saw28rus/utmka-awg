@@ -31,7 +31,7 @@
             <span>Сервер</span>
             <select v-model="form.server_id">
               <option v-for="server in eligibleServers" :key="server.id" :value="server.id">
-                {{ server.name }} ({{ server.host }})
+                {{ server.name }} ({{ server.host }}) — {{ serverProtocolSummary(server) }}
               </option>
             </select>
           </label>
@@ -43,6 +43,7 @@
               </option>
             </select>
           </label>
+          <p v-if="awg31ElsewhereHint" class="field-wide hint-text">{{ awg31ElsewhereHint }}</p>
           <label class="field field-wide">
             <span>Формат подключения</span>
             <select v-model="form.format">
@@ -218,21 +219,22 @@ const visible = computed({
 })
 
 const eligibleServers = computed(() =>
-  servers.value.filter(
-    (server) => (server.client_protocols?.length || (server.awg2_imported ? 1 : 0)) > 0
-  )
+  servers.value.filter((server) => protocolIdsFor(server).length > 0)
 )
 
 const selectedServer = computed(() => servers.value.find((s) => s.id === form.server_id))
 
 const availableProtocols = computed(() => {
   const server = selectedServer.value
-  const ids = server?.client_protocols?.length
-    ? [...server.client_protocols]
-    : server?.awg2_imported
-      ? ['awg2']
-      : []
+  const ids = protocolIdsFor(server)
   return ids.map((id) => ({ id, label: PROTOCOL_LABELS[id] || id }))
+})
+
+const awg31ElsewhereHint = computed(() => {
+  if (availableProtocols.value.some((p) => p.id === 'awg31')) return ''
+  const other = eligibleServers.value.find((s) => s.id !== form.server_id && protocolIdsFor(s).includes('awg31'))
+  if (!other) return ''
+  return `AmneziaWG 3.1 стоит на «${other.name}», не на выбранном сервере. Выбери его выше — иначе ключ будет 2.0.`
 })
 
 const isXrayLike = computed(() => form.protocol === 'xray')
@@ -347,6 +349,31 @@ watch(
   },
   { immediate: true }
 )
+
+function protocolIdsFor(server?: ServerListItem | null): string[] {
+  if (!server) return []
+  const ids: string[] = []
+  const listed = server.client_protocols?.length
+    ? [...server.client_protocols]
+    : server.awg2_imported
+      ? ['awg2']
+      : []
+  for (const id of listed) {
+    if (!ids.includes(id)) ids.push(id)
+  }
+  for (const label of server.protocols || []) {
+    const mapped =
+      label.includes('3.1') ? 'awg31' : label.includes('2.0') ? 'awg2' : label.includes('Xray') ? 'xray' : ''
+    if (mapped && !ids.includes(mapped)) ids.push(mapped)
+  }
+  return ids
+}
+
+function serverProtocolSummary(server: ServerListItem): string {
+  const ids = protocolIdsFor(server)
+  if (!ids.length) return 'нет протокола'
+  return ids.map((id) => PROTOCOL_LABELS[id] || id).join(', ')
+}
 
 function syncProtocolForServer() {
   const protos = availableProtocols.value

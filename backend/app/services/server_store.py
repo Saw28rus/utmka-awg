@@ -117,10 +117,9 @@ class ServerStore:
 
     def _protocols(self, record: dict) -> list[str]:
         result: list[str] = []
-        installed = record.get("installed_protocols") or {}
-        if installed.get("awg31"):
+        if self._has_awg31(record):
             result.append("AmneziaWG 3.1")
-        if record.get("awg2_detected") or record.get("awg2_imported") or installed.get("awg2"):
+        if record.get("awg2_detected") or record.get("awg2_imported") or self._has_awg2(record):
             result.append("AmneziaWG 2.0")
         if self._has_xray(record):
             result.append("Xray (VLESS-Reality)")
@@ -128,16 +127,27 @@ class ServerStore:
 
     def _client_protocols(self, record: dict) -> list[str]:
         protos: list[str] = []
-        installed = record.get("installed_protocols") or {}
-        if installed.get("awg31"):
+        if self._has_awg31(record):
             protos.append("awg31")
-        if record.get("awg2_imported") or installed.get("awg2"):
+        if record.get("awg2_imported") or self._has_awg2(record):
             protos.append("awg2")
+        installed = record.get("installed_protocols") or {}
         if installed.get("awg_legacy") and "awg2" not in protos:
             protos.append("awg_legacy")
         if self._has_xray(record):
             protos.append("xray")
         return protos
+
+    def _has_awg31(self, record: dict) -> bool:
+        if (record.get("installed_protocols") or {}).get("awg31"):
+            return True
+        return "amnezia-awg31" in (record.get("container_names") or [])
+
+    def _has_awg2(self, record: dict) -> bool:
+        if (record.get("installed_protocols") or {}).get("awg2"):
+            return True
+        names = record.get("container_names") or []
+        return "amnezia-awg2" in names
 
     def has_xray(self, record: dict) -> bool:
         return self._has_xray(record)
