@@ -408,6 +408,20 @@ def parse_dump(text: str) -> dict[str, PeerTransfer]:
     return stats
 
 
+def merge_peer_stats(*groups: dict[str, PeerTransfer]) -> dict[str, PeerTransfer]:
+    """Склеивает dump нескольких контейнеров (2.0 и 3.1) по public key.
+
+    При одном ключе на двух интерфейсах оставляем более свежий handshake.
+    """
+    merged: dict[str, PeerTransfer] = {}
+    for group in groups:
+        for pub, transfer in group.items():
+            prev = merged.get(pub)
+            if prev is None or transfer.handshake_unix >= prev.handshake_unix:
+                merged[pub] = transfer
+    return merged
+
+
 def _line_value(section: str, key: str) -> Optional[str]:
     match = re.search(rf"(?im)^[ \t]*{re.escape(key)}[ \t]*=[ \t]*(.+?)[ \t]*$", section)
     return match.group(1).strip() if match else None

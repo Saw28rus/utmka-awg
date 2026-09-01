@@ -4,7 +4,8 @@ from typing import Optional
 
 from app.schemas.servers import ServerMetrics
 from app.services.metrics_cache import metrics_cache
-from app.services.awg_config import parse_dump
+from app.services.awg_config import merge_peer_stats, parse_dump
+from app.services.awg_install import VARIANTS
 from app.services.client_store import client_store
 from app.services.server_store import server_store
 from app.ssh import exec as ssh_exec
@@ -162,25 +163,54 @@ def get_all_server_metrics(*, refresh: bool = False) -> list[ServerMetrics]:
     return results
 
 
-def _resolve_awg(ssh, record: dict):
-    """Находит контейнер с активным AWG/WG и возвращает (имя, статистику peers).
+_PANEL_CONTAINER_MARKERS = ("utmka-awg", "postgres", "frontend", "backend", "redis")
+_PREFERRED_AWG = ("amnezia-awg2", "amnezia-awg31", "amnezia-awg")
 
-    Среди контейнеров несколько могут содержать 'amnezia' в имени (панель, БД и т.п.),
-    поэтому проверяем именно тот, где `awg show` отдаёт данные.
+
+def awg_metric_containers(record: dict) -> list[str]:
+    """Контейнеры, из которых нужно читать dump: и 2.0, и 3.1, не только первый живой."""
+    names: list[str] = []
+
+    def _add(name: Optional[str]) -> None:
+        if not name or name in names:
+            return
+        low = name.lower()
+        if any(marker in low for marker in _PANEL_CONTAINER_MARKERS):
+            return
+        if "awg" not in low and "wireguard" not in low:
+            return
+        names.append(name)
+
+    for name in record.get("container_names") or []:
+        _add(name)
+    protocols = record.get("installed_protocols") or {}
+    for pid, variant in VARIANTS.items():
+        info = protocols.get(pid)
+        if isinstance(info, dict):
+            _add(info.get("container") or variant.get("container"))
+        elif info:
+            _add(variant.get("container"))
+    return names
+
+
+def _resolve_awg(ssh, record: dict):
+    """Собирает dump со всех AWG-контейнеров (2.0 и 3.1) и склеивает по pubkey.
+
+    Раньше возвращался первый контейнер с пирами — на входе это почти всегда
+    amnezia-awg2, поэтому клиенты 3.1 не получали online и трафик.
     """
-    containers = record.get("container_names") or []
-    ordered = sorted(
-        containers,
-        key=lambda n: (0 if "awg" in n.lower() else (1 if "amnezia" in n.lower() else 2)),
-    )
-    fallback: Optional[str] = None
-    for name in ordered:
+    names = awg_metric_containers(record)
+    merged = {}
+    for name in names:
         stats = _peer_stats(ssh, name)
         if stats:
-            return name, stats
-        if fallback is None and "awg" in name.lower():
-            fallback = name
-    return (fallback or (ordered[0] if ordered else None)), {}
+            merged = merge_peer_stats(merged, stats)
+    display = None
+    for preferred in _PREFERRED_AWG:
+        if preferred in names:
+            display = preferred
+            break
+    return (display or (names[0] if names else None)), merged
 
 
 def _peer_stats(ssh, container: str):
