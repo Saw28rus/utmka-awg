@@ -436,10 +436,10 @@ p {
 }
 
 .cascade-group {
-  grid-column: 1 / -1;
+  grid-column: span 2;
   display: grid;
-  gap: 12px;
-  padding: 14px;
+  gap: 10px;
+  padding: 10px;
   min-width: 0;
   border-color: var(--color-cascade-border);
   background: var(--color-cascade-bg);
@@ -455,7 +455,7 @@ p {
   align-items: center;
   justify-content: space-between;
   gap: 10px;
-  padding: 0 4px;
+  padding: 0 2px;
 }
 
 .cascade-group-title {
@@ -473,13 +473,15 @@ p {
 
 .cascade-group-body {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 40px minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr) 28px minmax(0, 1fr);
   align-items: stretch;
-  gap: 10px;
+  gap: 8px;
   min-width: 0;
 }
 
 .cascade-group-body :deep(.server-card) {
+  gap: 10px;
+  padding: 12px;
   min-width: 0;
   overflow: hidden;
   border-color: var(--color-border);
@@ -488,21 +490,18 @@ p {
 
 .cascade-link {
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
   align-items: center;
   justify-content: center;
-  gap: 6px;
-  width: 36px;
+  gap: 0;
+  width: 28px;
   color: var(--color-dim);
   flex-shrink: 0;
+  align-self: center;
 }
 
 .cascade-link-line {
-  width: 2px;
-  flex: 1;
-  min-height: 24px;
-  border-radius: 1px;
-  background: var(--color-border);
+  display: none;
 }
 
 .cascade-link.live {
@@ -510,31 +509,27 @@ p {
 }
 
 .cascade-link.live .cascade-link-line {
-  background: linear-gradient(180deg, transparent, var(--color-accent), transparent);
+  background: linear-gradient(90deg, transparent, var(--color-accent), transparent);
 }
 
-@media (max-width: 1100px) {
+@media (max-width: 720px) {
+  .cascade-group {
+    grid-column: 1 / -1;
+  }
+
   .cascade-group-body {
     grid-template-columns: 1fr;
-    gap: 8px;
+    gap: 6px;
   }
 
   .cascade-link {
-    flex-direction: row;
     width: auto;
-    height: 32px;
-    padding: 0 16px;
+    height: 28px;
+    padding: 0 8px;
   }
 
-  .cascade-link-line {
-    width: auto;
-    height: 2px;
-    min-height: 0;
-    flex: 1;
-  }
-
-  .cascade-link.live .cascade-link-line {
-    background: linear-gradient(90deg, transparent, var(--color-accent), transparent);
+  .cascade-link svg {
+    transform: rotate(90deg);
   }
 }
 

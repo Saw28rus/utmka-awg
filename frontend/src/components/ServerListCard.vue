@@ -74,17 +74,6 @@
       </div>
     </div>
 
-    <button
-      v-if="roleLabel === 'entry'"
-      type="button"
-      class="migrate-node-btn"
-      title="Перенос VPN, панели и всех данных на новый сервер без смены конфигов клиентам"
-      @click.prevent.stop="$emit('migrate-node')"
-    >
-      <ServerCog :size="15" />
-      <span>Мигрировать узел</span>
-    </button>
-
     <footer class="card-foot">
       <span class="foot-item">
         <Users :size="13" />
@@ -98,6 +87,16 @@
         <Clock :size="13" />
         {{ uptimeText }}
       </span>
+      <button
+        v-if="roleLabel === 'entry'"
+        type="button"
+        class="migrate-node-btn"
+        title="Перенос VPN, панели и всех данных на новый сервер без смены конфигов клиентам"
+        @click.prevent.stop="$emit('migrate-node')"
+      >
+        <ServerCog :size="14" />
+        <span>Мигрировать</span>
+      </button>
       <button
         class="foot-btn health-btn"
         :class="`health-${health?.state || 'unknown'}`"
@@ -518,6 +517,10 @@ const trafficText = computed(() => formatBytes(props.metrics?.total_traffic_byte
   margin-left: auto;
 }
 
+.migrate-node-btn + .health-btn {
+  margin-left: 0;
+}
+
 .health-btn.health-ok {
   color: #4ade80;
 }
@@ -540,40 +543,31 @@ const trafficText = computed(() => formatBytes(props.metrics?.total_traffic_byte
 }
 
 .migrate-node-btn {
-  display: flex;
+  display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 8px;
-  width: 100%;
-  padding: 9px 14px;
-  border-radius: 10px;
-  border: 1px solid color-mix(in srgb, var(--color-info) 45%, transparent);
-  background: linear-gradient(
-    135deg,
-    color-mix(in srgb, var(--color-info) 14%, transparent),
-    color-mix(in srgb, var(--color-accent) 10%, transparent)
-  );
+  gap: 5px;
+  margin-left: auto;
+  padding: 4px 9px;
+  border-radius: 7px;
+  border: 1px solid color-mix(in srgb, var(--color-info) 40%, transparent);
+  background: color-mix(in srgb, var(--color-info) 12%, transparent);
   color: var(--color-info);
-  font-size: 13px;
+  font-size: 11px;
   font-weight: 600;
   cursor: pointer;
+  flex-shrink: 0;
   transition:
     border-color 0.15s ease,
-    background 0.15s ease,
-    transform 0.1s ease;
+    background 0.15s ease;
 }
 
 .migrate-node-btn:hover {
   border-color: color-mix(in srgb, var(--color-info) 70%, transparent);
-  background: linear-gradient(
-    135deg,
-    color-mix(in srgb, var(--color-info) 22%, transparent),
-    color-mix(in srgb, var(--color-accent) 16%, transparent)
-  );
-  transform: translateY(-1px);
+  background: color-mix(in srgb, var(--color-info) 20%, transparent);
 }
 
 .migrate-node-btn:active {
-  transform: translateY(0);
+  transform: none;
 }
 </style>
