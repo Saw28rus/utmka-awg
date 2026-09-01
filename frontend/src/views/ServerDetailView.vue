@@ -638,7 +638,17 @@
               Включить каскад
             </n-button>
             <n-button
-              v-else
+              v-else-if="canAdd31ToCascade"
+              type="primary"
+              size="large"
+              :loading="cascadeApplyBusy === 'apply'"
+              :disabled="!cascadeProtoAwg31 || !!cascadeApplyBusy"
+              @click="runApply"
+            >
+              Добавить 3.1 к каскаду
+            </n-button>
+            <n-button
+              v-if="cascadeActive"
               type="error"
               size="large"
               :loading="cascadeApplyBusy === 'rollback'"
@@ -649,6 +659,10 @@
             </n-button>
             <p v-if="!canApplyCascade && !cascadeActive" class="cascade-hint">
               Сначала выберите выходной сервер и нажмите «Проверить».
+            </p>
+            <p v-else-if="canAdd31ToCascade" class="cascade-hint">
+              Ключи 3.1 сейчас выходят с IP входа, а не через NL.
+              Отметьте 3.1 ниже и нажмите «Добавить 3.1 к каскаду» — каскад 2.0 не выключится.
             </p>
             <p v-else-if="cascadeActive" class="cascade-hint">
               Разделение трафика (РФ / зарубеж) — на вкладке
@@ -679,7 +693,7 @@
         </div>
 
         <!-- Настройка (свёрнута, когда каскад уже работает) -->
-        <details class="panel block cascade-setup" :open="!cascadeActive">
+        <details class="panel block cascade-setup" :open="!cascadeActive || canAdd31ToCascade">
           <summary class="cascade-setup-summary">
             <span>Настройка связи</span>
             <StatusBadge
@@ -710,8 +724,8 @@
                   <small>Старые клиенты, приложение AmneziaWG, роутеры</small>
                 </span>
               </label>
-              <label class="cascade-proto-opt" :class="{ disabled: !hasAwg31 || cascadeActive }">
-                <input v-model="cascadeProtoAwg31" type="checkbox" :disabled="!hasAwg31 || cascadeActive" />
+              <label class="cascade-proto-opt" :class="{ disabled: !hasAwg31 || (cascadeActive && cascadeHas31) }">
+                <input v-model="cascadeProtoAwg31" type="checkbox" :disabled="!hasAwg31 || (cascadeActive && cascadeHas31)" />
                 <span>
                   <strong>AmneziaWG 3.1</strong>
                   <small>Нужен Amnezia VPN 5.0.1.5 или новее</small>
@@ -2328,7 +2342,13 @@ const cascadeProtocolSummary = computed(() => {
   return names.join(' + ')
 })
 
+const cascadeHas31 = computed(() => (cascadeLink.value?.protocols || []).includes('awg31'))
+const canAdd31ToCascade = computed(
+  () => cascadeActive.value && hasAwg31.value && !cascadeHas31.value
+)
+
 const canApplyCascade = computed(() => {
+  if (canAdd31ToCascade.value && cascadeProtoAwg31.value) return true
   if (cascadeActive.value) return false
   if (!cascadeSelectedProtocols().length) return false
   const s = cascadeLink.value?.state
@@ -2344,20 +2364,26 @@ watch([hasAwg2, hasAwg31], ([v2, v31]) => {
   }
 })
 
+watch(canAdd31ToCascade, (need) => {
+  if (need) cascadeProtoAwg31.value = true
+})
+
 function runApply() {
-  const protocols = cascadeSelectedProtocols()
+  const adding31 = canAdd31ToCascade.value
+  const protocols = adding31 ? ['awg2', 'awg31'].filter((p) => (p === 'awg31' ? hasAwg31.value : hasAwg2.value)) : cascadeSelectedProtocols()
   const names = protocols.map((p) => (p === 'awg31' ? '3.1' : '2.0')).join(' и ')
   const note31 = protocols.includes('awg31')
     ? ' Для 3.1 на телефоне нужен Amnezia VPN 5.0.1.5 или новее.'
     : ''
   dialog.warning({
-    title: 'Включить каскад?',
-    content:
-      `Через выход пойдёт AmneziaWG ${names}. Если на выходном сервере ещё нет этого протокола — ` +
-      'панель установит его сама, это может занять несколько минут. ' +
-      'Телефон может на несколько секунд переподключиться. Если что-то пойдёт не так — настройка откатится сама.' +
-      note31,
-    positiveText: 'Включить каскад',
+    title: adding31 ? 'Добавить AmneziaWG 3.1 к каскаду?' : 'Включить каскад?',
+    content: adding31
+      ? 'Каскад 2.0 останется включённым. Через выход дополнительно пойдёт AmneziaWG 3.1. Телефон с ключом 3.1 начнёт выходить в интернет через NL.'
+      : (`Через выход пойдёт AmneziaWG ${names}. Если на выходном сервере ещё нет этого протокола — ` +
+        'панель установит его сама, это может занять несколько минут. ' +
+        'Телефон может на несколько секунд переподключиться. Если что-то пойдёт не так — настройка откатится сама.' +
+        note31),
+    positiveText: adding31 ? 'Добавить 3.1' : 'Включить каскад',
     negativeText: 'Отмена',
     onPositiveClick: () => {
       void doApplyCascade()
@@ -2372,7 +2398,13 @@ async function doApplyCascade() {
   try {
     const { data } = await api.post<CascadeApplyResult>(
       `/servers/${serverId}/cascade/apply`,
-      { protocols: cascadeSelectedProtocols() },
+      {
+        protocols: canAdd31ToCascade.value
+          ? cascadeSelectedProtocols().length
+            ? cascadeSelectedProtocols()
+            : ['awg2', 'awg31']
+          : cascadeSelectedProtocols()
+      },
       { timeout: 600_000 }
     )
     cascadeApplyResult.value = data

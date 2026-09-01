@@ -151,6 +151,8 @@ def install_awg(server_id: str, *, variant: str = "awg2", port: int = DEFAULT_PO
                 f" UDP {port} должен быть открыт в файрволе хостинга. "
                 "Ключ клиенту — только vpn:// в Amnezia VPN 5.0.1.5+, не приложение AmneziaWG."
             )
+            extra += _maybe_attach_awg31_cascade(server_id)
+
         return AwgInstallResult(
             message=f"{cfg['label']} установлен на UDP {port}.{extra} Добавляй клиентов во вкладке «Клиенты».",
             container=container,
@@ -367,6 +369,28 @@ def _register(server_id: str, record: dict, cfg: dict, port: int) -> None:
     elif not record.get("vpn_port"):
         runtime["vpn_port"] = port
     server_store.update_runtime(server_id, **runtime)
+
+
+def _maybe_attach_awg31_cascade(server_id: str) -> str:
+    """Если вход уже в каскаде 2.0 — сразу поднять ногу 3.1, не ломая 2.0."""
+    try:
+        from app.services.cascade_apply import apply_cascade
+        from app.services.cascade_store import cascade_store
+    except Exception:  # noqa: BLE001
+        return ""
+    link = cascade_store.get_link(server_id)
+    if not link or (link.get("state") or "") != "active":
+        return ""
+    try:
+        result = apply_cascade(server_id, ["awg31"])
+        if result.ok:
+            return " Каскад 3.1 включён рядом с 2.0: интернет ключей 3.1 идёт через выход."
+    except Exception as exc:  # noqa: BLE001
+        return (
+            f" Каскад 2.0 не тронут. 3.1 не удалось добавить автоматически ({exc}). "
+            "Открой вкладку «Каскад» и добавь 3.1 вручную."
+        )
+    return ""
 
 
 def _rollback(ssh, container: str) -> None:

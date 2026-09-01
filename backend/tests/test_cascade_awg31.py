@@ -49,7 +49,23 @@ def test_containers_and_persist_suffix() -> None:
     assert persist_suffix("awg2") == ""
 
 
-def test_slot1_does_not_reuse_slot0_entry_port() -> None:
+def test_protocols_to_apply_adds_31_beside_live_20() -> None:
+    from app.services.cascade_protocol import merge_link_protocols, protocols_to_apply
+
+    legacy = {
+        "exit_server_id": "nl",
+        "state": "active",
+        "transit_slot": 0,
+        "transit_port": 51821,
+    }
+    assert protocols_to_apply(legacy, ["awg2", "awg31"], cascade_is_live=True) == ["awg31"]
+    assert protocols_to_apply(legacy, ["awg31"], cascade_is_live=True) == ["awg31"]
+    assert protocols_to_apply(legacy, ["awg2"], cascade_is_live=True) == []
+    assert merge_link_protocols(legacy, ["awg31"]) == ["awg2", "awg31"]
+
+    both = {"protocols": ["awg2"], "legs": {"awg2": {"transit_slot": 0, "transit_port": 51821}}}
+    assert protocols_to_apply(both, ["awg2", "awg31"], cascade_is_live=True) == ["awg31"]
+
     p0 = profile_for_slot(0)
     p1 = profile_for_slot(1)
     assert p0.transit_port == 51821

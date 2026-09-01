@@ -23,6 +23,7 @@ from app.services.cascade_protocol import (
     CLIENT_HINT_31,
     containers_for,
     link_protocols,
+    merge_link_protocols,
     normalize_cascade_protocols,
     protocol_label,
 )
@@ -764,33 +765,52 @@ def run_preflight(
     if ok and "awg31" in protos:
         message = f"{message} {CLIENT_HINT_31}"
 
-    live = probe_cascade_live(entry_server_id)
-    if live["active"]:
-        new_state = "active"
-        message = "Каскад уже работает на сервере. Проверка пройдена."
-    else:
-        new_state = "preflight_ok" if ok else "preflight_failed"
-
     if profile is None:
         raise CascadeError("Не удалось выделить слот транзита.")
 
-    cascade_store.upsert_link(
-        entry_server_id,
-        exit_server_id=exit_server_id,
-        state=new_state,
-        nat_model="model_a",
-        protocol=protos[0],
-        protocols=protos,
-        legs=legs_meta,
-        client_subnet=client_subnet,
-        transit_subnet=transit_subnet,
-        transit_port=profile.transit_port,
-        transit_slot=profile.slot,
-        recommended_hook=recommended_hook,
-        last_preflight_at=datetime.now(timezone.utc).isoformat(),
-        last_preflight_ok=ok,
-        message=message,
-    )
+    live = probe_cascade_live(entry_server_id)
+    if live["active"]:
+        new_state = "active"
+        message = "Каскад 2.0 работает. 3.1 можно добавить без выключения 2.0."
+        merged_protos = merge_link_protocols(existing, protos)
+        merged_legs = dict(existing.get("legs") or {})
+        merged_legs.update(legs_meta)
+        cascade_store.upsert_link(
+            entry_server_id,
+            exit_server_id=exit_server_id,
+            state=new_state,
+            nat_model="model_a",
+            protocol=existing.get("protocol") or merged_protos[0],
+            protocols=merged_protos,
+            legs=merged_legs,
+            client_subnet=existing.get("client_subnet") or client_subnet,
+            transit_subnet=existing.get("transit_subnet") or transit_subnet,
+            transit_port=existing.get("transit_port") or profile.transit_port,
+            transit_slot=existing.get("transit_slot") if existing.get("transit_slot") is not None else profile.slot,
+            recommended_hook=recommended_hook,
+            last_preflight_at=datetime.now(timezone.utc).isoformat(),
+            last_preflight_ok=ok,
+            message=message,
+        )
+    else:
+        new_state = "preflight_ok" if ok else "preflight_failed"
+        cascade_store.upsert_link(
+            entry_server_id,
+            exit_server_id=exit_server_id,
+            state=new_state,
+            nat_model="model_a",
+            protocol=protos[0],
+            protocols=protos,
+            legs=legs_meta,
+            client_subnet=client_subnet,
+            transit_subnet=transit_subnet,
+            transit_port=profile.transit_port,
+            transit_slot=profile.slot,
+            recommended_hook=recommended_hook,
+            last_preflight_at=datetime.now(timezone.utc).isoformat(),
+            last_preflight_ok=ok,
+            message=message,
+        )
 
     return CascadePreflightResult(
         ok=ok,

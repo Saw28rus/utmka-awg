@@ -37,11 +37,14 @@ from app.services.cascade import (
 )
 from app.services.cascade_protocol import (
     CLIENT_HINT_31,
+    all_link_slots,
     entry_udp_comment,
     link_protocols,
+    merge_link_protocols,
     normalize_cascade_protocols,
     preferred_container,
     protocol_label,
+    protocols_to_apply,
     slot_for_protocol,
 )
 from app.services.cascade_store import cascade_store
@@ -258,30 +261,33 @@ def _gather(entry_id: str, exit_id: str, protocol: str = "awg2") -> dict:
 
 def apply_cascade(entry_id: str, protocols: Optional[list[str]] = None) -> CascadeApplyResult:
     from app.services.cascade import probe_cascade_live
-    from app.services.transit_allocator import profile_for_slot
+    from app.services.transit_allocator import allocate_slot, profile_for_slot
 
     link = cascade_store.get_link(entry_id)
     if not link:
         raise CascadeError("Сначала проверьте готовность серверов.")
     live = probe_cascade_live(entry_id)
-    if live["active"]:
+    adding_to_active = bool(live["active"])
+    if adding_to_active:
         cascade_store.upsert_link(entry_id, state="active")
-        raise CascadeError(
-            "Каскад уже работает. Выключите его, если нужно перенастроить "
-            "или добавить 3.1 рядом с 2.0."
-        )
-    if not link.get("last_preflight_ok"):
-        raise CascadeError("Проверка не пройдена — включение заблокировано.")
     exit_id = link.get("exit_server_id")
     if not exit_id:
         raise CascadeError("Не выбран exit-сервер.")
 
     requested = normalize_cascade_protocols(protocols) if protocols else None
-    planned = requested or link_protocols(link)
+    planned = protocols_to_apply(link, requested, cascade_is_live=adding_to_active)
+    if adding_to_active and not planned:
+        raise CascadeError(
+            "Каскад уже работает для выбранных протоколов. "
+            "Чтобы перенастроить — выключите его и включите снова."
+        )
     if not planned:
         raise CascadeError("Выберите AmneziaWG 2.0 и/или 3.1.")
-    if requested and set(requested) != set(link_protocols(link)):
-        raise CascadeError("Сначала нажмите «Проверить» для выбранных протоколов (2.0 / 3.1).")
+    if not adding_to_active:
+        if not link.get("last_preflight_ok"):
+            raise CascadeError("Проверка не пройдена — включение заблокировано.")
+        if requested and set(requested) != set(link_protocols(link)):
+            raise CascadeError("Сначала нажмите «Проверить» для выбранных протоколов (2.0 / 3.1).")
 
     entry_rec = server_store.get_record(entry_id)
     exit_rec = server_store.get_record(exit_id)
@@ -295,6 +301,7 @@ def apply_cascade(entry_id: str, protocols: Optional[list[str]] = None) -> Casca
             steps.append(prep)
 
     legs_ctx: list[dict] = []
+    extra_used = set(all_link_slots(link))
     for proto in planned:
         facts = _gather(entry_id, exit_id, proto)
         entry_f, exit_f = facts.get("entry", {}), facts.get("exit", {})
@@ -306,7 +313,10 @@ def apply_cascade(entry_id: str, protocols: Optional[list[str]] = None) -> Casca
         exit_public_ip = exit_f.get("public_ip") or exit_rec.get("host")
         entry_public_ip = entry_f.get("public_ip") or entry_rec.get("host")
         slot = slot_for_protocol(link, proto)
-        profile = profile_for_slot(slot if slot is not None else 0)
+        if slot is None:
+            slot = allocate_slot(entry_id, protocol=proto, extra_used=extra_used)
+        extra_used.add(slot)
+        profile = profile_for_slot(slot)
         ctx = {
             "protocol": proto,
             "entry_ctn": entry_ctn,
@@ -364,7 +374,8 @@ def apply_cascade(entry_id: str, protocols: Optional[list[str]] = None) -> Casca
             steps.append(CascadeStep(name=f"{label}: ключи транзита", status="ok"))
 
             snap = _snapshot(entry_ssh, ctx["entry_ctn"], exit_ssh, ctx["exit_ctn"])
-            cascade_store.upsert_link(entry_id, snapshot=snap)
+            if not adding_to_active:
+                cascade_store.upsert_link(entry_id, snapshot=snap)
 
             exit_conf = _render_conf(
                 private_key=exit_keys["priv"],
@@ -496,15 +507,16 @@ def apply_cascade(entry_id: str, protocols: Optional[list[str]] = None) -> Casca
                 ))
 
         split_applied = False
-        try:
-            from app.services.cascade_rules import apply_split_after_cascade
+        if not adding_to_active:
+            try:
+                from app.services.cascade_rules import apply_split_after_cascade
 
-            split_step = apply_split_after_cascade(entry_id)
-            if split_step is not None:
-                steps.append(split_step)
-                split_applied = split_step.status == "ok"
-        except Exception:  # noqa: BLE001
-            pass
+                split_step = apply_split_after_cascade(entry_id)
+                if split_step is not None:
+                    steps.append(split_step)
+                    split_applied = split_step.status == "ok"
+            except Exception:  # noqa: BLE001
+                pass
 
         legs_meta = dict(link.get("legs") or {})
         for ctx in applied:
@@ -522,33 +534,36 @@ def apply_cascade(entry_id: str, protocols: Optional[list[str]] = None) -> Casca
                 "exit_ctn_ip": ctx["exit_ctn_ip"],
             }
 
-        labels = " + ".join(protocol_label(p) for p in planned)
+        merged = merge_link_protocols(link, planned)
+        labels = " + ".join(protocol_label(p) for p in merged)
         msg = health_note or f"Каскад активен ({labels}): клиент → вход → выход → интернет."
-        if "awg31" in planned:
+        if "awg31" in merged:
             msg = f"{msg} {CLIENT_HINT_31}"
+        keep_primary = adding_to_active
         cascade_store.upsert_link(
             entry_id,
             state="active",
-            protocol=planned[0],
-            protocols=planned,
+            protocol=merged[0],
+            protocols=merged,
             legs=legs_meta,
-            transit_subnet=primary["profile"].subnet,
-            transit_port=primary["profile"].transit_port,
-            transit_slot=primary["profile"].slot,
-            egress_ip=egress_ip,
+            transit_subnet=link.get("transit_subnet") if keep_primary else primary["profile"].subnet,
+            transit_port=link.get("transit_port") if keep_primary else primary["profile"].transit_port,
+            transit_slot=link.get("transit_slot") if keep_primary else primary["profile"].slot,
+            egress_ip=link.get("egress_ip") if keep_primary else egress_ip,
             last_applied_at=datetime.now(timezone.utc).isoformat(),
-            client_subnet=primary["client_subnet"],
-            exit_ctn_ip=primary["exit_ctn_ip"],
-            entry_ctn_ip=primary["entry_ctn_ip"],
-            entry_host_port=primary["profile"].entry_host_port,
+            client_subnet=link.get("client_subnet") if keep_primary else primary["client_subnet"],
+            exit_ctn_ip=link.get("exit_ctn_ip") if keep_primary else primary["exit_ctn_ip"],
+            entry_ctn_ip=link.get("entry_ctn_ip") if keep_primary else primary["entry_ctn_ip"],
+            entry_host_port=link.get("entry_host_port") if keep_primary else primary["profile"].entry_host_port,
             message=msg,
         )
         return CascadeApplyResult(
             ok=True, state="active",
             entry_server_id=entry_id, exit_server_id=exit_id,
-            egress_ip=egress_ip, expected_exit_ip=primary["exit_public_ip"],
-            transit_subnet=primary["profile"].subnet,
-            transit_port=primary["profile"].transit_port,
+            egress_ip=(link.get("egress_ip") if keep_primary else egress_ip),
+            expected_exit_ip=primary["exit_public_ip"],
+            transit_subnet=(link.get("transit_subnet") if keep_primary else primary["profile"].subnet),
+            transit_port=(link.get("transit_port") if keep_primary else primary["profile"].transit_port),
             steps=steps,
             message=msg,
         )

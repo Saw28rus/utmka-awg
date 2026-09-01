@@ -45,6 +45,50 @@ def normalize_cascade_protocols(values: Optional[Iterable[str]]) -> list[str]:
     return [proto for proto in CASCADE_AWG_PROTOCOLS if proto in chosen]
 
 
+def live_leg_protocols(link: Optional[dict], *, cascade_is_live: bool) -> list[str]:
+    """Какие ноги уже имеют слот (legs) или считаются живыми в legacy-записи."""
+    if not link:
+        return []
+    found: list[str] = []
+    legs = link.get("legs") or {}
+    if isinstance(legs, dict):
+        for proto in CASCADE_AWG_PROTOCOLS:
+            data = legs.get(proto)
+            if isinstance(data, dict) and (
+                data.get("transit_slot") is not None or data.get("transit_port")
+            ):
+                found.append(proto)
+        if found:
+            return found
+    if cascade_is_live:
+        return link_protocols(link)
+    return []
+
+
+def protocols_to_apply(
+    link: Optional[dict],
+    requested: Optional[Iterable[str]],
+    *,
+    cascade_is_live: bool,
+) -> list[str]:
+    """Что реально поднимать: полный набор, либо только недостающие ноги."""
+    wanted = (
+        normalize_cascade_protocols(requested)
+        if requested
+        else link_protocols(link)
+    )
+    if not cascade_is_live:
+        return wanted
+    live = set(live_leg_protocols(link, cascade_is_live=True))
+    return [proto for proto in wanted if proto not in live]
+
+
+def merge_link_protocols(link: Optional[dict], added: Iterable[str]) -> list[str]:
+    present = set(link_protocols(link))
+    present.update(normalize_cascade_protocols(added))
+    return [proto for proto in CASCADE_AWG_PROTOCOLS if proto in present]
+
+
 def link_protocols(link: Optional[dict]) -> list[str]:
     """Какие AWG-версии покрывает звено. Старые записи без поля = только 2.0."""
     if not link:
