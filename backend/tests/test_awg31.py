@@ -42,7 +42,7 @@ def test_generate_amnezia_31_params() -> None:
         assert params["H2"] == "2"
         assert params["H3"] == "3"
         assert params["H4"] == "4"
-        assert params["RandomTrailers"] == "on"
+        assert params["RandomTrailers"] == "off"
         assert params["DisableCookies"] == "on"
         assert params["ContentPaddingAddition"] == "10-100"
 
@@ -54,7 +54,7 @@ def test_awg_install_params_awg31() -> None:
     assert mapped["$INIT_PACKET_MAGIC_HEADER"] == "1"
     assert mapped["$TRANSPORT_PACKET_MAGIC_HEADER"] == "4"
     assert int(mapped["$INIT_PACKET_JUNK_SIZE"]) >= 12
-    assert mapped["$RANDOM_TRAILERS"] == "on"
+    assert mapped["$RANDOM_TRAILERS"] == "off"
     assert mapped["$CONTENT_PADDING_ADDITION"] == "10-100"
 
 
@@ -102,7 +102,7 @@ def test_vpn_link_and_conf_keep_awg31_keys() -> None:
         awg_params=awg_params,
     )
     assert "HeaderProtectionKey = headerprotkeybase64value" in conf
-    assert "RandomTrailers = on" in conf
+    assert "RandomTrailers = off" in conf
     assert "DisableCookies = on" in conf
     assert "ContentPaddingAddition = 10-100" in conf
     parsed = parse_interface(conf)
@@ -135,7 +135,7 @@ def test_vpn_link_and_conf_keep_awg31_keys() -> None:
     last = json.loads(container["awg"]["last_config"])
     assert last["HeaderProtectionKey"] == "headerprotkeybase64value"
     assert last["protocol_version"] == "3.1"
-    assert last["RandomTrailers"] == "on"
+    assert last["RandomTrailers"] == "off"
     assert last["Jc"] == "5"
 
 
@@ -163,4 +163,16 @@ def test_client_protocols_see_awg31_from_installed_map() -> None:
     }
     assert "awg31" in store._client_protocols(rec)
     assert "awg2" in store._client_protocols(rec)
+
+
+def test_disable_random_trailers_rewrites_on() -> None:
+    from app.services.awg_config import disable_random_trailers
+
+    raw = "[Interface]\nRandomTrailers = on\nJc = 5\n"
+    out, changed = disable_random_trailers(raw)
+    assert changed
+    assert "RandomTrailers = off" in out
+    again, changed_again = disable_random_trailers(out)
+    assert not changed_again
+    assert again == out
 

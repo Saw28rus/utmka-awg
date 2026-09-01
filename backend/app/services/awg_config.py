@@ -290,6 +290,20 @@ CLIENT_JUNK_JMIN = 10
 CLIENT_JUNK_JMAX = 50
 
 
+def disable_random_trailers(config_text: str) -> tuple[str, bool]:
+    """Выключает RandomTrailers в awg0.conf. True, если файл изменился."""
+    if not re.search(r"(?im)^[ \t]*RandomTrailers[ \t]*=", config_text):
+        return config_text, False
+    if re.search(r"(?im)^[ \t]*RandomTrailers[ \t]*=[ \t]*off[ \t]*$", config_text):
+        return config_text, False
+    updated = re.sub(
+        r"(?im)^([ \t]*RandomTrailers[ \t]*=[ \t]*).*$",
+        r"\1off",
+        config_text,
+    )
+    return updated, updated != config_text
+
+
 def _mobile_safe_awg_params(awg_params: dict[str, str]) -> dict[str, str]:
     """Ограничивает junk-параметры (Jc/Jmin/Jmax) до значений приложения Amnezia.
 
@@ -309,6 +323,10 @@ def _mobile_safe_awg_params(awg_params: dict[str, str]) -> dict[str, str]:
         safe["Jc"] = str(CLIENT_JUNK_MAX_JC)
     safe["Jmin"] = str(CLIENT_JUNK_JMIN)
     safe["Jmax"] = str(CLIENT_JUNK_JMAX)
+    # Телефон часто не применяет RandomTrailers из vpn://. Сервер с on
+    # тогда не узнаёт handshake-пакет.
+    if str(safe.get("RandomTrailers") or "").strip().lower() in ("on", "true", "1"):
+        safe["RandomTrailers"] = "off"
     return safe
 
 

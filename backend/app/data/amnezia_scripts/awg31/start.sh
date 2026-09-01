@@ -8,7 +8,11 @@ echo "Container startup"
 awg-quick down /opt/amnezia/awg/awg0.conf
 
 # start daemons if configured
-if [ -f /opt/amnezia/awg/awg0.conf ]; then (awg-quick up /opt/amnezia/awg/awg0.conf); fi
+if [ -f /opt/amnezia/awg/awg0.conf ]; then
+  if ! awg-quick up /opt/amnezia/awg/awg0.conf; then
+    echo "awg-quick up failed" >&2
+  fi
+fi
 
 # Allow traffic on the TUN interface.
 iptables -A INPUT -i awg0 -j ACCEPT

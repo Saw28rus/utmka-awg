@@ -112,6 +112,7 @@ def get_server_overview(server_id: str) -> ServerOverview:
         security = _collect_security(ssh, record, server_id)
         _sync_xray_metadata(server_id, record, containers)
         _sync_awg_metadata(server_id, record, containers)
+        _heal_awg31_if_present(ssh, containers)
         return ServerOverview(
             server_id=server_id,
             online=True,
@@ -407,6 +408,17 @@ def _sync_awg_metadata(server_id: str, record: dict, containers: list[ContainerI
         server_store.update_runtime(
             server_id, container_names=names, installed_protocols=protocols
         )
+
+
+def _heal_awg31_if_present(ssh, containers: list[ContainerInfo]) -> None:
+    if not any(c.name == "amnezia-awg31" and c.state == "running" for c in containers):
+        return
+    try:
+        from app.services.awg_client import heal_awg31_handshake
+
+        heal_awg31_handshake(ssh, "amnezia-awg31")
+    except Exception:  # noqa: BLE001
+        return
 
 
 def _match_container(entry: dict, names: list[str]) -> Optional[str]:

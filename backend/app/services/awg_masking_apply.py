@@ -218,7 +218,8 @@ def generate_amnezia_31_params() -> dict[str, str]:
 
     Header Protection: H1–H4 = 1–4 (кастомные заголовки выключены), S1–S4 ≥ 12
     (nonce ChaCha). Junk как в приложении. HeaderProtectionKey генерится
-    внутри контейнера (`awg genkey`), не здесь.
+    внутри контейнера (`awg genkey`), не здесь. RandomTrailers выключен:
+    иначе клиент без флага не соберёт handshake.
     """
     jc = 4 + secrets.randbelow(3)
 
@@ -256,7 +257,9 @@ def generate_amnezia_31_params() -> dict[str, str]:
         "H3": "3",
         "H4": "4",
         "ContentPaddingAddition": "10-100",
-        "RandomTrailers": "on",
+        # RandomTrailers двусторонний: телефон часто не включает флаг,
+        # а сервер с on рвёт handshake и на Wi‑Fi, и на LTE.
+        "RandomTrailers": "off",
         "DisableCookies": "on",
     }
 

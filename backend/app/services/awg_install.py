@@ -138,6 +138,8 @@ def install_awg(server_id: str, *, variant: str = "awg2", port: int = DEFAULT_PO
         _configure_container(ssh, cfg, vars_map)
         _startup_container(ssh, cfg, vars_map)
         _verify_running(ssh, container)
+        if variant == "awg31":
+            _verify_awg_iface(ssh, container, port)
         _ensure_host_udp_allow(ssh, port)
 
         public_key = read_container_file(ssh, container, "/opt/amnezia/awg/wireguard_server_public_key.key") or None
@@ -322,6 +324,30 @@ def _verify_running(ssh, container: str) -> None:
     ).stdout.strip()
     if status != "running":
         raise AwgInstallError(f"Контейнер {container} не перешёл в состояние running.")
+
+
+def _verify_awg_iface(ssh, container: str, port: int) -> None:
+    """awg-quick в start.sh раньше глотался в подshell — контейнер жив, awg0 нет."""
+    quoted = shlex.quote(container)
+    listen = ""
+    for _ in range(8):
+        listen = ssh_exec.run(
+            ssh,
+            f"docker exec {quoted} sh -c 'awg show awg0 listen-port 2>/dev/null || true'",
+            timeout=20,
+        ).stdout.strip()
+        if listen.isdigit():
+            break
+        ssh_exec.run(ssh, "sleep 1", timeout=5)
+    if not listen.isdigit():
+        raise AwgInstallError(
+            "Контейнер 3.1 запущен, но интерфейс awg0 не поднялся. "
+            "Проверь логи: docker logs amnezia-awg31"
+        )
+    if int(listen) != int(port):
+        raise AwgInstallError(
+            f"awg0 слушает UDP {listen}, а ставили {port}. Переустанови протокол."
+        )
 
 
 def _register(server_id: str, record: dict, cfg: dict, port: int) -> None:

@@ -12,6 +12,7 @@ from app.services.awg_config import (
     append_client_to_table,
     build_client_config,
     build_peer_block,
+    disable_random_trailers,
     next_client_ip,
     parse_client_names,
     parse_interface,
@@ -75,6 +76,11 @@ def create_awg_client(
             )
 
         iface = posixpath.splitext(posixpath.basename(config_path))[0]
+        if (protocol or "awg2").lower() == "awg31":
+            heal_awg31_handshake(ssh, container, config_path)
+            config_text = _run_in_container(
+                ssh, container, f"cat {shlex.quote(config_path)} 2>/dev/null || true"
+            ).stdout
         interface = parse_interface(config_text)
         existing_peers = parse_peers(config_text)
 
@@ -95,7 +101,10 @@ def create_awg_client(
         peer_block = build_peer_block(public_key, preshared_key, client_ip)
         _append_to_file(ssh, container, config_path, peer_block)
         _update_clients_table(ssh, container, config_path, public_key, name)
-        sync_ok = _sync_config(ssh, container, iface, config_path)
+        if (protocol or "awg2").lower() == "awg31":
+            sync_ok = _reload_awg_quick(ssh, container, config_path)
+        else:
+            sync_ok = _sync_config(ssh, container, iface, config_path)
 
         config_text_out = build_client_config(
             client_private_key=private_key,
@@ -164,6 +173,34 @@ def create_awg_client(
         return detail
     finally:
         ssh.close()
+
+
+def heal_awg31_handshake(ssh, container: str, config_path: str = "/opt/amnezia/awg/awg0.conf") -> bool:
+    """Выключает RandomTrailers на уже стоящем 3.1 и поднимает awg0, если он мёртв.
+
+    Возвращает True, если конфиг меняли (нужен новый ключ клиенту).
+    """
+    raw = _run_in_container(ssh, container, f"cat {shlex.quote(config_path)} 2>/dev/null || true").stdout
+    if not raw.strip():
+        return False
+    updated, changed = disable_random_trailers(raw)
+    if changed:
+        _overwrite_file(ssh, container, config_path, updated)
+    live = _run_in_container(
+        ssh, container, "awg show awg0 listen-port 2>/dev/null || true"
+    ).stdout.strip()
+    if changed or not live.isdigit():
+        _reload_awg_quick(ssh, container, config_path)
+    return changed
+
+
+def _reload_awg_quick(ssh, container: str, config_path: str) -> bool:
+    cfg = shlex.quote(config_path)
+    inner = (
+        f"awg-quick down {cfg} >/dev/null 2>&1 || true; "
+        f"awg-quick up {cfg} >/dev/null 2>&1"
+    )
+    return _run_in_container(ssh, container, inner, timeout=40).exit_code == 0
 
 
 def delete_awg_client(server_id: str, public_key: str) -> bool:
