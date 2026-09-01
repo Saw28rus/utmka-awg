@@ -121,6 +121,7 @@ const loading = ref(false)
 
 function protocolLabel(proto: string) {
   if (proto === 'xray') return 'Xray (Reality)'
+  if (proto === 'awg31') return 'AmneziaWG 3.1'
   if (proto.startsWith('awg')) return 'AmneziaWG 2.0'
   return proto
 }

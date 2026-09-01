@@ -18,10 +18,19 @@ from app.ssh import exec as ssh_exec
 # Каталог протоколов Amnezia. matches — подстроки в имени контейнера.
 PROTOCOL_CATALOG: list[dict] = [
     {
+        "id": "awg31",
+        "name": "AmneziaWG 3.1",
+        "description": "Актуальная версия протокола: Header Protection, padding, trailers. Нужен Amnezia VPN 5.0.1.5+. Каскад и центр маскировки пока у 2.0.",
+        "matches": ["amnezia-awg31"],
+        "managed": True,
+        "can_install": True,
+    },
+    {
         "id": "awg2",
-        "name": "AmneziaWG",
-        "description": "Новая версия протокола на основе awg-go. Расширенная обфускация с параметрами S3, S4.",
+        "name": "AmneziaWG 2.0",
+        "description": "AWG 2.0 на awg-go: S3/S4, H-диапазоны. Каскад и маскировка. Совместим со старыми клиентами AmneziaWG.",
         "matches": ["awg2", "amnezia-awg2"],
+        "exclude": ["awg31"],
         "managed": True,
         "can_install": True,
     },
@@ -30,7 +39,7 @@ PROTOCOL_CATALOG: list[dict] = [
         "name": "AmneziaWG Legacy",
         "description": "Оригинальная версия AWG на базе ядра WireGuard. Совместима со старыми клиентами.",
         "matches": ["amnezia-awg"],
-        "exclude": ["awg2"],
+        "exclude": ["awg2", "awg31"],
         "can_install": True,
     },
     {
@@ -257,13 +266,14 @@ def _collect_containers(ssh) -> list[ContainerInfo]:
 def _build_protocols(server_id: str, record: dict, containers: list[ContainerInfo]) -> list[ProtocolInfo]:
     by_name = {c.name: c for c in containers}
     names = list(by_name.keys())
+    counts: dict[str, int] = {}
+    for item in client_store.list_all(server_id):
+        pid = (item.protocol or "awg2").lower()
+        counts[pid] = counts.get(pid, 0) + 1
     result: list[ProtocolInfo] = []
     for entry in PROTOCOL_CATALOG:
         container_name = _match_container(entry, names)
         container = by_name.get(container_name) if container_name else None
-        clients = 0
-        if entry["id"] == "awg2" and container_name:
-            clients = client_store.count_for_server(server_id)
         result.append(
             ProtocolInfo(
                 id=entry["id"],
@@ -275,7 +285,7 @@ def _build_protocols(server_id: str, record: dict, containers: list[ContainerInf
                 ports=container.ports if container else "",
                 managed=bool(entry.get("managed")),
                 can_install=bool(entry.get("can_install")) and container is None,
-                clients_count=clients,
+                clients_count=counts.get(entry["id"], 0),
             )
         )
     return result

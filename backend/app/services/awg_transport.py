@@ -58,7 +58,7 @@ def _reissue(server_id: str, *, only_client_id: Optional[str] = None) -> Transpo
 
         reissued = skipped = 0
         for item in client_store.list_all(server_id):
-            if item.protocol not in ("awg2", "awg", "awg_legacy"):
+            if item.protocol not in ("awg2", "awg", "awg_legacy", "awg31"):
                 continue
             if only_client_id and item.id != only_client_id:
                 continue

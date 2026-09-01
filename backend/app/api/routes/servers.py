@@ -373,7 +373,7 @@ async def protocols_capabilities(
     from app.services.protocol_engine import EngineNotSupported
 
     result: dict[str, dict] = {}
-    for pid in ("awg2", "awg_legacy", "xray"):
+    for pid in ("awg31", "awg2", "awg_legacy", "xray"):
         try:
             result[pid] = asdict(get_engine(pid).capabilities())
         except EngineNotSupported:
@@ -537,7 +537,7 @@ async def protocol_install(
                 short_id=result.short_id,
                 transport=result.transport,
             )
-        if protocol_id in ("awg2", "awg_legacy"):
+        if protocol_id in ("awg2", "awg31", "awg_legacy"):
             result = await asyncio.to_thread(
                 get_engine(protocol_id).install,
                 server_id,

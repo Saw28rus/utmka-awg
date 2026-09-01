@@ -24,8 +24,8 @@ from app.services.transit_allocator import resolve_profile
 from app.services.xray_cascade_store import xray_cascade_store
 
 
-def _is_awg(protocol: str) -> bool:
-    return (protocol or "").lower().startswith("awg")
+def _is_cascade_awg(protocol: str) -> bool:
+    return (protocol or "").lower() in ("awg2", "awg", "awg_legacy")
 
 
 def _cascade_links() -> dict[str, dict]:
@@ -41,7 +41,7 @@ def channel_id_for(server_id: str, protocol: str, cascade_entries: Optional[set[
     """Детерминированный id канала для пары (узел, протокол)."""
     if cascade_entries is None:
         cascade_entries = set(_cascade_links().keys())
-    if _is_awg(protocol) and server_id in cascade_entries:
+    if _is_cascade_awg(protocol) and server_id in cascade_entries:
         return f"cascade:{server_id}"
     return f"direct:{server_id}:{(protocol or 'awg2').lower()}"
 
@@ -132,7 +132,7 @@ def list_channels() -> list[dict]:
     for record in server_store.list_records():
         sid = record["id"]
         for protocol in server_store.client_protocols(record):
-            if _is_awg(protocol) and sid in cascade_entries:
+            if _is_cascade_awg(protocol) and sid in cascade_entries:
                 continue
             cid = f"direct:{sid}:{protocol.lower()}"
             channels.append(

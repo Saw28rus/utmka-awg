@@ -76,9 +76,9 @@ class ProtocolEngine:
 
 
 class AwgEngine(ProtocolEngine):
-    """AmneziaWG (awg2/awg_legacy). Делегирует в awg_* без смены поведения."""
+    """AmneziaWG (awg2 / awg31 / awg_legacy). Делегирует в awg_*."""
 
-    SUPPORTED = ("awg2", "awg_legacy")
+    SUPPORTED = ("awg2", "awg31", "awg_legacy")
 
     def __init__(self, protocol_id: str = "awg2") -> None:
         pid = (protocol_id or "awg2").lower()
@@ -90,10 +90,10 @@ class AwgEngine(ProtocolEngine):
             create_client=True,
             delete_client=True,
             enforce=True,
-                masking=(self.id == "awg2"),
-                cascade=True,
-                update=True,
-            )
+            masking=(self.id == "awg2"),
+            cascade=(self.id == "awg2"),
+            update=True,
+        )
 
     def install(self, server_id: str, *, port: Optional[int] = None, **opts):
         from app.services.awg_install import DEFAULT_PORT, install_awg
@@ -196,8 +196,10 @@ class XrayEngine(ProtocolEngine):
 
 
 def get_engine(protocol_id: str) -> ProtocolEngine:
-    """Движок по id протокола. Любой не-xray = AmneziaWG (как старая ветка)."""
+    """Движок по id протокола."""
     pid = (protocol_id or "awg2").lower()
     if pid == "xray":
         return XrayEngine()
-    return AwgEngine("awg_legacy" if pid == "awg_legacy" else "awg2")
+    if pid in AwgEngine.SUPPORTED:
+        return AwgEngine(pid)
+    return AwgEngine("awg2")

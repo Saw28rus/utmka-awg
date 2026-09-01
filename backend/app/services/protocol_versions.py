@@ -29,6 +29,10 @@ PINNED: dict[str, dict[str, str]] = {
         "version": "0.2.18",
         "image": "amneziavpn/amneziawg-go:0.2.18",
     },
+    "awg31": {
+        "version": "3.1.20260828",
+        "image": "amneziavpn/amneziawg-go:3.1.20260828",
+    },
     "awg_legacy": {
         "version": "amnezia-wg@sha256:ea050861",
         "image": "amneziavpn/amnezia-wg@sha256:ea050861bd2012a6265817636ce7c0c15764ef955782d953cef42e05c1381250",
@@ -46,6 +50,7 @@ PINNED: dict[str, dict[str, str]] = {
 # Имя docker-контейнера на узле для каждого протокола.
 CONTAINERS: dict[str, str] = {
     "awg2": "amnezia-awg2",
+    "awg31": "amnezia-awg31",
     "awg_legacy": "amnezia-awg",
     "xray": "amnezia-xray",
     "telemt": "amnezia-telemt",
@@ -104,9 +109,11 @@ def _present_protocols(record: dict) -> list[str]:
     present: list[str] = []
     if "xray" in installed or "amnezia-xray" in containers:
         present.append("xray")
+    if "awg31" in installed or "amnezia-awg31" in containers:
+        present.append("awg31")
     if "awg2" in installed or "amnezia-awg2" in containers:
         present.append("awg2")
-    if "amnezia-awg" in containers and "awg2" not in present:
+    if "amnezia-awg" in containers and "awg2" not in present and "awg31" not in present:
         present.append("awg_legacy")
     if "telemt" in installed or "amnezia-telemt" in containers:
         present.append("telemt")

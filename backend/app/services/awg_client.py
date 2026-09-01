@@ -19,7 +19,7 @@ from app.services.awg_config import (
     remove_client_from_table,
     resolve_endpoint_host,
 )
-from app.services.awg_detect import _container_names, _locate_config
+from app.services.awg_detect import _container_names, _locate_config, locate_protocol_config
 from app.services.client_store import client_store
 from app.services.server_store import server_store
 from app.ssh import exec as ssh_exec
@@ -57,10 +57,21 @@ def create_awg_client(
 
     try:
         containers = record.get("container_names") or _container_names(ssh)
-        config_path, container, config_text = _locate_config(ssh, containers)
+        from app.services.awg_install import VARIANTS
+
+        prefer = (VARIANTS.get((protocol or "awg2").lower()) or {}).get("container")
+        config_path, container, config_text = locate_protocol_config(
+            ssh, containers, prefer_container=prefer
+        )
+        if (not container or not config_text.strip()) and (protocol or "awg2").lower() in (
+            "awg2",
+            "awg",
+            "awg_legacy",
+        ):
+            config_path, container, config_text = _locate_config(ssh, containers)
         if not container or not config_text.strip():
             raise ClientCreateError(
-                "Не найден конфиг AWG2 в контейнере. Создание клиента доступно только для импортированного сервера."
+                "Не найден конфиг AmneziaWG в контейнере. Сначала установи протокол на сервере."
             )
 
         iface = posixpath.splitext(posixpath.basename(config_path))[0]
@@ -180,9 +191,19 @@ def delete_awg_client(server_id: str, public_key: str) -> bool:
         # _parse_blocks/_rebuild живут в awg_enforce, который импортирует этот модуль —
         # импортируем лениво, чтобы избежать кругового импорта.
         from app.services.awg_enforce import _parse_blocks, _rebuild
+        from app.services.awg_install import VARIANTS
 
         containers = record.get("container_names") or _container_names(ssh)
-        config_path, container, config_text = _locate_config(ssh, containers)
+        prefer = None
+        for item in client_store.list_all(server_id):
+            if item.public_key == public_key:
+                prefer = (VARIANTS.get((item.protocol or "awg2").lower()) or {}).get("container")
+                break
+        config_path, container, config_text = locate_protocol_config(
+            ssh, containers, prefer_container=prefer
+        )
+        if not container or not config_text.strip():
+            config_path, container, config_text = _locate_config(ssh, containers)
         if not container or not config_text.strip():
             raise ClientCreateError("Не найден конфиг AWG в контейнере.")
 

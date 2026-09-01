@@ -27,6 +27,15 @@ AWG_PARAM_KEYS = (
     "I3",
     "I4",
     "I5",
+    "HeaderProtectionKey",
+    "ContentPaddingAddition",
+    "RandomTrailers",
+    "DisableCookies",
+    "RekeyAfterTime",
+    "RekeyTimeout",
+    "RejectAfterTime",
+    "KeepaliveTimeout",
+    "MaxHandshakeAttempts",
 )
 
 

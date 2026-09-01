@@ -28,6 +28,7 @@ SNAPSHOTS_FILE = "protocol_snapshots.json"
 # Каталог внутри контейнера, где лежат конфиг + ключи протокола.
 CONFIG_DIRS: dict[str, str] = {
     "awg2": "/opt/amnezia/awg",
+    "awg31": "/opt/amnezia/awg",
     "awg_legacy": "/opt/amnezia/awg",
     "xray": "/opt/amnezia/xray",
 }

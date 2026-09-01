@@ -224,6 +224,23 @@ def _container_names(ssh: paramiko.SSHClient) -> list[str]:
     return [line.strip() for line in result.stdout.splitlines() if line.strip()]
 
 
+def locate_protocol_config(
+    ssh: paramiko.SSHClient,
+    container_names: list[str],
+    *,
+    prefer_container: Optional[str] = None,
+) -> tuple[Optional[str], Optional[str], str]:
+    """Ищем awg0.conf, при prefer_container — только в этом контейнере."""
+    if prefer_container:
+        container_path = _find_config_in_container(ssh, prefer_container)
+        if container_path:
+            text = _read_config_in_container(ssh, prefer_container, container_path)
+            if text.strip():
+                return container_path, prefer_container, text
+        return None, None, ""
+    return _locate_config(ssh, container_names)
+
+
 def _locate_config(
     ssh: paramiko.SSHClient, container_names: list[str]
 ) -> tuple[Optional[str], Optional[str], str]:

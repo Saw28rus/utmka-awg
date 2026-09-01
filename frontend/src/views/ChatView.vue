@@ -695,7 +695,8 @@ const provForm = reactive({
   withRealityFallback: true
 })
 const PROVISION_PROTOCOL_LABELS: Record<string, string> = {
-  awg2: 'AmneziaWG',
+  awg31: 'AmneziaWG 3.1',
+  awg2: 'AmneziaWG 2.0',
   awg_legacy: 'AmneziaWG (legacy)',
   xray: 'Xray (VLESS-Reality)'
 }
@@ -733,7 +734,7 @@ const provCascadeHint = computed(() => {
 })
 
 const provShowRealityFallback = computed(() => {
-  if (provForm.protocol !== 'awg2') return false
+  if (provForm.protocol !== 'awg2' && provForm.protocol !== 'awg31') return false
   const s = provisionSelectedServer.value
   if (!s) return false
   return (s.client_protocols || []).includes('xray') || !!s.xray_cascade_active
@@ -1256,7 +1257,9 @@ function syncProvisionProtocol() {
     provForm.protocol = ''
     return
   }
-  if (!opts.some((o) => o.value === provForm.protocol)) provForm.protocol = opts[0].value
+  if (!opts.some((o) => o.value === provForm.protocol)) {
+    provForm.protocol = opts.some((o) => o.value === 'awg31') ? 'awg31' : opts[0].value
+  }
 }
 
 async function openProvision() {

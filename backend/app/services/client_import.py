@@ -19,7 +19,7 @@ from app.services.client_store import client_store
 from app.services.protocol_engine import ClientSpec, get_engine
 from app.services.server_store import server_store
 
-SUPPORTED_PROTOCOLS = ("awg2", "awg_legacy", "xray")
+SUPPORTED_PROTOCOLS = ("awg2", "awg31", "awg_legacy", "xray")
 MAX_IMPORT = 1000
 
 

@@ -32,7 +32,21 @@ VARIANTS = {
         "conf": "/opt/amnezia/awg/awg0.conf",
         "iface": "awg0",
         "store_key": "awg2",
-        "label": "AmneziaWG",
+        "label": "AmneziaWG 2.0",
+        "profile": "awg2",
+        "subnet_ip": "10.8.1.1",
+        "with_s34": True,
+    },
+    "awg31": {
+        "container": "amnezia-awg31",
+        "folder": "/opt/amnezia/amnezia-awg31",
+        "scripts": "awg31",
+        "conf": "/opt/amnezia/awg/awg0.conf",
+        "iface": "awg0",
+        "store_key": "awg31",
+        "label": "AmneziaWG 3.1",
+        "profile": "awg31",
+        "subnet_ip": "10.8.3.1",
         "with_s34": True,
     },
     "awg_legacy": {
@@ -43,6 +57,8 @@ VARIANTS = {
         "iface": "wg0",
         "store_key": "awg_legacy",
         "label": "AmneziaWG Legacy",
+        "profile": "legacy",
+        "subnet_ip": "10.8.1.1",
         "with_s34": False,
     },
 }
@@ -110,17 +126,42 @@ def install_awg(server_id: str, *, variant: str = "awg2", port: int = DEFAULT_PO
         ssh.close()
 
 
-def _awg_params(with_s34: bool) -> dict[str, str]:
+def _awg_params(with_s34: bool | str = True) -> dict[str, str]:
     """Параметры обфускации для свежей установки.
 
-    AWG 2.0 — как приложение AmneziaVPN (installController.cpp): маленький junk
-    (Jc 4–6, Jmin=10, Jmax=50), случайные S3/S4 и H-диапазоны до INT32_MAX.
-    Так handshake проходит на мобильных сетях; «сильную» маскировку можно
-    включить отдельно в центре маскировки.
-
-    Legacy — одиночные H без S3/S4, как раньше (совместимость).
+    AWG 3.1 — Header Protection, S≥12, H1–H4 = 1–4, padding/trailers/cookies.
+    AWG 2.0 — как приложение AmneziaVPN: маленький junk, случайные S3/S4 и H-диапазоны.
+    Legacy — одиночные H без S3/S4.
     """
-    if with_s34:
+    if with_s34 is True:
+        profile = "awg2"
+    elif with_s34 is False:
+        profile = "legacy"
+    else:
+        profile = str(with_s34)
+
+    if profile == "awg31":
+        from app.services.awg_masking_apply import generate_amnezia_31_params
+
+        gen = generate_amnezia_31_params()
+        return {
+            "$JUNK_PACKET_COUNT": gen["Jc"],
+            "$JUNK_PACKET_MIN_SIZE": gen["Jmin"],
+            "$JUNK_PACKET_MAX_SIZE": gen["Jmax"],
+            "$INIT_PACKET_JUNK_SIZE": gen["S1"],
+            "$RESPONSE_PACKET_JUNK_SIZE": gen["S2"],
+            "$COOKIE_REPLY_PACKET_JUNK_SIZE": gen["S3"],
+            "$TRANSPORT_PACKET_JUNK_SIZE": gen["S4"],
+            "$INIT_PACKET_MAGIC_HEADER": gen["H1"],
+            "$RESPONSE_PACKET_MAGIC_HEADER": gen["H2"],
+            "$UNDERLOAD_PACKET_MAGIC_HEADER": gen["H3"],
+            "$TRANSPORT_PACKET_MAGIC_HEADER": gen["H4"],
+            "$CONTENT_PADDING_ADDITION": gen["ContentPaddingAddition"],
+            "$RANDOM_TRAILERS": gen["RandomTrailers"],
+            "$DISABLE_COOKIES": gen["DisableCookies"],
+        }
+
+    if profile == "awg2":
         from app.services.awg_masking_apply import generate_amnezia_app_params
 
         gen = generate_amnezia_app_params()
@@ -164,9 +205,9 @@ def _awg_params(with_s34: bool) -> dict[str, str]:
 def _build_vars(host: str, port: int, cfg: dict) -> dict[str, str]:
     vars_map = base_vars(host, cfg["container"], cfg["folder"])
     vars_map["$AWG_SERVER_PORT"] = str(port)
-    vars_map["$AWG_SUBNET_IP"] = DEFAULT_SUBNET_IP
+    vars_map["$AWG_SUBNET_IP"] = cfg.get("subnet_ip") or DEFAULT_SUBNET_IP
     vars_map["$WIREGUARD_SUBNET_CIDR"] = DEFAULT_CIDR
-    vars_map.update(_awg_params(cfg["with_s34"]))
+    vars_map.update(_awg_params(cfg.get("profile") or ("awg2" if cfg.get("with_s34") else "legacy")))
     return vars_map
 
 
@@ -250,13 +291,16 @@ def _register(server_id: str, record: dict, cfg: dict, port: int) -> None:
         names.append(container)
     protocols = dict(record.get("installed_protocols") or {})
     protocols[cfg["store_key"]] = {"port": port, "container": container}
-    server_store.update_runtime(
-        server_id,
-        container_names=names,
-        installed_protocols=protocols,
-        awg2_imported=True,
-        vpn_port=port,
-    )
+    runtime: dict = {
+        "container_names": names,
+        "installed_protocols": protocols,
+    }
+    if cfg["store_key"] in ("awg2", "awg_legacy"):
+        runtime["awg2_imported"] = True
+        runtime["vpn_port"] = port
+    elif not record.get("vpn_port"):
+        runtime["vpn_port"] = port
+    server_store.update_runtime(server_id, **runtime)
 
 
 def _rollback(ssh, container: str) -> None:

@@ -52,6 +52,9 @@
             </select>
           </label>
           <p v-if="cascadeHint" class="field-wide hint-text hint-cascade">{{ cascadeHint }}</p>
+          <p v-if="form.protocol === 'awg31'" class="field-wide hint-text">
+            AmneziaWG 3.1: на телефоне нужен Amnezia VPN 5.0.1.5 или новее. Приложение AmneziaWG и клиенты 4.x этот ключ не откроют.
+          </p>
           <label v-if="showRealityFallback" class="field field-wide check-row">
             <input v-model="form.withRealityFallback" type="checkbox" />
             <span>
@@ -172,7 +175,9 @@ type ServerListItem = {
 }
 
 const PROTOCOL_LABELS: Record<string, string> = {
+  awg31: 'AmneziaWG 3.1',
   awg2: 'AmneziaWG 2.0',
+  awg_legacy: 'AmneziaWG Legacy',
   xray: 'Xray (VLESS-Reality)'
 }
 
@@ -272,7 +277,7 @@ const cascadeHint = computed(() => {
 })
 
 const showRealityFallback = computed(() => {
-  if (form.protocol !== 'awg2') return false
+  if (form.protocol !== 'awg2' && form.protocol !== 'awg31') return false
   const s = selectedServer.value
   if (!s) return false
   const protos = s.client_protocols || s.protocols || []
@@ -324,7 +329,7 @@ watch(
   () => form.protocol,
   () => {
     if (isXrayLike.value && form.format === 'awg') form.format = 'both'
-    if (form.protocol === 'awg2' && form.format === 'config') form.format = 'both'
+    if ((form.protocol === 'awg2' || form.protocol === 'awg31') && form.format === 'config') form.format = 'both'
   }
 )
 
@@ -347,7 +352,9 @@ function syncProtocolForServer() {
   const protos = availableProtocols.value
   if (!protos.length) return
   if (!protos.some((p) => p.id === form.protocol)) {
-    form.protocol = protos[0].id
+    form.protocol = protos.some((p) => p.id === 'awg31')
+      ? 'awg31'
+      : protos[0].id
   }
 }
 

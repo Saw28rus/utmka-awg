@@ -40,7 +40,7 @@ from app.ssh import exec as ssh_exec
 BACKUP_TAG = "utmka-preupdate"
 AMNEZIA_ROOT = "/opt/amnezia"
 
-SUPPORTED = ("awg2", "awg_legacy", "xray")
+SUPPORTED = ("awg2", "awg31", "awg_legacy", "xray")
 
 
 @dataclass
@@ -61,7 +61,7 @@ class UpdateError(Exception):
 
 def _spec(pid: str) -> Optional[dict]:
     """Протокол-специфичные параметры обновления (контейнер, скрипты, health)."""
-    if pid in ("awg2", "awg_legacy"):
+    if pid in VARIANTS:
         v = VARIANTS[pid]
         return {
             "protocol": pid,

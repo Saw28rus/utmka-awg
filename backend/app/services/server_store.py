@@ -117,7 +117,10 @@ class ServerStore:
 
     def _protocols(self, record: dict) -> list[str]:
         result: list[str] = []
-        if record.get("awg2_detected") or record.get("awg2_imported"):
+        installed = record.get("installed_protocols") or {}
+        if installed.get("awg31"):
+            result.append("AmneziaWG 3.1")
+        if record.get("awg2_detected") or record.get("awg2_imported") or installed.get("awg2"):
             result.append("AmneziaWG 2.0")
         if self._has_xray(record):
             result.append("Xray (VLESS-Reality)")
@@ -125,8 +128,13 @@ class ServerStore:
 
     def _client_protocols(self, record: dict) -> list[str]:
         protos: list[str] = []
-        if record.get("awg2_imported"):
+        installed = record.get("installed_protocols") or {}
+        if installed.get("awg31"):
+            protos.append("awg31")
+        if record.get("awg2_imported") or installed.get("awg2"):
             protos.append("awg2")
+        if installed.get("awg_legacy") and "awg2" not in protos:
+            protos.append("awg_legacy")
         if self._has_xray(record):
             protos.append("xray")
         return protos

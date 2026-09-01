@@ -56,7 +56,7 @@ def get_server_metrics(server_id: str, *, refresh: bool = False) -> ServerMetric
             server_id=server_id,
             status="offline",
             online=False,
-            protocols=["AmneziaWG 2.0"] if record.get("awg2_imported") else [],
+            protocols=server_store._protocols(record),
             message=f"SSH не отвечает: {exc}",
         )
 
@@ -110,7 +110,7 @@ def get_server_metrics(server_id: str, *, refresh: bool = False) -> ServerMetric
             awg2_running=awg2_running,
             active_peers=active_peers,
             total_traffic_bytes=total_traffic,
-            protocols=["AmneziaWG 2.0"] if record.get("awg2_imported") or record.get("awg2_detected") else [],
+            protocols=server_store._protocols(record),
         )
         server_store.update_runtime(server_id, status="online", active_peers=active_peers)
         metrics_cache.set(server_id, metrics)

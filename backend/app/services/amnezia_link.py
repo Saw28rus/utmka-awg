@@ -16,9 +16,13 @@ XRAY_PROTOCOL_KEY = "xray"
 def detect_protocol_version(awg_params: dict[str, str]) -> Optional[str]:
     """Версия протокола по правилам Amnezia (importController.cpp).
 
-    S3 = cookieReplyPacketJunkSize, S4 = transportPacketJunkSize.
-    Наличие S3 и S4 → AWG 2.0; только I1-I5 без S3/S4 → AWG 1.5.
+    HeaderProtection / RandomTrailers → AWG 3.1;
+    S3 и S4 → AWG 2.0; только I1-I5 без S3/S4 → AWG 1.5.
     """
+    has_hp = bool(str(awg_params.get("HeaderProtectionKey") or "").strip())
+    has_trailers = str(awg_params.get("RandomTrailers") or "").strip().lower() in ("on", "true", "1")
+    if has_hp or has_trailers:
+        return "3.1"
     has_s3 = bool(awg_params.get("S3"))
     has_s4 = bool(awg_params.get("S4"))
     has_special = any(awg_params.get(key) for key in ("I1", "I2", "I3", "I4", "I5"))

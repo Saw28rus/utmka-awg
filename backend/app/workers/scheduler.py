@@ -169,14 +169,19 @@ async def _snapshot_entries() -> None:
             if not rec:
                 continue
             has_awg2 = rec.get("awg2_imported") or (rec.get("installed_protocols") or {}).get("awg2")
-            if not has_awg2:
-                continue
-            try:
-                await asyncio.to_thread(snapshot_protocol, sid, "awg2")
-                done += 1
-            except Exception:  # noqa: BLE001
-                # узел недоступен — не критично, попробуем в следующий раз
-                continue
+            has_awg31 = (rec.get("installed_protocols") or {}).get("awg31")
+            if has_awg2:
+                try:
+                    await asyncio.to_thread(snapshot_protocol, sid, "awg2")
+                    done += 1
+                except Exception:  # noqa: BLE001
+                    continue
+            if has_awg31:
+                try:
+                    await asyncio.to_thread(snapshot_protocol, sid, "awg31")
+                    done += 1
+                except Exception:  # noqa: BLE001
+                    continue
         if done:
             logger.info("entry snapshot: captured %s entry node(s)", done)
     except Exception:  # noqa: BLE001

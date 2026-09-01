@@ -347,7 +347,11 @@ const hasShare = computed(() => Boolean(client.value?.config_text || client.valu
 
 const isXray = computed(() => client.value?.protocol === 'xray')
 
-const protocolLabel = computed(() => (isXray.value ? 'Xray' : 'AWG'))
+const protocolLabel = computed(() => {
+  if (isXray.value) return 'Xray'
+  if (client.value?.protocol === 'awg31') return 'AWG 3.1'
+  return 'AWG'
+})
 
 const pairClientId = computed(
   () => client.value?.fallback_client_id || client.value?.fallback_of_client_id || ''
@@ -591,6 +595,12 @@ function confirmDelete() {
 
 .proto-badge.proto-awg2 {
   color: var(--color-accent);
+}
+
+.proto-badge.proto-awg31 {
+  color: #7ee0c3;
+  border-color: rgba(126, 224, 195, 0.35);
+  background: rgba(126, 224, 195, 0.08);
 }
 
 .proto-badge.proto-xray {

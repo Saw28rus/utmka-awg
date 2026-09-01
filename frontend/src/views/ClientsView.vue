@@ -343,6 +343,9 @@ function protocolBadge(client: ClientListItem) {
   if (client.protocol === 'xray') {
     return client.fallback_of_client_id ? 'Xray · запас' : 'Xray'
   }
+  if (client.protocol === 'awg31') {
+    return client.fallback_client_id ? 'AWG 3.1+R' : 'AWG 3.1'
+  }
   return client.fallback_client_id ? 'AWG+R' : 'AWG'
 }
 
@@ -553,6 +556,12 @@ p {
 
 .proto-badge.proto-awg2 {
   color: var(--color-accent);
+}
+
+.proto-badge.proto-awg31 {
+  color: #7ee0c3;
+  border-color: rgba(126, 224, 195, 0.35);
+  background: rgba(126, 224, 195, 0.08);
 }
 
 .proto-badge.proto-xray {

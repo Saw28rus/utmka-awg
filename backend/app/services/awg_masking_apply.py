@@ -213,6 +213,54 @@ def generate_amnezia_app_params() -> dict[str, str]:
     }
 
 
+def generate_amnezia_31_params() -> dict[str, str]:
+    """Параметры AWG 3.1 как у self-hosted AmneziaVPN 5.0.1.5.
+
+    Header Protection: H1–H4 = 1–4 (кастомные заголовки выключены), S1–S4 ≥ 12
+    (nonce ChaCha). Junk как в приложении. HeaderProtectionKey генерится
+    внутри контейнера (`awg genkey`), не здесь.
+    """
+    jc = 4 + secrets.randbelow(3)
+
+    def _rand(lo: int, hi_exclusive: int) -> int:
+        return lo + secrets.randbelow(hi_exclusive - lo)
+
+    s1 = _rand(15, 150)
+    used = {s1}
+    s2 = _rand(15, 150)
+    while s2 in used or s1 + AWG_MSG_INIT == s2 + AWG_MSG_RESPONSE:
+        s2 = _rand(15, 150)
+    used.add(s2)
+    s3 = _rand(12, 64)
+    while (
+        s3 in used
+        or s1 + AWG_MSG_INIT == s3 + AWG_MSG_COOKIE
+        or s2 + AWG_MSG_RESPONSE == s3 + AWG_MSG_COOKIE
+    ):
+        s3 = _rand(12, 64)
+    used.add(s3)
+    s4 = _rand(12, 33)
+    while s4 in used:
+        s4 = _rand(12, 33)
+
+    return {
+        "Jc": str(jc),
+        "Jmin": "10",
+        "Jmax": "50",
+        "S1": str(s1),
+        "S2": str(s2),
+        "S3": str(s3),
+        "S4": str(s4),
+        "H1": "1",
+        "H2": "2",
+        "H3": "3",
+        "H4": "4",
+        "ContentPaddingAddition": "10-100",
+        "RandomTrailers": "on",
+        "DisableCookies": "on",
+    }
+
+
 def generate_cps_params() -> dict[str, str]:
     """Опциональный CPS-слой (I1–I5): уникальный hex-префикс перед handshake.
 

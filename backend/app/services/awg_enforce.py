@@ -15,7 +15,8 @@ from app.services.awg_client import (
     _overwrite_file,
     _sync_config,
 )
-from app.services.awg_detect import _container_names, _locate_config
+from app.services.awg_detect import _container_names, _find_config_in_container, _locate_config, _read_config_in_container
+from app.services.awg_install import VARIANTS
 from app.services.client_store import client_store
 from app.services.server_store import server_store
 from app.ssh import exec as ssh_exec
@@ -34,11 +35,42 @@ def enforce_server(ssh, record: dict, server_id: str) -> int:
         return 0
 
     containers = record.get("container_names") or _container_names(ssh)
-    config_path, container, config_text = _locate_config(ssh, containers)
-    if not container or not config_text.strip():
-        return 0
-    iface = posixpath.splitext(posixpath.basename(config_path))[0]
+    by_container: dict[str, list] = {}
+    leftover: list = []
+    known = set(containers)
+    for item in view:
+        proto = item.get("protocol") or "awg2"
+        if proto == "xray":
+            continue
+        ctn = (VARIANTS.get(proto) or {}).get("container")
+        if ctn and ctn in known:
+            by_container.setdefault(ctn, []).append(item)
+        else:
+            leftover.append(item)
 
+    changed = 0
+    for container, items in by_container.items():
+        changed += _enforce_on_container(ssh, container, items)
+
+    if leftover:
+        config_path, container, config_text = _locate_config(ssh, containers)
+        if container and container not in by_container and config_text.strip():
+            changed += _apply_enforce(ssh, container, config_path, config_text, leftover)
+    return changed
+
+
+def _enforce_on_container(ssh, container: str, items: list) -> int:
+    path = _find_config_in_container(ssh, container)
+    if not path:
+        return 0
+    text = _read_config_in_container(ssh, container, path)
+    if not text.strip():
+        return 0
+    return _apply_enforce(ssh, container, path, text, items)
+
+
+def _apply_enforce(ssh, container: str, config_path: str, config_text: str, view: list) -> int:
+    iface = posixpath.splitext(posixpath.basename(config_path))[0]
     head, blocks_by_pub, order = _parse_blocks(config_text)
 
     pending_flags: list[tuple[str, bool, str | None]] = []
@@ -50,7 +82,6 @@ def enforce_server(ssh, record: dict, server_id: str) -> int:
 
         if item["should_block"]:
             if in_config:
-                # сохраняем блок и убираем из конфига
                 saved = blocks_by_pub.pop(pub)
                 order.remove(pub)
                 pending_flags.append((item["id"], True, saved))
@@ -59,7 +90,6 @@ def enforce_server(ssh, record: dict, server_id: str) -> int:
                 pending_flags.append((item["id"], True, item.get("peer_block")))
         else:
             if not in_config and item["blocked_on_server"] and item.get("peer_block"):
-                # возвращаем сохранённый блок обратно
                 block = item["peer_block"].strip("\n")
                 blocks_by_pub[pub] = block
                 order.append(pub)

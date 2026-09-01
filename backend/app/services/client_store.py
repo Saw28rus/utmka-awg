@@ -241,6 +241,7 @@ class ClientStore:
                     "should_block": self._effective_status(record) in BLOCKED_STATUSES,
                     "blocked_on_server": record.get("blocked_on_server", False),
                     "peer_block": decrypt(record.get("peer_block_enc")),
+                    "protocol": (record.get("protocol") or "awg2").lower(),
                 }
             )
         return view
