@@ -415,13 +415,9 @@ class ClientStore:
         protocol = (record.get("protocol") or "awg2").lower()
         if protocol == "xray" and record.get("channel_entry_id"):
             return f"xcascade:{record['channel_entry_id']}"
-        if protocol.startswith("awg"):
-            from app.services.cascade_store import cascade_store
+        from app.services.channel_store import channel_id_for
 
-            link = cascade_store.get_link(server_id)
-            if link and link.get("exit_server_id"):
-                return f"cascade:{server_id}"
-        return f"direct:{server_id}:{protocol}"
+        return channel_id_for(server_id, protocol)
 
     def _common_fields(self, record: dict) -> dict:
         return {

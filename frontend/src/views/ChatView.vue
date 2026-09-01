@@ -368,6 +368,9 @@
             </label>
           </div>
           <p v-if="provCascadeHint" class="hint cascade-hint">{{ provCascadeHint }}</p>
+          <p v-if="provForm.protocol === 'awg31'" class="hint cascade-hint">
+            AmneziaWG 3.1: на телефоне нужен Amnezia VPN 5.0.1.5 или новее. Приложение AmneziaWG и 4.x этот ключ не откроют.
+          </p>
           <label v-if="provShowRealityFallback" class="prov-check">
             <n-checkbox v-model:checked="provForm.withRealityFallback" />
             <span>

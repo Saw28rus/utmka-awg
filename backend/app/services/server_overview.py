@@ -20,7 +20,7 @@ PROTOCOL_CATALOG: list[dict] = [
     {
         "id": "awg31",
         "name": "AmneziaWG 3.1",
-        "description": "Актуальная версия протокола: Header Protection, padding, trailers. Нужен Amnezia VPN 5.0.1.5+. Каскад и центр маскировки пока у 2.0.",
+        "description": "Актуальная версия: Header Protection, padding, trailers. Каскад поддерживается. Клиенту нужен Amnezia VPN 5.0.1.5+. Центр маскировки — у 2.0.",
         "matches": ["amnezia-awg31"],
         "managed": True,
         "can_install": True,
@@ -28,7 +28,7 @@ PROTOCOL_CATALOG: list[dict] = [
     {
         "id": "awg2",
         "name": "AmneziaWG 2.0",
-        "description": "AWG 2.0 на awg-go: S3/S4, H-диапазоны. Каскад и маскировка. Совместим со старыми клиентами AmneziaWG.",
+        "description": "AWG 2.0 на awg-go: S3/S4, H-диапазоны. Каскад и маскировка. Совместим со старыми клиентами AmneziaWG и роутерами.",
         "matches": ["awg2", "amnezia-awg2"],
         "exclude": ["awg31"],
         "managed": True,

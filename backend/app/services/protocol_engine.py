@@ -91,7 +91,7 @@ class AwgEngine(ProtocolEngine):
             delete_client=True,
             enforce=True,
             masking=(self.id == "awg2"),
-            cascade=(self.id == "awg2"),
+            cascade=(self.id in ("awg2", "awg31")),
             update=True,
         )
 

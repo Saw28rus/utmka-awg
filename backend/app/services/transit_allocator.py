@@ -96,26 +96,32 @@ def resolve_profile(link: Optional[dict]) -> TransitProfile:
     return profile_for_slot(resolve_slot(link))
 
 
-def allocate_slot(entry_server_id: str) -> int:
+def allocate_slot(
+    entry_server_id: str,
+    *,
+    protocol: str = "awg2",
+    extra_used: Optional[set[int]] = None,
+) -> int:
     """Свободный слот для каскада на этом entry.
 
-    Идемпотентно: если звено уже существует и за ним закреплён слот/порт —
-    возвращаем его (перенастройка не меняет ресурсы). Иначе берём наименьший
-    слот, не занятый другими настроенными звеньями.
+    Идемпотентно: если у протокола уже закреплён слот/порт — возвращаем его.
+    Слот 0 остаётся за существующим 2.0. Вторая нога (3.1 на том же входе)
+    берёт следующий свободный слот, плюс слоты чужих entry на общем exit.
     """
-    existing = cascade_store.get_link(entry_server_id)
-    if existing and (existing.get("transit_slot") is not None or existing.get("transit_port")):
-        return resolve_slot(existing)
+    from app.services.cascade_protocol import all_link_slots, slot_for_protocol
 
-    used: set[int] = set()
+    existing = cascade_store.get_link(entry_server_id)
+    reserved = slot_for_protocol(existing, protocol)
+    if reserved is not None:
+        return reserved
+
+    used: set[int] = set(extra_used or ())
     for link in cascade_store.list_links():
-        if link.get("entry_server_id") == entry_server_id:
-            continue
         if not link.get("exit_server_id"):
             continue
         if (link.get("state") or "none") == "none":
             continue
-        used.add(resolve_slot(link))
+        used.update(all_link_slots(link))
 
     slot = 0
     while slot in used and slot < MAX_SLOTS:

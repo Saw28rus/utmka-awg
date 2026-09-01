@@ -22,8 +22,8 @@ def test_awg31_variant_and_pin() -> None:
     assert engine.id == "awg31"
     assert caps.install
     assert caps.create_client
-    assert not caps.masking
-    assert not caps.cascade
+    assert caps.masking is False
+    assert caps.cascade
 
 
 def test_generate_amnezia_31_params() -> None:

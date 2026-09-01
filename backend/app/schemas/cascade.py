@@ -15,6 +15,7 @@ class CascadeCheck(BaseModel):
 
 class CascadePreflightRequest(BaseModel):
     exit_server_id: str = Field(min_length=1)
+    protocols: list[str] = Field(default_factory=lambda: ["awg2"])
 
 
 class CascadePreflightResult(BaseModel):
@@ -37,12 +38,18 @@ class CascadePreflightResult(BaseModel):
     blockers: list[str] = []
     message: str = ""
     live_active: bool = False
+    protocols: list[str] = Field(default_factory=lambda: ["awg2"])
+    client_note: Optional[str] = None
 
 
 class CascadeStep(BaseModel):
     name: str
     status: str  # ok | failed | skipped
     detail: Optional[str] = None
+
+
+class CascadeApplyRequest(BaseModel):
+    protocols: Optional[list[str]] = None
 
 
 class CascadeApplyResult(BaseModel):
@@ -92,6 +99,8 @@ class CascadeLinkStatus(BaseModel):
     split_enabled: bool = False
     split_applied: bool = False
     live_active: bool = False
+    protocol: Optional[str] = None
+    protocols: list[str] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------

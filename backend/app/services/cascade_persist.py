@@ -12,6 +12,11 @@ import logging
 import shlex
 
 from app.services.amnezia_ssh import run_container_script, run_script, write_host_file
+from app.services.cascade_protocol import (
+    exit_lock_comment,
+    persist_host_dir,
+    persist_suffix,
+)
 from app.services.cascade_split import HOST_IPSET_FILE, MARK, SET_NAME, SPLIT_RULE_PRIORITY, SPLIT_TABLE
 from app.services.transit_allocator import TransitProfile
 
@@ -26,6 +31,16 @@ EXIT_LOCK_COMMENT = "utmka-exit-lock"
 CONTAINER_UP = "/opt/amnezia/awg/utmka-cascade-up.sh"
 
 
+def _layout(protocol: str = "awg2") -> dict[str, str]:
+    suffix = persist_suffix(protocol)
+    return {
+        "host_dir": persist_host_dir(protocol),
+        "entry_unit": f"utmka-awg-cascade{suffix}.service",
+        "exit_unit": f"utmka-awg-cascade-exit{suffix}.service",
+        "socat_unit": f"utmka-cascade-socat{suffix}.service",
+    }
+
+
 def persist_entry(
     ssh,
     *,
@@ -38,28 +53,31 @@ def persist_entry(
     entry_up_script: str,
     entry_host_nat_script: str,
     split_enabled: bool,
+    protocol: str = "awg2",
 ) -> None:
     """Записать restore-скрипты и включить systemd на entry."""
-    run_script(ssh, f"mkdir -p {HOST_DIR}", timeout=15)
+    names = _layout(protocol)
+    host_dir = names["host_dir"]
+    run_script(ssh, f"mkdir -p {host_dir}", timeout=15)
     _write_container_script(ssh, container, CONTAINER_UP, entry_up_script)
     _ensure_start_hook(ssh, container)
-    write_host_file(ssh, f"{HOST_DIR}/entry-host-nat.sh", _bash(entry_host_nat_script), mode="755")
+    write_host_file(ssh, f"{host_dir}/entry-host-nat.sh", _bash(entry_host_nat_script), mode="755")
     write_host_file(
         ssh,
-        f"{HOST_DIR}/restore.sh",
-        _entry_restore_sh(container, split_enabled=split_enabled, client_subnet=client_subnet),
+        f"{host_dir}/restore.sh",
+        _entry_restore_sh(container, split_enabled=split_enabled, client_subnet=client_subnet, host_dir=host_dir),
         mode="755",
     )
     if split_enabled:
         write_host_file(
             ssh,
-            f"{HOST_DIR}/split-up.sh",
+            f"{host_dir}/split-up.sh",
             _split_restore_sh(container, client_subnet),
             mode="755",
         )
-    write_host_file(ssh, f"/etc/systemd/system/{ENTRY_UNIT}", _oneshot_unit(f"{HOST_DIR}/restore.sh"), mode="644")
-    _enable_unit(ssh, ENTRY_UNIT)
-    logger.info("cascade persist: entry systemd enabled")
+    write_host_file(ssh, f"/etc/systemd/system/{names['entry_unit']}", _oneshot_unit(f"{host_dir}/restore.sh"), mode="644")
+    _enable_unit(ssh, names["entry_unit"])
+    logger.info("cascade persist: entry systemd enabled (%s)", protocol)
 
 
 def persist_exit(
@@ -70,66 +88,84 @@ def persist_exit(
     exit_ctn_ip: str,
     entry_public_ip: str,
     exit_up_script: str,
+    protocol: str = "awg2",
 ) -> None:
     """Restore на exit: транзит в контейнере, socat, вход только с IP entry."""
-    run_script(ssh, f"mkdir -p {HOST_DIR}", timeout=15)
+    names = _layout(protocol)
+    host_dir = names["host_dir"]
+    run_script(ssh, f"mkdir -p {host_dir}", timeout=15)
     _write_container_script(ssh, container, CONTAINER_UP, exit_up_script)
     _ensure_start_hook(ssh, container)
     port = profile.transit_port
+    lock_cm = exit_lock_comment(profile.slot)
     write_host_file(
         ssh,
-        f"{HOST_DIR}/socat.sh",
+        f"{host_dir}/socat.sh",
         _socat_sh(port, exit_ctn_ip),
         mode="755",
     )
     write_host_file(
         ssh,
-        f"{HOST_DIR}/exit-lock.sh",
-        _exit_lock_sh(port, entry_public_ip, add=True),
+        f"{host_dir}/exit-lock.sh",
+        _exit_lock_sh(port, entry_public_ip, add=True, comment=lock_cm),
         mode="755",
     )
     write_host_file(
         ssh,
-        f"{HOST_DIR}/restore.sh",
-        _exit_restore_sh(container, port, exit_ctn_ip, entry_public_ip),
+        f"{host_dir}/restore.sh",
+        _exit_restore_sh(container, port, exit_ctn_ip, entry_public_ip, host_dir=host_dir, socat_unit=names["socat_unit"]),
         mode="755",
     )
-    write_host_file(ssh, f"/etc/systemd/system/{EXIT_UNIT}", _oneshot_unit(f"{HOST_DIR}/restore.sh"), mode="644")
+    write_host_file(ssh, f"/etc/systemd/system/{names['exit_unit']}", _oneshot_unit(f"{host_dir}/restore.sh"), mode="644")
     write_host_file(
         ssh,
-        f"/etc/systemd/system/{SOCAT_UNIT}",
+        f"/etc/systemd/system/{names['socat_unit']}",
         _socat_unit(port, exit_ctn_ip),
         mode="644",
     )
-    _enable_unit(ssh, EXIT_UNIT)
-    _enable_unit(ssh, SOCAT_UNIT)
-    # сразу применить lock (не ждать ребута)
-    run_script(ssh, _exit_lock_sh(port, entry_public_ip, add=True), timeout=20)
-    logger.info("cascade persist: exit systemd + lock enabled")
+    _enable_unit(ssh, names["exit_unit"])
+    _enable_unit(ssh, names["socat_unit"])
+    run_script(ssh, _exit_lock_sh(port, entry_public_ip, add=True, comment=lock_cm), timeout=20)
+    logger.info("cascade persist: exit systemd + lock enabled (%s)", protocol)
 
 
-def remove_entry(ssh, container: str) -> None:
-    _disable_unit(ssh, ENTRY_UNIT)
+def remove_entry(ssh, container: str, protocol: str = "awg2") -> None:
+    names = _layout(protocol)
+    host_dir = names["host_dir"]
+    _disable_unit(ssh, names["entry_unit"])
     _remove_start_hook(ssh, container)
     run_container_script(ssh, container, f"rm -f {CONTAINER_UP}", timeout=20)
     run_script(
         ssh,
-        f"rm -f {HOST_DIR}/restore.sh {HOST_DIR}/entry-host-nat.sh {HOST_DIR}/split-up.sh "
-        f"/etc/systemd/system/{ENTRY_UNIT}; systemctl daemon-reload >/dev/null 2>&1 || true",
+        f"rm -f {host_dir}/restore.sh {host_dir}/entry-host-nat.sh {host_dir}/split-up.sh "
+        f"/etc/systemd/system/{names['entry_unit']}; systemctl daemon-reload >/dev/null 2>&1 || true",
         timeout=20,
     )
 
 
-def remove_exit(ssh, container: str, transit_port: int, entry_public_ip: str) -> None:
-    _disable_unit(ssh, SOCAT_UNIT)
-    _disable_unit(ssh, EXIT_UNIT)
-    run_script(ssh, _exit_lock_sh(transit_port, entry_public_ip, add=False), timeout=20)
+def remove_exit(
+    ssh,
+    container: str,
+    transit_port: int,
+    entry_public_ip: str,
+    protocol: str = "awg2",
+    slot: int = 0,
+) -> None:
+    names = _layout(protocol)
+    host_dir = names["host_dir"]
+    _disable_unit(ssh, names["socat_unit"])
+    _disable_unit(ssh, names["exit_unit"])
+    run_script(
+        ssh,
+        _exit_lock_sh(transit_port, entry_public_ip, add=False, comment=exit_lock_comment(slot)),
+        timeout=20,
+    )
     _remove_start_hook(ssh, container)
     run_container_script(ssh, container, f"rm -f {CONTAINER_UP}", timeout=20)
     run_script(
         ssh,
-        f"rm -f {HOST_DIR}/restore.sh {HOST_DIR}/socat.sh {HOST_DIR}/exit-lock.sh "
-        f"/etc/systemd/system/{EXIT_UNIT} /etc/systemd/system/{SOCAT_UNIT}; "
+        f"rm -f {host_dir}/restore.sh {host_dir}/socat.sh {host_dir}/exit-lock.sh "
+        f"/etc/systemd/system/{names['exit_unit']} /etc/systemd/system/{names['socat_unit']}; "
         f"systemctl daemon-reload >/dev/null 2>&1 || true",
         timeout=20,
     )
@@ -211,8 +247,8 @@ echo HOOK_REMOVED
     run_container_script(ssh, container, script, timeout=20)
 
 
-def _entry_restore_sh(container: str, *, split_enabled: bool, client_subnet: str) -> str:
-    split_line = f"[ -x {HOST_DIR}/split-up.sh ] && {HOST_DIR}/split-up.sh || true" if split_enabled else "true"
+def _entry_restore_sh(container: str, *, split_enabled: bool, client_subnet: str, host_dir: str = HOST_DIR) -> str:
+    split_line = f"[ -x {host_dir}/split-up.sh ] && {host_dir}/split-up.sh || true" if split_enabled else "true"
     ctn = shlex.quote(container)
     return f"""#!/bin/bash
 set -e
@@ -224,13 +260,20 @@ done
 docker inspect -f '{{{{.State.Running}}}}' "$CTN" 2>/dev/null | grep -qx true || exit 1
 sleep 3
 docker exec "$CTN" sh {CONTAINER_UP} || true
-[ -x {HOST_DIR}/entry-host-nat.sh ] && {HOST_DIR}/entry-host-nat.sh || true
+[ -x {host_dir}/entry-host-nat.sh ] && {host_dir}/entry-host-nat.sh || true
 {split_line}
 echo RESTORE_ENTRY_OK
 """
 
 
-def _exit_restore_sh(container: str, port: int, ctn_ip: str, entry_ip: str) -> str:
+def _exit_restore_sh(
+    container: str,
+    port: int,
+    ctn_ip: str,
+    entry_ip: str,
+    host_dir: str = HOST_DIR,
+    socat_unit: str = SOCAT_UNIT,
+) -> str:
     ctn = shlex.quote(container)
     return f"""#!/bin/bash
 set -e
@@ -242,8 +285,8 @@ done
 docker inspect -f '{{{{.State.Running}}}}' "$CTN" 2>/dev/null | grep -qx true || exit 1
 sleep 3
 docker exec "$CTN" sh {CONTAINER_UP} || true
-[ -x {HOST_DIR}/exit-lock.sh ] && {HOST_DIR}/exit-lock.sh || true
-systemctl restart {SOCAT_UNIT} >/dev/null 2>&1 || {HOST_DIR}/socat.sh || true
+[ -x {host_dir}/exit-lock.sh ] && {host_dir}/exit-lock.sh || true
+systemctl restart {socat_unit} >/dev/null 2>&1 || {host_dir}/socat.sh || true
 echo RESTORE_EXIT_OK
 """
 
@@ -300,14 +343,14 @@ WantedBy=multi-user.target
 """
 
 
-def _exit_lock_sh(port: int, entry_ip: str, *, add: bool) -> str:
+def _exit_lock_sh(port: int, entry_ip: str, *, add: bool, comment: str = EXIT_LOCK_COMMENT) -> str:
     """Транзитный UDP на exit принимает пакеты только с публичного IP входа."""
     ip = (entry_ip or "").strip()
     if not ip:
         return "#!/bin/bash\necho LOCK_SKIP_NO_IP\n"
     p = str(int(port))
     src = shlex.quote(ip)
-    cm = EXIT_LOCK_COMMENT
+    cm = comment or EXIT_LOCK_COMMENT
     drop = (
         f"-p udp --dport {p} ! -s {src} -m comment --comment {cm} -j DROP"
     )

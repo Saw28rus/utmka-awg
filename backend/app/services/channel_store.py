@@ -2,7 +2,7 @@
 
 Канал = путь, по которому клиент получает доступ:
 - ``direct``  — один узел, один протокол;
-- ``cascade`` — entry→exit (на текущем этапе только AmneziaWG2).
+- ``cascade`` — entry→exit (AmneziaWG 2.0 и/или 3.1, плюс отдельный Xray-каскад).
 
 Слой ПРОИЗВОДНЫЙ и НЕ мигрирует живые данные: каналы вычисляются из
 ``server_store`` + ``cascade_store`` + ``client_store`` на лету. Это безопасный
@@ -17,15 +17,16 @@ from __future__ import annotations
 
 from typing import Optional
 
+from app.services.cascade_protocol import (
+    cascade_channel_id,
+    link_protocols,
+    protocol_on_cascade,
+)
 from app.services.cascade_store import cascade_store
 from app.services.client_store import client_store
 from app.services.server_store import server_store
 from app.services.transit_allocator import resolve_profile
 from app.services.xray_cascade_store import xray_cascade_store
-
-
-def _is_cascade_awg(protocol: str) -> bool:
-    return (protocol or "").lower() in ("awg2", "awg", "awg_legacy")
 
 
 def _cascade_links() -> dict[str, dict]:
@@ -39,10 +40,12 @@ def _cascade_links() -> dict[str, dict]:
 
 def channel_id_for(server_id: str, protocol: str, cascade_entries: Optional[set[str]] = None) -> str:
     """Детерминированный id канала для пары (узел, протокол)."""
+    links = _cascade_links()
+    link = links.get(server_id)
     if cascade_entries is None:
-        cascade_entries = set(_cascade_links().keys())
-    if _is_cascade_awg(protocol) and server_id in cascade_entries:
-        return f"cascade:{server_id}"
+        cascade_entries = set(links.keys())
+    if server_id in cascade_entries and protocol_on_cascade(protocol, link):
+        return cascade_channel_id(server_id, protocol)
     return f"direct:{server_id}:{(protocol or 'awg2').lower()}"
 
 
@@ -78,26 +81,27 @@ def list_channels() -> list[dict]:
             continue  # осиротевшее звено (entry-узел удалён) — не показываем
         exit_id = link["exit_server_id"]
         exit_label = _server_label(exit_id)
-        cid = f"cascade:{entry_id}"
-        profile = resolve_profile(link)
-        channels.append(
-            {
-                "id": cid,
-                "kind": "cascade",
-                "protocol": "awg2",
-                "entry_server_id": entry_id,
-                "entry_name": entry["name"],
-                "entry_host": entry["host"],
-                "exit_server_id": exit_id,
-                "exit_name": exit_label["name"],
-                "exit_host": exit_label["host"],
-                "state": link.get("state") or "unknown",
-                "clients": counts.get(cid, 0),
-                "transit_slot": profile.slot,
-                "transit_subnet": profile.subnet,
-                "transit_port": profile.transit_port,
-            }
-        )
+        for proto in link_protocols(link):
+            cid = cascade_channel_id(entry_id, proto)
+            profile = resolve_profile((link.get("legs") or {}).get(proto) or link)
+            channels.append(
+                {
+                    "id": cid,
+                    "kind": "cascade",
+                    "protocol": proto,
+                    "entry_server_id": entry_id,
+                    "entry_name": entry["name"],
+                    "entry_host": entry["host"],
+                    "exit_server_id": exit_id,
+                    "exit_name": exit_label["name"],
+                    "exit_host": exit_label["host"],
+                    "state": link.get("state") or "unknown",
+                    "clients": counts.get(cid, 0),
+                    "transit_slot": profile.slot,
+                    "transit_subnet": profile.subnet,
+                    "transit_port": profile.transit_port,
+                }
+            )
 
     for link in xray_cascade_store.list_links():
         entry_id = link.get("entry_server_id")
@@ -132,7 +136,8 @@ def list_channels() -> list[dict]:
     for record in server_store.list_records():
         sid = record["id"]
         for protocol in server_store.client_protocols(record):
-            if _is_cascade_awg(protocol) and sid in cascade_entries:
+            link = links.get(sid)
+            if protocol_on_cascade(protocol, link) and sid in cascade_entries:
                 continue
             cid = f"direct:{sid}:{protocol.lower()}"
             channels.append(

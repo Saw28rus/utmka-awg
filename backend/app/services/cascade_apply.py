@@ -28,12 +28,21 @@ from app.schemas.cascade import CascadeApplyResult, CascadeStep
 from app.services.amnezia_ssh import run_container_script, run_script
 from app.services.awg_config import AWG_PARAM_KEYS, parse_interface
 from app.services.cascade import (
-    _ENTRY_PROBE,
-    _EXIT_PROBE,
     CascadeError,
     _client_subnet_from_addr,
     _connect,
     _parse_kv,
+    entry_probe_script,
+    exit_probe_script,
+)
+from app.services.cascade_protocol import (
+    CLIENT_HINT_31,
+    entry_udp_comment,
+    link_protocols,
+    normalize_cascade_protocols,
+    preferred_container,
+    protocol_label,
+    slot_for_protocol,
 )
 from app.services.cascade_store import cascade_store
 from app.services.server_store import server_store
@@ -48,31 +57,35 @@ LABEL = "utmka-cascade"
 # ---------------------------------------------------------------------------
 
 
-def _read_awg_params(ssh, container: str) -> dict[str, str]:
+def _read_awg_params(ssh, container: str, protocol: str = "awg2") -> dict[str, str]:
     """Берём обфускацию с основного awg0 транзита (fail-closed, без статического fallback).
 
-    Транзит обязан использовать ТЕ ЖЕ параметры, что и entry `awg0`, иначе AWG2 не
-    договорится. Если параметры не читаются или это не сильный AWG2 (нет S3/S4) —
-    apply блокируется. Никаких «учебниковых» дефолтов в production: статический
-    fallback сам по себе узнаваемый отпечаток для DPI (M4 hardening).
+    Транзит обязан использовать ТЕ ЖЕ параметры, что и entry `awg0`.
+    Для 2.0 обязательны S3/S4; для 3.1 ещё HeaderProtectionKey.
     """
     res = run_container_script(
         ssh,
         container,
-        "cat /opt/amnezia/awg/awg0.conf /opt/amnezia/awg/wg0.conf 2>/dev/null | head -60",
+        "cat /opt/amnezia/awg/awg0.conf /opt/amnezia/awg/wg0.conf 2>/dev/null | head -80",
         timeout=20,
     )
     info = parse_interface(res.stdout)
     params = {k: str(v) for k, v in info.awg_params.items() if k in AWG_PARAM_KEYS}
-    # S3/S4 обязательны: это признак сильного AWG2. Значение "0" допустимо (ключ есть).
-    required = ("Jc", "Jmin", "Jmax", "S1", "S2", "S3", "S4", "H1", "H2", "H3", "H4")
+    required = ["Jc", "Jmin", "Jmax", "S1", "S2", "S3", "S4", "H1", "H2", "H3", "H4"]
+    if protocol == "awg31":
+        required.append("HeaderProtectionKey")
     missing = [k for k in required if not params.get(k)]
     if missing:
+        label = protocol_label(protocol)
         raise CascadeError(
-            "Каскад заблокирован: не удалось прочитать сильные AWG2-параметры маскировки "
+            f"Каскад {label} заблокирован: не удалось прочитать параметры маскировки "
             f"с entry (отсутствуют: {', '.join(missing)}). Транзит без точной копии "
-            "обфускации entry не поднять, а статический fallback отключён ради защиты "
-            "от DPI. Проверьте, что на entry установлен AmneziaWG 2.0 (S3/S4)."
+            "обфускации entry не поднять. "
+            + (
+                "Проверьте, что на входе установлен AmneziaWG 3.1."
+                if protocol == "awg31"
+                else "Проверьте, что на entry установлен AmneziaWG 2.0 (S3/S4)."
+            )
         )
     return params
 
@@ -98,9 +111,12 @@ def _render_conf(
     ]
     if listen_port_optional or listen_port:
         lines.insert(3, f"ListenPort = {listen_port}")
-    for key in ("Jc", "Jmin", "Jmax", "S1", "S2", "S3", "S4", "H1", "H2", "H3", "H4"):
-        if key in params:
-            lines.append(f"{key} = {params[key]}")
+    core = ("Jc", "Jmin", "Jmax", "S1", "S2", "S3", "S4", "H1", "H2", "H3", "H4")
+    extra = [k for k in AWG_PARAM_KEYS if k not in core]
+    for key in (*core, *extra):
+        val = params.get(key)
+        if val:
+            lines.append(f"{key} = {val}")
     lines += [
         "",
         "[Peer]",
@@ -142,45 +158,35 @@ def _keygen(ssh, container: str) -> dict[str, str]:
     return vals
 
 
-def _amnezia_container(record: dict) -> Optional[str]:
-    for name in record.get("container_names") or []:
-        if name in ("amnezia-awg2", "amnezia-awg"):
-            return name
-    return None
+def _amnezia_container(record: dict, protocol: str = "awg2") -> Optional[str]:
+    return preferred_container(record, protocol)
 
 
-def _ensure_exit_awg(exit_id: str) -> Optional[CascadeStep]:
-    """Гарантирует AmneziaWG на выходном сервере: ставит автоматически, если его нет.
-
-    Делает каскад «одной кнопкой» — пользователю не нужно вручную заходить на
-    exit и ставить протокол. Идемпотентно: если AmneziaWG уже стоит — быстрый
-    no-op (install_awg сам проверяет наличие контейнера и мгновенно отвечает).
-
-    Бросает CascadeError, если установка не удалась (это происходит ДО любых
-    изменений трафика, поэтому откат не нужен — apply просто не начнётся).
-    """
+def _ensure_exit_awg(exit_id: str, variant: str = "awg2") -> Optional[CascadeStep]:
+    """Гарантирует AmneziaWG нужной версии на выходном сервере."""
     from app.services.awg_install import AwgInstallError, install_awg
 
     rec = server_store.get_record(exit_id) or {}
     name = rec.get("name") or exit_id
-    if _amnezia_container(rec):
-        return None  # уже в записи панели — _gather подтвердит контейнер
+    label = protocol_label(variant)
+    if _amnezia_container(rec, variant):
+        return None
     try:
-        res = install_awg(exit_id, variant="awg2")
+        res = install_awg(exit_id, variant=variant)
         return CascadeStep(
-            name=f"Exit «{name}»: установка AmneziaWG",
+            name=f"Exit «{name}»: установка {label}",
             status="ok",
             detail=res.message,
         )
     except AwgInstallError as exc:
         if "уже установлен" in str(exc).lower():
             return CascadeStep(
-                name=f"Exit «{name}»: AmneziaWG",
+                name=f"Exit «{name}»: {label}",
                 status="ok",
                 detail="уже установлен",
             )
         raise CascadeError(
-            f"Не удалось автоматически установить AmneziaWG на выходной сервер «{name}»: {exc}"
+            f"Не удалось автоматически установить {label} на выходной сервер «{name}»: {exc}"
         )
 
 
@@ -220,12 +226,12 @@ def _host_public_ip(ssh) -> str:
     return (res.stdout.strip().split() or [""])[0]
 
 
-def _gather(entry_id: str, exit_id: str) -> dict:
+def _gather(entry_id: str, exit_id: str, protocol: str = "awg2") -> dict:
     """Свежие факты с обоих серверов перед apply (без изменений)."""
     facts: dict = {}
     ssh = _connect(entry_id)
     try:
-        entry_vals = _parse_kv(run_script(ssh, _ENTRY_PROBE, timeout=40).stdout)
+        entry_vals = _parse_kv(run_script(ssh, entry_probe_script(protocol), timeout=40).stdout)
         entry_ctn = entry_vals.get("container") or ""
         if entry_ctn:
             entry_vals["ctn_ip"] = _container_amnezia_ip(ssh, entry_ctn)
@@ -235,7 +241,7 @@ def _gather(entry_id: str, exit_id: str) -> dict:
         ssh.close()
     ssh = _connect(exit_id)
     try:
-        ev = _parse_kv(run_script(ssh, _EXIT_PROBE, timeout=40).stdout)
+        ev = _parse_kv(run_script(ssh, exit_probe_script(protocol), timeout=40).stdout)
         exit_ctn = ev.get("container") or ""
         if exit_ctn:
             ev["ctn_ip"] = _container_amnezia_ip(ssh, exit_ctn)
@@ -250,8 +256,9 @@ def _gather(entry_id: str, exit_id: str) -> dict:
 # ---------------------------------------------------------------------------
 
 
-def apply_cascade(entry_id: str) -> CascadeApplyResult:
+def apply_cascade(entry_id: str, protocols: Optional[list[str]] = None) -> CascadeApplyResult:
     from app.services.cascade import probe_cascade_live
+    from app.services.transit_allocator import profile_for_slot
 
     link = cascade_store.get_link(entry_id)
     if not link:
@@ -259,12 +266,22 @@ def apply_cascade(entry_id: str) -> CascadeApplyResult:
     live = probe_cascade_live(entry_id)
     if live["active"]:
         cascade_store.upsert_link(entry_id, state="active")
-        raise CascadeError("Каскад уже работает. Выключите его, если нужно перенастроить.")
+        raise CascadeError(
+            "Каскад уже работает. Выключите его, если нужно перенастроить "
+            "или добавить 3.1 рядом с 2.0."
+        )
     if not link.get("last_preflight_ok"):
         raise CascadeError("Проверка не пройдена — включение заблокировано.")
     exit_id = link.get("exit_server_id")
     if not exit_id:
         raise CascadeError("Не выбран exit-сервер.")
+
+    requested = normalize_cascade_protocols(protocols) if protocols else None
+    planned = requested or link_protocols(link)
+    if not planned:
+        raise CascadeError("Выберите AmneziaWG 2.0 и/или 3.1.")
+    if requested and set(requested) != set(link_protocols(link)):
+        raise CascadeError("Сначала нажмите «Проверить» для выбранных протоколов (2.0 / 3.1).")
 
     entry_rec = server_store.get_record(entry_id)
     exit_rec = server_store.get_record(exit_id)
@@ -272,147 +289,212 @@ def apply_cascade(entry_id: str) -> CascadeApplyResult:
         raise CascadeError("Entry или exit сервер не найден.")
 
     steps: list[CascadeStep] = []
-    # Авто-подготовка exit: ставим AmneziaWG, если его ещё нет (одна кнопка
-    # делает всё — пользователю не нужно вручную ставить протокол на выход).
-    prep = _ensure_exit_awg(exit_id)
-    if prep is not None:
-        steps.append(prep)
-    facts = _gather(entry_id, exit_id)
-    entry_f, exit_f = facts.get("entry", {}), facts.get("exit", {})
+    for proto in planned:
+        prep = _ensure_exit_awg(exit_id, variant=proto)
+        if prep is not None:
+            steps.append(prep)
 
-    entry_ctn = entry_f.get("container") or _amnezia_container(entry_rec)
-    exit_ctn = exit_f.get("container") or _amnezia_container(exit_rec)
-    client_subnet = _client_subnet_from_addr(entry_f.get("server_addr"))
-    server_addr = (entry_f.get("server_addr") or "").split("/")[0].split(",")[0].strip()
-    exit_public_ip = exit_f.get("public_ip") or exit_rec.get("host")
-    entry_public_ip = entry_f.get("public_ip") or entry_rec.get("host")
-    exit_ctn_ip = exit_f.get("ctn_ip") or ""
-    entry_ctn_ip = entry_f.get("ctn_ip") or ""
-    profile = resolve_profile(link)
-    port = profile.transit_port
-    entry_host_port = profile.entry_host_port
+    legs_ctx: list[dict] = []
+    for proto in planned:
+        facts = _gather(entry_id, exit_id, proto)
+        entry_f, exit_f = facts.get("entry", {}), facts.get("exit", {})
+        label = protocol_label(proto)
+        entry_ctn = entry_f.get("container") or _amnezia_container(entry_rec, proto)
+        exit_ctn = exit_f.get("container") or _amnezia_container(exit_rec, proto)
+        client_subnet = _client_subnet_from_addr(entry_f.get("server_addr"))
+        server_addr = (entry_f.get("server_addr") or "").split("/")[0].split(",")[0].strip()
+        exit_public_ip = exit_f.get("public_ip") or exit_rec.get("host")
+        entry_public_ip = entry_f.get("public_ip") or entry_rec.get("host")
+        slot = slot_for_protocol(link, proto)
+        profile = profile_for_slot(slot if slot is not None else 0)
+        ctx = {
+            "protocol": proto,
+            "entry_ctn": entry_ctn,
+            "exit_ctn": exit_ctn,
+            "client_subnet": client_subnet,
+            "server_addr": server_addr,
+            "exit_public_ip": exit_public_ip,
+            "entry_public_ip": entry_public_ip,
+            "exit_ctn_ip": exit_f.get("ctn_ip") or "",
+            "entry_ctn_ip": entry_f.get("ctn_ip") or "",
+            "profile": profile,
+            "entry_kind": entry_f.get("ctn_awg_kind"),
+            "exit_kind": exit_f.get("ctn_awg_kind"),
+        }
+        problems = []
+        if not ctx["entry_ctn"]:
+            problems.append(f"нет контейнера {label} на входе")
+        if not ctx["exit_ctn"]:
+            problems.append(f"нет контейнера {label} на выходе")
+        if not ctx["client_subnet"] or not ctx["server_addr"]:
+            problems.append(f"не определена client subnet {label}")
+        if not ctx["exit_public_ip"]:
+            problems.append("нет публичного IP выхода")
+        if not ctx["entry_public_ip"]:
+            problems.append("нет публичного IP входа")
+        if not ctx["exit_ctn_ip"]:
+            problems.append(f"не определён IP контейнера {label} на выходе")
+        if not ctx["entry_ctn_ip"]:
+            problems.append(f"не определён IP контейнера {label} на входе")
+        if ctx["entry_kind"] != "tools":
+            problems.append(f"в контейнере {label} на входе нет awg-tools (awg-quick)")
+        if ctx["exit_kind"] != "tools":
+            problems.append(f"в контейнере {label} на выходе нет awg-tools (awg-quick)")
+        if problems:
+            raise CascadeError("Apply заблокирован: " + "; ".join(problems) + ".")
+        legs_ctx.append(ctx)
 
-    # --- abort-before-change: проверка предусловий ---
-    problems = []
-    if not entry_ctn:
-        problems.append("нет контейнера AmneziaWG на entry")
-    if not exit_ctn:
-        problems.append("нет контейнера AmneziaWG на exit")
-    if not client_subnet or not server_addr:
-        problems.append("не определена client subnet на entry")
-    if not exit_public_ip:
-        problems.append("нет публичного IP exit")
-    if not entry_public_ip:
-        problems.append("нет публичного IP entry")
-    if not exit_ctn_ip:
-        problems.append("не определён IP контейнера exit в amnezia-dns-net")
-    if not entry_ctn_ip:
-        problems.append("не определён IP контейнера entry в amnezia-dns-net")
-    if entry_f.get("ctn_awg_kind") != "tools":
-        problems.append("в контейнере entry нет awg-tools (awg-quick)")
-    if exit_f.get("ctn_awg_kind") != "tools":
-        problems.append("в контейнере exit нет awg-tools (awg-quick)")
-    if problems:
-        raise CascadeError("Apply заблокирован: " + "; ".join(problems) + ".")
-
-    # --- keys ---
     entry_ssh = _connect(entry_id)
     exit_ssh = _connect(exit_id)
-    params = _read_awg_params(entry_ssh, entry_ctn)
+    applied: list[dict] = []
     egress_ip: Optional[str] = None
-    applied_traffic = False
+    health_note = None
+    primary = legs_ctx[0]
     try:
-        entry_keys = _keygen(entry_ssh, entry_ctn)
-        exit_keys = _keygen(exit_ssh, exit_ctn)
-        psk = entry_keys["psk"]
-        steps.append(CascadeStep(name="Генерация ключей транзита", status="ok"))
+        for ctx in legs_ctx:
+            proto = ctx["protocol"]
+            label = protocol_label(proto)
+            profile = ctx["profile"]
+            port = profile.transit_port
+            entry_host_port = profile.entry_host_port
+            params = _read_awg_params(entry_ssh, ctx["entry_ctn"], proto)
+            entry_keys = _keygen(entry_ssh, ctx["entry_ctn"])
+            exit_keys = _keygen(exit_ssh, ctx["exit_ctn"])
+            psk = entry_keys["psk"]
+            steps.append(CascadeStep(name=f"{label}: ключи транзита", status="ok"))
 
-        # --- snapshot ---
-        snap = _snapshot(entry_ssh, entry_ctn, exit_ssh, exit_ctn)
-        cascade_store.upsert_link(entry_id, snapshot=snap)
-        steps.append(CascadeStep(name="Snapshot ip-rule/route/iptables", status="ok"))
+            snap = _snapshot(entry_ssh, ctx["entry_ctn"], exit_ssh, ctx["exit_ctn"])
+            cascade_store.upsert_link(entry_id, snapshot=snap)
 
-        # === EXIT: транзит + NAT в netns + host DNAT ===
-        exit_conf = _render_conf(
-            private_key=exit_keys["priv"],
-            address=f"{profile.exit_ip}/30",
-            listen_port=port,
-            peer_pub=entry_keys["pub"],
-            psk=psk,
-            allowed_ips=f"{profile.entry_ip}/32",
-            params=params,
-        )
-        _write_container_file(exit_ssh, exit_ctn, profile.conf_path, exit_conf)
-        res = run_container_script(exit_ssh, exit_ctn, _exit_up_script(profile), timeout=60)
-        _ensure(res, "Поднять транзит на exit (netns)")
-        steps.append(CascadeStep(name="Exit: транзит utmka-cas0 + NAT", status="ok"))
-
-        res = run_script(exit_ssh, _exit_host_socat(port, exit_ctn_ip), timeout=40)
-        _ensure(res, "Exit host socat relay для UDP-порта транзита")
-        steps.append(CascadeStep(name="Exit: проброс UDP-порта на контейнер", status="ok"))
-
-        # === ENTRY: host UDP NAT (обход docker MASQUERADE + raw DROP) ===
-        res = run_script(
-            entry_ssh,
-            _entry_host_udp_nat(
-                entry_ctn_ip, entry_public_ip, entry_host_port, exit_public_ip, port
-            ),
-            timeout=40,
-        )
-        _ensure(res, "Entry host SNAT/DNAT для транзитного UDP")
-        steps.append(CascadeStep(name="Entry: проброс UDP транзита на контейнер", status="ok"))
-
-        # === ENTRY: транзит + policy routing + double-SNAT + fail-closed ===
-        entry_conf = _render_conf(
-            private_key=entry_keys["priv"],
-            address=f"{profile.entry_ip}/30",
-            listen_port=entry_host_port,
-            peer_pub=exit_keys["pub"],
-            psk=psk,
-            allowed_ips="0.0.0.0/0",
-            params=params,
-            endpoint=f"{exit_public_ip}:{port}",
-        )
-        _write_container_file(entry_ssh, entry_ctn, profile.conf_path, entry_conf)
-        applied_traffic = True
-        res = run_container_script(
-            entry_ssh, entry_ctn, _entry_up_script(client_subnet, profile), timeout=60
-        )
-        _ensure(res, "Поднять каскад на entry (routing+SNAT+fail-closed)")
-        steps.append(CascadeStep(name="Entry: транзит + policy routing + SNAT + fail-closed", status="ok"))
-
-        # === HEALTH: egress через каскад должен быть = exit public IP ===
-        egress_ip, handshake_ok = _health_egress(entry_ssh, entry_ctn, server_addr, profile.iface)
-        health_note = None
-        if egress_ip and exit_public_ip and egress_ip.strip() == exit_public_ip.strip():
-            steps.append(CascadeStep(
-                name="Health: внешний IP клиента", status="ok",
-                detail=f"egress {egress_ip} = exit {exit_public_ip}",
-            ))
-        elif egress_ip:
-            # реальный leak/misroute — внешний IP не exit → откат
-            steps.append(CascadeStep(
-                name="Health: внешний IP клиента", status="failed",
-                detail=f"ожидался {exit_public_ip}, получено {egress_ip}",
-            ))
-            raise CascadeError(
-                f"Health-check провален: внешний IP {egress_ip} != exit {exit_public_ip} (возможна утечка)."
+            exit_conf = _render_conf(
+                private_key=exit_keys["priv"],
+                address=f"{profile.exit_ip}/30",
+                listen_port=port,
+                peer_pub=entry_keys["pub"],
+                psk=psk,
+                allowed_ips=f"{profile.entry_ip}/32",
+                params=params,
             )
-        elif handshake_ok:
-            # транзит рукопожатие есть, но egress не измерить (нет curl/wget в контейнере)
-            health_note = "Транзит установлен (handshake есть), но внешний IP не удалось измерить из контейнера — проверьте на клиенте."
-            steps.append(CascadeStep(
-                name="Health: внешний IP клиента", status="ok",
-                detail=health_note,
-            ))
-        else:
-            steps.append(CascadeStep(
-                name="Health: транзит", status="failed",
-                detail="Нет handshake транзита utmka-cas0 — туннель не поднялся.",
-            ))
-            raise CascadeError("Health-check провален: транзит utmka-cas0 не установил handshake.")
+            _write_container_file(exit_ssh, ctx["exit_ctn"], profile.conf_path, exit_conf)
+            res = run_container_script(exit_ssh, ctx["exit_ctn"], _exit_up_script(profile), timeout=60)
+            _ensure(res, f"{label}: поднять транзит на exit")
+            steps.append(CascadeStep(name=f"{label}: транзит на выходе + NAT", status="ok"))
 
-        # split-слой (РФ напрямую), если включён в правилах
+            res = run_script(exit_ssh, _exit_host_socat(port, ctx["exit_ctn_ip"]), timeout=40)
+            _ensure(res, f"{label}: socat UDP на выходе")
+            steps.append(CascadeStep(name=f"{label}: проброс UDP на контейнер выхода", status="ok"))
+
+            res = run_script(
+                entry_ssh,
+                _entry_host_udp_nat(
+                    ctx["entry_ctn_ip"],
+                    ctx["entry_public_ip"],
+                    entry_host_port,
+                    ctx["exit_public_ip"],
+                    port,
+                    slot=profile.slot,
+                ),
+                timeout=40,
+            )
+            _ensure(res, f"{label}: SNAT/DNAT транзита на входе")
+            steps.append(CascadeStep(name=f"{label}: проброс UDP транзита на вход", status="ok"))
+
+            entry_conf = _render_conf(
+                private_key=entry_keys["priv"],
+                address=f"{profile.entry_ip}/30",
+                listen_port=entry_host_port,
+                peer_pub=exit_keys["pub"],
+                psk=psk,
+                allowed_ips="0.0.0.0/0",
+                params=params,
+                endpoint=f"{ctx['exit_public_ip']}:{port}",
+            )
+            _write_container_file(entry_ssh, ctx["entry_ctn"], profile.conf_path, entry_conf)
+            res = run_container_script(
+                entry_ssh, ctx["entry_ctn"], _entry_up_script(ctx["client_subnet"], profile), timeout=60
+            )
+            _ensure(res, f"{label}: routing+SNAT+fail-closed на входе")
+            steps.append(CascadeStep(
+                name=f"{label}: транзит + policy routing + SNAT + fail-closed", status="ok"
+            ))
+            applied.append(ctx)
+
+            leg_egress, handshake_ok = _health_egress(
+                entry_ssh, ctx["entry_ctn"], ctx["server_addr"], profile.iface
+            )
+            if proto == planned[0]:
+                egress_ip = leg_egress
+            if leg_egress and ctx["exit_public_ip"] and leg_egress.strip() == ctx["exit_public_ip"].strip():
+                steps.append(CascadeStep(
+                    name=f"{label}: внешний IP", status="ok",
+                    detail=f"egress {leg_egress} = exit {ctx['exit_public_ip']}",
+                ))
+            elif leg_egress:
+                steps.append(CascadeStep(
+                    name=f"{label}: внешний IP", status="failed",
+                    detail=f"ожидался {ctx['exit_public_ip']}, получено {leg_egress}",
+                ))
+                raise CascadeError(
+                    f"{label}: health-check провален — внешний IP {leg_egress} != exit {ctx['exit_public_ip']}."
+                )
+            elif handshake_ok:
+                health_note = (
+                    f"{label}: транзит установлен (handshake есть), но внешний IP "
+                    "не удалось измерить из контейнера — проверьте на клиенте."
+                )
+                steps.append(CascadeStep(name=f"{label}: внешний IP", status="ok", detail=health_note))
+            else:
+                steps.append(CascadeStep(
+                    name=f"{label}: транзит", status="failed",
+                    detail=f"Нет handshake {profile.iface}.",
+                ))
+                raise CascadeError(f"{label}: транзит {profile.iface} не установил handshake.")
+
+            try:
+                from app.services import cascade_persist
+
+                cascade_persist.persist_entry(
+                    entry_ssh,
+                    container=ctx["entry_ctn"],
+                    client_subnet=ctx["client_subnet"],
+                    profile=profile,
+                    entry_ctn_ip=ctx["entry_ctn_ip"],
+                    entry_public_ip=ctx["entry_public_ip"],
+                    exit_public_ip=ctx["exit_public_ip"],
+                    entry_up_script=_entry_up_script(ctx["client_subnet"], profile),
+                    entry_host_nat_script=_entry_host_udp_nat(
+                        ctx["entry_ctn_ip"],
+                        ctx["entry_public_ip"],
+                        entry_host_port,
+                        ctx["exit_public_ip"],
+                        port,
+                        slot=profile.slot,
+                    ),
+                    split_enabled=False,
+                    protocol=proto,
+                )
+                cascade_persist.persist_exit(
+                    exit_ssh,
+                    container=ctx["exit_ctn"],
+                    profile=profile,
+                    exit_ctn_ip=ctx["exit_ctn_ip"],
+                    entry_public_ip=ctx["entry_public_ip"],
+                    exit_up_script=_exit_up_script(profile),
+                    protocol=proto,
+                )
+                steps.append(CascadeStep(
+                    name=f"{label}: автозапуск после перезагрузки",
+                    status="ok",
+                    detail="systemd + hook в контейнере; на выходе UDP только с IP входа",
+                ))
+            except Exception as persist_exc:  # noqa: BLE001
+                steps.append(CascadeStep(
+                    name=f"{label}: автозапуск после перезагрузки",
+                    status="info",
+                    detail=f"Каскад работает, но persist не встал: {persist_exc}. "
+                    "Панель поднимет его сама через ~90 с после ребута.",
+                ))
+
         split_applied = False
         try:
             from app.services.cascade_rules import apply_split_after_cascade
@@ -420,87 +502,70 @@ def apply_cascade(entry_id: str) -> CascadeApplyResult:
             split_step = apply_split_after_cascade(entry_id)
             if split_step is not None:
                 steps.append(split_step)
-                split_applied = (split_step.status == "ok")
+                split_applied = split_step.status == "ok"
         except Exception:  # noqa: BLE001
             pass
 
-        # persist on both hosts (reboot / container restart)
-        try:
-            from app.services import cascade_persist
+        legs_meta = dict(link.get("legs") or {})
+        for ctx in applied:
+            proto = ctx["protocol"]
+            profile = ctx["profile"]
+            legs_meta[proto] = {
+                **(legs_meta.get(proto) or {}),
+                "container": ctx["entry_ctn"],
+                "client_subnet": ctx["client_subnet"],
+                "transit_slot": profile.slot,
+                "transit_port": profile.transit_port,
+                "transit_subnet": profile.subnet,
+                "entry_host_port": profile.entry_host_port,
+                "entry_ctn_ip": ctx["entry_ctn_ip"],
+                "exit_ctn_ip": ctx["exit_ctn_ip"],
+            }
 
-            cascade_persist.persist_entry(
-                entry_ssh,
-                container=entry_ctn,
-                client_subnet=client_subnet,
-                profile=profile,
-                entry_ctn_ip=entry_ctn_ip,
-                entry_public_ip=entry_public_ip,
-                exit_public_ip=exit_public_ip,
-                entry_up_script=_entry_up_script(client_subnet, profile),
-                entry_host_nat_script=_entry_host_udp_nat(
-                    entry_ctn_ip, entry_public_ip, entry_host_port, exit_public_ip, port
-                ),
-                split_enabled=split_applied,
-            )
-            cascade_persist.persist_exit(
-                exit_ssh,
-                container=exit_ctn,
-                profile=profile,
-                exit_ctn_ip=exit_ctn_ip,
-                entry_public_ip=entry_public_ip,
-                exit_up_script=_exit_up_script(profile),
-            )
-            steps.append(CascadeStep(
-                name="Автозапуск после перезагрузки",
-                status="ok",
-                detail="systemd + hook в контейнере; на выходе UDP только с IP входа",
-            ))
-        except Exception as persist_exc:  # noqa: BLE001
-            steps.append(CascadeStep(
-                name="Автозапуск после перезагрузки",
-                status="info",
-                detail=f"Каскад работает, но persist не встал: {persist_exc}. "
-                "Панель поднимет его сама через ~90 с после ребута.",
-            ))
-
-        # success
+        labels = " + ".join(protocol_label(p) for p in planned)
+        msg = health_note or f"Каскад активен ({labels}): клиент → вход → выход → интернет."
+        if "awg31" in planned:
+            msg = f"{msg} {CLIENT_HINT_31}"
         cascade_store.upsert_link(
             entry_id,
             state="active",
-            transit_subnet=profile.subnet,
-            transit_port=port,
-            transit_slot=profile.slot,
+            protocol=planned[0],
+            protocols=planned,
+            legs=legs_meta,
+            transit_subnet=primary["profile"].subnet,
+            transit_port=primary["profile"].transit_port,
+            transit_slot=primary["profile"].slot,
             egress_ip=egress_ip,
             last_applied_at=datetime.now(timezone.utc).isoformat(),
-            entry_priv_enc=encrypt(entry_keys["priv"]),
-            exit_priv_enc=encrypt(exit_keys["priv"]),
-            psk_enc=encrypt(psk),
-            entry_pub=entry_keys["pub"],
-            exit_pub=exit_keys["pub"],
-            exit_ctn_ip=exit_ctn_ip,
-            entry_ctn_ip=entry_ctn_ip,
-            entry_host_port=entry_host_port,
-            message=health_note or "Каскад активен: клиентский трафик идёт через exit.",
+            client_subnet=primary["client_subnet"],
+            exit_ctn_ip=primary["exit_ctn_ip"],
+            entry_ctn_ip=primary["entry_ctn_ip"],
+            entry_host_port=primary["profile"].entry_host_port,
+            message=msg,
         )
         return CascadeApplyResult(
             ok=True, state="active",
             entry_server_id=entry_id, exit_server_id=exit_id,
-            egress_ip=egress_ip, expected_exit_ip=exit_public_ip,
-            transit_subnet=profile.subnet, transit_port=port,
+            egress_ip=egress_ip, expected_exit_ip=primary["exit_public_ip"],
+            transit_subnet=primary["profile"].subnet,
+            transit_port=primary["profile"].transit_port,
             steps=steps,
-            message=health_note or "Каскад активен. Клиент → entry → exit → интернет.",
+            message=msg,
         )
 
     except Exception as exc:  # noqa: BLE001
-        # авто-rollback
         rb_ok = True
-        try:
-            _teardown(
-                entry_ssh, entry_ctn, exit_ssh, exit_ctn, client_subnet, profile,
-                exit_ctn_ip, entry_ctn_ip, entry_public_ip, exit_public_ip,
-            )
-        except Exception:  # noqa: BLE001
-            rb_ok = False
+        for ctx in reversed(applied or legs_ctx[:1]):
+            try:
+                _teardown(
+                    entry_ssh, ctx["entry_ctn"], exit_ssh, ctx["exit_ctn"],
+                    ctx["client_subnet"], ctx["profile"],
+                    ctx["exit_ctn_ip"], ctx["entry_ctn_ip"],
+                    ctx["entry_public_ip"], ctx["exit_public_ip"],
+                    protocol=ctx["protocol"],
+                )
+            except Exception:  # noqa: BLE001
+                rb_ok = False
         state = "rolled_back" if rb_ok else "rollback_failed"
         steps.append(CascadeStep(
             name="Авто-откат", status="ok" if rb_ok else "failed",
@@ -515,14 +580,14 @@ def apply_cascade(entry_id: str) -> CascadeApplyResult:
         return CascadeApplyResult(
             ok=False, state=state,
             entry_server_id=entry_id, exit_server_id=exit_id,
-            egress_ip=egress_ip, expected_exit_ip=exit_public_ip,
-            transit_subnet=profile.subnet, transit_port=port,
+            egress_ip=egress_ip, expected_exit_ip=primary.get("exit_public_ip"),
+            transit_subnet=primary["profile"].subnet,
+            transit_port=primary["profile"].transit_port,
             steps=steps, message=msg,
         )
     finally:
         entry_ssh.close()
         exit_ssh.close()
-        _ = applied_traffic
 
 
 # ---------------------------------------------------------------------------
@@ -531,6 +596,8 @@ def apply_cascade(entry_id: str) -> CascadeApplyResult:
 
 
 def rollback_cascade(entry_id: str) -> CascadeApplyResult:
+    from app.services.transit_allocator import profile_for_slot
+
     link = cascade_store.get_link(entry_id)
     if not link:
         raise CascadeError("Каскад для этого сервера не найден.")
@@ -540,43 +607,52 @@ def rollback_cascade(entry_id: str) -> CascadeApplyResult:
     if not entry_rec or not exit_rec:
         raise CascadeError("Entry или exit сервер не найден.")
 
-    facts = _gather(entry_id, exit_id)
-    entry_ctn = facts.get("entry", {}).get("container") or _amnezia_container(entry_rec)
-    exit_ctn = facts.get("exit", {}).get("container") or _amnezia_container(exit_rec)
-    client_subnet = _client_subnet_from_addr(facts.get("entry", {}).get("server_addr")) or link.get("client_subnet")
-    profile = resolve_profile(link)
-    port = profile.transit_port
-    exit_ctn_ip = facts.get("exit", {}).get("ctn_ip") or link.get("exit_ctn_ip") or ""
-    entry_ctn_ip = facts.get("entry", {}).get("ctn_ip") or link.get("entry_ctn_ip") or ""
-    entry_public_ip = (
-        facts.get("entry", {}).get("public_ip") or entry_rec.get("host") or ""
-    )
-    exit_public_ip = facts.get("exit", {}).get("public_ip") or (exit_rec.get("host") if exit_rec else "")
-
+    planned = link_protocols(link)
+    legs_data = link.get("legs") or {}
     steps: list[CascadeStep] = []
     entry_ssh = _connect(entry_id)
     exit_ssh = _connect(exit_id)
+    ok = True
+    primary_port = resolve_profile(link).transit_port
     try:
-        ok = True
-        try:
-            _teardown(
-                entry_ssh, entry_ctn, exit_ssh, exit_ctn, client_subnet, profile,
-                exit_ctn_ip, entry_ctn_ip, entry_public_ip, exit_public_ip,
+        for proto in planned:
+            facts = _gather(entry_id, exit_id, proto)
+            entry_ctn = facts.get("entry", {}).get("container") or _amnezia_container(entry_rec, proto)
+            exit_ctn = facts.get("exit", {}).get("container") or _amnezia_container(exit_rec, proto)
+            data = legs_data.get(proto) or {}
+            client_subnet = (
+                data.get("client_subnet")
+                or _client_subnet_from_addr(facts.get("entry", {}).get("server_addr"))
+                or link.get("client_subnet")
             )
-        except Exception:  # noqa: BLE001
-            ok = False
+            slot = slot_for_protocol(link, proto)
+            profile = profile_for_slot(slot if slot is not None else 0)
+            if proto == planned[0]:
+                primary_port = profile.transit_port
+            exit_ctn_ip = facts.get("exit", {}).get("ctn_ip") or data.get("exit_ctn_ip") or link.get("exit_ctn_ip") or ""
+            entry_ctn_ip = facts.get("entry", {}).get("ctn_ip") or data.get("entry_ctn_ip") or link.get("entry_ctn_ip") or ""
+            entry_public_ip = facts.get("entry", {}).get("public_ip") or entry_rec.get("host") or ""
+            exit_public_ip = facts.get("exit", {}).get("public_ip") or (exit_rec.get("host") if exit_rec else "")
+            try:
+                _teardown(
+                    entry_ssh, entry_ctn, exit_ssh, exit_ctn, client_subnet, profile,
+                    exit_ctn_ip, entry_ctn_ip, entry_public_ip, exit_public_ip,
+                    protocol=proto,
+                )
+            except Exception:  # noqa: BLE001
+                ok = False
         steps.append(CascadeStep(name="Снятие правил каскада", status="ok" if ok else "failed"))
         state = "rolled_back" if ok else "rollback_failed"
         cascade_store.upsert_link(
             entry_id, state=state, egress_ip=None,
-            message="Каскад снят. Клиентский трафик снова выходит напрямую через entry."
+            message="Каскад снят. Клиентский трафик снова выходит напрямую через вход."
             if ok else "Откат завершился с ошибкой — нужен ручной разбор.",
         )
         cascade_store.set_split(entry_id, applied=False)
         return CascadeApplyResult(
             ok=ok, state=state,
             entry_server_id=entry_id, exit_server_id=exit_id or "",
-            transit_port=port, steps=steps,
+            transit_port=primary_port, steps=steps,
             message="Каскад снят." if ok else "Откат с ошибкой.",
         )
     finally:
@@ -652,6 +728,7 @@ def _entry_host_udp_nat(
     host_port: int,
     exit_ip: str,
     exit_port: int,
+    slot: int = 0,
 ) -> str:
     """Статический SNAT/DNAT для исходящего транзита entry → exit.
 
@@ -663,7 +740,7 @@ def _entry_host_udp_nat(
     ctn = shlex.quote(ctn_ip)
     pub = shlex.quote(public_ip)
     xip = shlex.quote(exit_ip)
-    cm = f"{LABEL}-entry-udp"
+    cm = entry_udp_comment(slot)
     return f"""
 set -e
 sysctl -w net.ipv4.ip_forward=1 >/dev/null 2>&1 || true
@@ -751,6 +828,7 @@ def _teardown(
     entry_ctn_ip="",
     entry_public_ip="",
     exit_public_ip="",
+    protocol: str = "awg2",
 ) -> None:
     cs = shlex.quote(client_subnet or "10.8.1.0/24")
     port = profile.transit_port
@@ -791,7 +869,7 @@ echo DOWN_SOCAT
         ctn = shlex.quote(entry_ctn_ip)
         pub = shlex.quote(entry_public_ip)
         xip = shlex.quote(exit_public_ip or "0.0.0.0")
-        cm = f"{LABEL}-entry-udp"
+        cm = entry_udp_comment(profile.slot)
         entry_host_down = f"""
 iptables -t nat -D POSTROUTING -s {ctn} -p udp -o eth0 -d {xip} --dport {p} -m comment --comment {cm}-snat -j SNAT --to-source {pub}:{hp} 2>/dev/null || true
 iptables -t nat -D PREROUTING -i eth0 -p udp -d {pub} --dport {hp} -m comment --comment {cm}-dnat -j DNAT --to-destination {ctn}:{hp} 2>/dev/null || true
@@ -804,8 +882,10 @@ echo DOWN_ENTRY_HOST
     try:
         from app.services import cascade_persist
 
-        cascade_persist.remove_entry(entry_ssh, entry_ctn)
-        cascade_persist.remove_exit(exit_ssh, exit_ctn, port, entry_public_ip or "")
+        cascade_persist.remove_entry(entry_ssh, entry_ctn, protocol=protocol)
+        cascade_persist.remove_exit(
+            exit_ssh, exit_ctn, port, entry_public_ip or "", protocol=protocol, slot=profile.slot
+        )
     except Exception:  # noqa: BLE001
         pass
     # split-слой (ipset/mangle/fwmark в netns) снимаем первым — он висит на netns entry

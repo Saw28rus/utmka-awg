@@ -582,6 +582,9 @@
                 Один профиль на телефоне — трафик идёт через два сервера.
                 Сайты видят IP <strong>выходного</strong> сервера.
               </p>
+              <p v-if="cascadeProtocolSummary" class="cascade-lead cascade-proto-now">
+                Сейчас: {{ cascadeProtocolSummary }}
+              </p>
             </div>
             <StatusBadge
               :label="cascadeActive ? 'Работает' : cascadeStateLabel"
@@ -652,14 +655,14 @@
               <button type="button" class="cascade-link" @click="activeTab = 'rules'">Правило</button>.
             </p>
             <p v-else class="cascade-hint subtle">
-              После перезагрузки сервера каскад нужно включить снова.
+              После перезагрузки сервера каскад поднимается сам. Чтобы сменить 2.0 / 3.1 — выключите каскад и включите снова.
             </p>
           </div>
 
           <div v-if="cascadeApplyBusy" class="ssl-loading">
             <n-spin size="small" />
             <span>{{ cascadeApplyBusy === 'apply'
-              ? 'Включаю каскад… Если на выходном сервере нет AmneziaWG, ставлю его — это может занять несколько минут. Не закрывайте страницу.'
+              ? 'Включаю каскад… Если на выходном сервере нет выбранного AmneziaWG, ставлю его — это может занять несколько минут. Не закрывайте страницу.'
               : 'Выключаю каскад…' }}</span>
           </div>
 
@@ -698,6 +701,37 @@
           </summary>
 
           <div class="cascade-setup-body">
+            <div class="cascade-proto-pick">
+              <span class="cascade-proto-label">Какой AmneziaWG пускать через выход</span>
+              <label class="cascade-proto-opt" :class="{ disabled: !hasAwg2 || cascadeActive }">
+                <input v-model="cascadeProtoAwg2" type="checkbox" :disabled="!hasAwg2 || cascadeActive" />
+                <span>
+                  <strong>AmneziaWG 2.0</strong>
+                  <small>Старые клиенты, приложение AmneziaWG, роутеры</small>
+                </span>
+              </label>
+              <label class="cascade-proto-opt" :class="{ disabled: !hasAwg31 || cascadeActive }">
+                <input v-model="cascadeProtoAwg31" type="checkbox" :disabled="!hasAwg31 || cascadeActive" />
+                <span>
+                  <strong>AmneziaWG 3.1</strong>
+                  <small>Нужен Amnezia VPN 5.0.1.5 или новее</small>
+                </span>
+              </label>
+              <p v-if="!hasAwg2 && !hasAwg31" class="cascade-hint">
+                Сначала установите AmneziaWG 2.0 и/или 3.1 на вкладке «Протоколы».
+              </p>
+              <p v-else-if="cascadeProtoAwg31" class="cascade-hint">
+                Ключи 3.1 открываются только в <strong>Amnezia VPN 5.0.1.5+</strong>.
+                Приложение AmneziaWG и клиенты 4.x этот ключ не откроют — для них отметьте 2.0.
+              </p>
+              <p v-if="hasAwg2 && hasAwg31 && cascadeProtoAwg2 && !cascadeProtoAwg31" class="cascade-hint subtle">
+                Клиенты 3.1 на этом входе пойдут напрямую (сайты увидят IP входа), не через выход.
+              </p>
+              <p v-if="hasAwg2 && hasAwg31 && cascadeProtoAwg31 && !cascadeProtoAwg2" class="cascade-hint subtle">
+                Клиенты 2.0 на этом входе пойдут напрямую (сайты увидят IP входа), не через выход.
+              </p>
+            </div>
+
             <div class="cascade-controls">
               <n-select
                 v-model:value="cascadeExitId"
@@ -709,7 +743,7 @@
               />
               <n-button
                 :loading="cascadeBusy"
-                :disabled="!cascadeExitId || cascadeBusy"
+                :disabled="!cascadeExitId || cascadeBusy || (!cascadeProtoAwg2 && !cascadeProtoAwg31)"
                 @click="runPreflight"
               >
                 Проверить
@@ -1327,6 +1361,8 @@ type CascadePreflightResult = {
   blockers: string[]
   message: string
   live_active?: boolean
+  protocols?: string[]
+  client_note?: string | null
 }
 
 type CascadeLinkStatus = {
@@ -1344,6 +1380,8 @@ type CascadeLinkStatus = {
   egress_ip: string | null
   message: string | null
   live_active: boolean
+  protocol?: string | null
+  protocols?: string[]
 }
 
 type CascadeStep = {
@@ -1442,6 +1480,9 @@ const activeTab = ref<DetailTab>('overview')
 
 const hasAwg2 = computed(() =>
   (overview.value?.protocols || []).some((p) => p.id === 'awg2' && p.installed)
+)
+const hasAwg31 = computed(() =>
+  (overview.value?.protocols || []).some((p) => p.id === 'awg31' && p.installed)
 )
 
 type DetailTabItem = { id: DetailTab; label: string; icon: typeof Gauge }
@@ -1613,6 +1654,9 @@ async function connectChatAuto() {
 const cascadeBusy = ref(false)
 const cascadeServersLoading = ref(false)
 const cascadeExitId = ref<string | null>(null)
+const cascadeProtoAwg2 = ref(true)
+const cascadeProtoAwg31 = ref(false)
+let cascadeProtoInited = false
 const cascadeResult = ref<CascadePreflightResult | null>(null)
 const cascadeLink = ref<CascadeLinkStatus | null>(null)
 const otherServers = ref<ServerRead[]>([])
@@ -2205,19 +2249,37 @@ async function loadCascadeStatus() {
     const { data } = await api.get<CascadeLinkStatus>(`/servers/${serverId}/cascade/status`)
     cascadeLink.value = data
     if (data.exit_server_id && !cascadeExitId.value) cascadeExitId.value = data.exit_server_id
+    const saved = data.protocols || (data.protocol ? [data.protocol] : [])
+    if (saved.length) {
+      cascadeProtoAwg2.value = saved.includes('awg2')
+      cascadeProtoAwg31.value = saved.includes('awg31')
+      cascadeProtoInited = true
+    }
   } catch {
     cascadeLink.value = null
   }
 }
 
+function cascadeSelectedProtocols(): string[] {
+  const out: string[] = []
+  if (cascadeProtoAwg2.value && hasAwg2.value) out.push('awg2')
+  if (cascadeProtoAwg31.value && hasAwg31.value) out.push('awg31')
+  return out
+}
+
 async function runPreflight() {
   if (!cascadeExitId.value) return
+  const protocols = cascadeSelectedProtocols()
+  if (!protocols.length) {
+    message.warning('Отметьте AmneziaWG 2.0 и/или 3.1.')
+    return
+  }
   cascadeBusy.value = true
   cascadeResult.value = null
   try {
     const { data } = await api.post<CascadePreflightResult>(
       `/servers/${serverId}/cascade/preflight`,
-      { exit_server_id: cascadeExitId.value },
+      { exit_server_id: cascadeExitId.value, protocols },
       { timeout: 120_000 }
     )
     cascadeResult.value = data
@@ -2259,23 +2321,44 @@ const setupExitIp = computed(
   () => cascadeResult.value?.exit_public_ip || cascadeLink.value?.egress_ip || ''
 )
 
+const cascadeProtocolSummary = computed(() => {
+  const list = cascadeLink.value?.protocols || []
+  if (!cascadeActive.value || !list.length) return ''
+  const names = list.map((p) => (p === 'awg31' ? 'AmneziaWG 3.1' : 'AmneziaWG 2.0'))
+  return names.join(' + ')
+})
+
 const canApplyCascade = computed(() => {
   if (cascadeActive.value) return false
+  if (!cascadeSelectedProtocols().length) return false
   const s = cascadeLink.value?.state
   return s === 'preflight_ok' || s === 'rolled_back' || (cascadeResult.value?.ok ?? false)
 })
 
+watch([hasAwg2, hasAwg31], ([v2, v31]) => {
+  if (cascadeProtoInited || cascadeActive.value) return
+  if (v2 || v31) {
+    cascadeProtoAwg2.value = v2
+    cascadeProtoAwg31.value = v31
+    cascadeProtoInited = true
+  }
+})
+
 function runApply() {
+  const protocols = cascadeSelectedProtocols()
+  const names = protocols.map((p) => (p === 'awg31' ? '3.1' : '2.0')).join(' и ')
+  const note31 = protocols.includes('awg31')
+    ? ' Для 3.1 на телефоне нужен Amnezia VPN 5.0.1.5 или новее.'
+    : ''
   dialog.warning({
     title: 'Включить каскад?',
     content:
-      'Трафик пойдёт через выходной сервер. Если на выходном сервере ещё нет AmneziaWG — ' +
+      `Через выход пойдёт AmneziaWG ${names}. Если на выходном сервере ещё нет этого протокола — ` +
       'панель установит его сама, это может занять несколько минут. ' +
-      'Телефон может на несколько секунд переподключиться. Если что-то пойдёт не так — настройка откатится сама.',
+      'Телефон может на несколько секунд переподключиться. Если что-то пойдёт не так — настройка откатится сама.' +
+      note31,
     positiveText: 'Включить каскад',
     negativeText: 'Отмена',
-    // Закрываем диалог сразу и показываем прогресс прямо на странице — иначе
-    // окно подтверждения «висит» поверх спиннера, и кажется, что всё зависло.
     onPositiveClick: () => {
       void doApplyCascade()
       return true
@@ -2289,7 +2372,7 @@ async function doApplyCascade() {
   try {
     const { data } = await api.post<CascadeApplyResult>(
       `/servers/${serverId}/cascade/apply`,
-      {},
+      { protocols: cascadeSelectedProtocols() },
       { timeout: 600_000 }
     )
     cascadeApplyResult.value = data
@@ -3951,6 +4034,55 @@ function confirmDeleteServer() {
 .cascade-hint.subtle {
   font-size: 12px;
   opacity: 0.75;
+}
+
+.cascade-proto-now {
+  margin-top: 8px !important;
+  color: var(--color-text) !important;
+}
+
+.cascade-proto-pick {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 14px;
+  padding: 12px;
+  border-radius: 10px;
+  border: 1px solid var(--color-border);
+  background: var(--color-bg-subtle, rgba(255, 255, 255, 0.03));
+}
+
+.cascade-proto-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--color-muted);
+}
+
+.cascade-proto-opt {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  cursor: pointer;
+}
+
+.cascade-proto-opt.disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.cascade-proto-opt input {
+  margin-top: 3px;
+}
+
+.cascade-proto-opt strong {
+  display: block;
+  font-size: 13px;
+}
+
+.cascade-proto-opt small {
+  display: block;
+  color: var(--color-muted);
+  font-size: 12px;
+  line-height: 1.4;
 }
 
 .cascade-link {

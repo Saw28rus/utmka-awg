@@ -24,6 +24,7 @@ from app.schemas.cascade import (
 from app.services import cascade_split
 from app.services.cascade import CascadeError, _connect
 from app.services.cascade_apply import _amnezia_container
+from app.services.cascade_protocol import link_protocols, preferred_container
 from app.services.cascade_store import cascade_store
 from app.services.server_store import server_store
 from app.services.split_lists import (
@@ -35,10 +36,31 @@ from app.services.split_lists import (
 )
 
 
-def _entry_container(entry_id: str) -> str:
+def _entry_container(entry_id: str, protocol: str = "awg2") -> str:
     rec = server_store.get_record(entry_id)
-    ctn = _amnezia_container(rec) if rec else None
-    return ctn or "amnezia-awg2"
+    ctn = _amnezia_container(rec, protocol) if rec else None
+    if ctn:
+        return ctn
+    return preferred_container(rec or {}, protocol) or ("amnezia-awg31" if protocol == "awg31" else "amnezia-awg2")
+
+
+def _split_targets(entry_id: str) -> list[tuple[str, str]]:
+    rec = server_store.get_record(entry_id) or {}
+    link = cascade_store.get_link(entry_id) or {}
+    legs = link.get("legs") or {}
+    targets: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for proto in link_protocols(link):
+        data = legs.get(proto) or {}
+        ctn = data.get("container") or _entry_container(entry_id, proto)
+        subnet = data.get("client_subnet") or link.get("client_subnet") or "10.8.1.0/24"
+        item = (ctn, subnet)
+        if item not in seen:
+            seen.add(item)
+            targets.append(item)
+    if not targets:
+        targets.append((_entry_container(entry_id), link.get("client_subnet") or "10.8.1.0/24"))
+    return targets
 
 
 def _now() -> str:
@@ -140,10 +162,11 @@ def update_rules(
         if cascade_active and current.get("applied"):
             ssh = _connect(entry_id)
             try:
-                pid = cascade_split.netns_pid(ssh, _entry_container(entry_id))
-                if pid:
-                    cascade_split.teardown_split(ssh, pid, client_subnet)
-                    steps.append(CascadeStep(name="Отключение правила", status="ok"))
+                for ctn, subnet in _split_targets(entry_id):
+                    pid = cascade_split.netns_pid(ssh, ctn)
+                    if pid:
+                        cascade_split.teardown_split(ssh, pid, subnet)
+                steps.append(CascadeStep(name="Отключение правила", status="ok"))
             finally:
                 ssh.close()
         split = cascade_store.set_split(
@@ -191,19 +214,22 @@ def update_rules(
 
     ssh = _connect(entry_id)
     try:
-        pid = cascade_split.netns_pid(ssh, _entry_container(entry_id))
-        if not pid:
-            raise CascadeError("Не найден netns контейнера entry для split.")
-        count = cascade_split.apply_split(ssh, pid, client_subnet, build.cidrs)
+        count = 0
+        health = None
+        for ctn, subnet in _split_targets(entry_id):
+            pid = cascade_split.netns_pid(ssh, ctn)
+            if not pid:
+                raise CascadeError("Не найден netns контейнера entry для split.")
+            count = cascade_split.apply_split(ssh, pid, subnet, build.cidrs)
+            health = cascade_split.split_health(ssh, pid)
         steps.append(CascadeStep(
             name="Применение на сервере", status="ok",
             detail=f"{count} адресов в правиле",
         ))
-        health = cascade_split.split_health(ssh, pid)
         steps.append(CascadeStep(
             name="Проверка",
-            status="ok" if health.get("ok") else "failed",
-            detail=_health_detail(health),
+            status="ok" if (health or {}).get("ok") else "failed",
+            detail=_health_detail(health or {}),
         ))
     except cascade_split.SplitError as exc:
         cascade_store.set_split(entry_id, last_error=str(exc))
@@ -279,10 +305,12 @@ def apply_split_after_cascade(entry_id: str) -> Optional[CascadeStep]:
         )
         ssh = _connect(entry_id)
         try:
-            pid = cascade_split.netns_pid(ssh, _entry_container(entry_id))
-            if not pid:
-                raise cascade_split.SplitError("нет netns контейнера")
-            count = cascade_split.apply_split(ssh, pid, client_subnet, build.cidrs)
+            count = 0
+            for ctn, subnet in _split_targets(entry_id):
+                pid = cascade_split.netns_pid(ssh, ctn)
+                if not pid:
+                    raise cascade_split.SplitError("нет netns контейнера")
+                count = cascade_split.apply_split(ssh, pid, subnet, build.cidrs)
         finally:
             ssh.close()
         cascade_store.set_split(

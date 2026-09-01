@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from app.core.deps import require_admin
 from app.schemas.auth import CurrentUser
 from app.schemas.cascade import (
+    CascadeApplyRequest,
     CascadeApplyResult,
     CascadeLinkStatus,
     CascadeLinkSummary,
@@ -60,19 +61,24 @@ async def cascade_preflight(
     if not server_store.get_record(server_id):
         raise HTTPException(status_code=404, detail="Сервер не найден.")
     try:
-        return await asyncio.to_thread(run_preflight, server_id, payload.exit_server_id)
+        return await asyncio.to_thread(
+            run_preflight, server_id, payload.exit_server_id, payload.protocols
+        )
     except CascadeError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
 
 @router.post("/{server_id}/cascade/apply", response_model=CascadeApplyResult)
 async def cascade_apply(
-    server_id: str, _: CurrentUser = Depends(require_admin)
+    server_id: str,
+    payload: CascadeApplyRequest = CascadeApplyRequest(),
+    _: CurrentUser = Depends(require_admin),
 ) -> CascadeApplyResult:
     if not server_store.get_record(server_id):
         raise HTTPException(status_code=404, detail="Сервер не найден.")
+    protocols = payload.protocols
     try:
-        return await asyncio.to_thread(apply_cascade, server_id)
+        return await asyncio.to_thread(apply_cascade, server_id, protocols)
     except CascadeError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
