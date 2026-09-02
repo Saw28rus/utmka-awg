@@ -40,6 +40,63 @@ class PanelSslError(Exception):
     pass
 
 
+def transient_acme_hint(output: str) -> Optional[str]:
+    """Понятный текст, если Let's Encrypt сам отдал 500/JWS/busy — не вина sslip.io/nginx."""
+    low = (output or "").lower()
+    if any(
+        token in low
+        for token in (
+            "unable to validate jws",
+            "serverinternal",
+            "service busy",
+            "utmka_certbot_fail",
+            "no order for id",
+        )
+    ):
+        return (
+            "Let's Encrypt временно не выпустил сертификат (сбой их API: JWS/busy). "
+            "Это не sslip.io и не nginx — подожди 1–2 минуты и нажми ещё раз."
+        )
+    if "too many certificates" in low and "sslip.io" in low:
+        return (
+            "Let's Encrypt исчерпал недельный лимит сертификатов на sslip.io. "
+            "Попробуй позже или укажи свой домен."
+        )
+    return None
+
+
+def certbot_issue_script(domain: str, email_flag: str) -> str:
+    """webroot + повторы. --standalone не используем: nginx уже занимает :80."""
+    q_domain = shlex.quote(domain)
+    q_webroot = shlex.quote(WEBROOT)
+    q_live = shlex.quote(f"{CERT_DIR}/{domain}/fullchain.pem")
+    return f"""
+if [ -s {q_live} ]; then
+  echo "Сертификат уже есть, Let's Encrypt пропускаем."
+else
+  attempt=1
+  delay=20
+  while [ "$attempt" -le 5 ]; do
+    echo "Let's Encrypt, попытка $attempt/5..."
+    if certbot certonly --webroot -w {q_webroot} -d {q_domain} --agree-tos --non-interactive {email_flag}; then
+      break
+    fi
+    if [ -s {q_live} ]; then
+      break
+    fi
+    if [ "$attempt" -eq 5 ]; then
+      echo UTMKA_CERTBOT_FAIL
+      exit 1
+    fi
+    echo "Let's Encrypt временно не отвечает, ждём ${{delay}}с..."
+    sleep "$delay"
+    delay=$((delay + 20))
+    attempt=$((attempt + 1))
+  done
+fi
+"""
+
+
 @dataclass
 class PanelSslStatus:
     domain: Optional[str]
@@ -241,6 +298,9 @@ def install_panel_ssl(server_id: str, domain: str, *, email: Optional[str] = Non
         result = ssh_exec.run(ssh, f"bash -s <<'UTMKA_SSL_EOF'\n{script}\nUTMKA_SSL_EOF", timeout=600)
         output = (result.stdout + "\n" + result.stderr).strip()
         if result.exit_code != 0 or "UTMKA_SSL_OK" not in output:
+            hint = transient_acme_hint(output)
+            if hint:
+                raise PanelSslError(hint)
             tail = output[-1200:] if output else "нет вывода"
             raise PanelSslError(f"Установка HTTPS не удалась:\n{tail}")
 
@@ -652,9 +712,7 @@ nginx -t
 systemctl enable nginx
 systemctl reload nginx || systemctl start nginx
 
-certbot certonly --webroot -w {shlex.quote(WEBROOT)} -d {shlex.quote(domain)} \\
-  --agree-tos --non-interactive {email_flag} || certbot certonly --standalone -d {shlex.quote(domain)} \\
-  --agree-tos --non-interactive {email_flag}
+{certbot_issue_script(domain, email_flag)}
 
 # HTTPS-vhost панели слушает локальный 8443 (за stream-блоком), не :443.
 cat > {shlex.quote(NGINX_SITE)} <<'NGINX_HTTPS_EOF'

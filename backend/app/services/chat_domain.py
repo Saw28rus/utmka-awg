@@ -22,6 +22,8 @@ from app.services.panel_ssl import (
     WEBROOT,
     XRAY_LOCAL_PORT,
     PanelSslError,
+    certbot_issue_script,
+    transient_acme_hint,
     _cert_expiry,
     _connect,
     _normalize_domain,
@@ -239,6 +241,9 @@ def install_chat_domain(server_id: str, domain: str) -> ChatDomainInstallResult:
         output = (result.stdout + "\n" + result.stderr).strip()
         if result.exit_code != 0 or "UTMKA_CHAT_OK" not in output:
             # nginx восстанавливается внутри скрипта (trap), здесь только честная ошибка
+            hint = transient_acme_hint(output)
+            if hint:
+                raise ChatDomainError(hint)
             raise ChatDomainError(f"Подключение чат-домена не удалось:\n{output[-1200:]}")
 
         isolation = _isolation_checks(ssh, domain)
@@ -476,10 +481,7 @@ nginx -t
 systemctl reload nginx
 
 # Шаг 2: сертификат (webroot — nginx уже слушает :80)
-if [ ! -f {CERT_DIR}/{domain}/fullchain.pem ]; then
-  certbot certonly --webroot -w {shlex.quote(WEBROOT)} -d {shlex.quote(domain)} \\
-    --agree-tos --non-interactive --register-unsafely-without-email
-fi
+{certbot_issue_script(domain, "--register-unsafely-without-email")}
 
 # Шаг 3: финальный vhost — deny-by-default
 cat > {shlex.quote(CHAT_NGINX_SITE)} <<'CHAT_HTTPS_EOF'
