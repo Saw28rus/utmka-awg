@@ -24,8 +24,10 @@ from app.schemas.awg_masking import (
     MASK_STATUS_WEAK,
     MASK_VERSION_AWG2,
     MASK_VERSION_AWG15,
+    MASK_VERSION_AWG31,
     MASK_VERSION_LEGACY,
     MASK_VERSION_UNKNOWN,
+    MaskingProfile,
     MaskingResponse,
     MaskingScore,
     MaskingState,
@@ -67,13 +69,24 @@ XRAY_CONTAINER = "amnezia-xray"
 XRAY_SERVER_CONFIG = "/opt/amnezia/xray/server.json"
 
 _LABELS = {
-    MASK_STATUS_STRONG: "Сильная маскировка AWG 2.0",
-    MASK_STATUS_BASIC: "AWG 2.0 базовая",
-    MASK_STATUS_WEAK: "Слабая маскировка",
-    MASK_STATUS_LEGACY: "Legacy",
-    MASK_STATUS_INVALID: "Конфиг невалиден",
+    MASK_STATUS_STRONG: "В норме",
+    MASK_STATUS_BASIC: "Базовая",
+    MASK_STATUS_WEAK: "Слабая",
+    MASK_STATUS_LEGACY: "Устарела",
+    MASK_STATUS_INVALID: "Ошибка",
     MASK_STATUS_UNKNOWN: "Неизвестно",
 }
+
+_PROFILE_LABELS = {
+    "awg2": "AmneziaWG 2.0",
+    "awg31": "AmneziaWG 3.1",
+}
+
+_SERVICE_MARKERS = ("panel", "web", "db", "dind", "postgres", "redis")
+_PREFERRED_CONTAINERS = (
+    ("awg31", "amnezia-awg31"),
+    ("awg2", "amnezia-awg2"),
+)
 
 
 def read_masking(server_id: str) -> MaskingResponse:
@@ -110,18 +123,38 @@ def read_masking(server_id: str) -> MaskingResponse:
 
     try:
         fallback = _read_reality_fallback(ssh, record, server_id, target.host)
+        counts = _client_counts(server_id)
+        containers = _find_protocol_containers(ssh)
 
-        container = _find_awg_container(ssh)
-        config_text = ""
-        config_path: Optional[str] = None
-        if container:
+        profiles: list[MaskingProfile] = []
+        states: dict[str, MaskingState] = {}
+        warns_by: dict[str, list[MaskingWarning]] = {}
+
+        for proto in ("awg2", "awg31"):
+            container = containers.get(proto)
+            if not container:
+                continue
             config_path, config_text = _read_container_config(ssh, container)
-        if not config_text.strip():
-            host_path, host_text = _read_host_config(ssh)
-            if host_text.strip():
-                config_path, config_text = host_path, host_text
+            if not config_text.strip() and proto == "awg2":
+                host_path, host_text = _read_host_config(ssh)
+                if host_text.strip():
+                    config_path, config_text = host_path, host_text
+            if not config_text.strip():
+                continue
+            state = _build_state(
+                config_text, container=container, config_path=config_path, host=target.host
+            )
+            if proto == "awg31":
+                state.version = MASK_VERSION_AWG31
+            warnings = _collect_warnings(state)
+            score = _score(state, warnings)
+            profiles.append(
+                _to_profile(proto, state, score, warnings, counts.get(proto, 0))
+            )
+            states[proto] = state
+            warns_by[proto] = warnings
 
-        if not config_text.strip():
+        if not profiles:
             return MaskingResponse(
                 ok=False,
                 server_id=server_id,
@@ -131,36 +164,36 @@ def read_masking(server_id: str) -> MaskingResponse:
                 fallback=fallback,
             )
 
-        state = _build_state(config_text, container=container, config_path=config_path, host=target.host)
-        warnings = _collect_warnings(state)
-        score = _score(state, warnings)
-
         last_rotation_at = record.get("last_masking_rotation_at")
         age_days = _rotation_age_days(last_rotation_at)
         if (
-            score.status in (MASK_STATUS_STRONG, MASK_STATUS_BASIC)
+            "awg2" in states
+            and any(p.protocol == "awg2" and p.score.status in (MASK_STATUS_STRONG, MASK_STATUS_BASIC) for p in profiles)
             and age_days is not None
             and age_days >= ROTATION_REMINDER_DAYS
         ):
-            warnings.append(
-                MaskingWarning(
-                    level="info",
-                    code="rotation_stale",
-                    message=f"Параметры маскировки не менялись {age_days} дн. "
-                    "Периодическая ротация снижает накопление отпечатка у DPI.",
-                )
+            stale = MaskingWarning(
+                level="info",
+                code="rotation_stale",
+                message=f"Маскировку 2.0 не обновляли {age_days} дн. Раз в несколько недель это полезно.",
             )
+            warns_by["awg2"].append(stale)
+            for p in profiles:
+                if p.protocol == "awg2":
+                    p.warnings.append(stale)
 
+        primary_proto = "awg2" if "awg2" in states else profiles[0].protocol
         return MaskingResponse(
             ok=True,
             server_id=server_id,
-            state=state,
-            score=score,
-            warnings=warnings,
+            state=states.get(primary_proto),
+            score=_overall_score(profiles),
+            warnings=warns_by.get(primary_proto, []),
             checked_at=now,
             last_rotation_at=last_rotation_at,
             rotation_age_days=age_days,
             fallback=fallback,
+            profiles=profiles,
         )
     finally:
         ssh.close()
@@ -169,24 +202,48 @@ def read_masking(server_id: str) -> MaskingResponse:
 # --- чтение конфигурации -----------------------------------------------------
 
 
-def _find_awg_container(ssh) -> Optional[str]:
+def classify_awg_container(name: str) -> Optional[str]:
+    """Какой протокол живёт в контейнере. 3.1 никогда не путаем с 2.0."""
+    low = (name or "").strip().lower()
+    if not low or any(m in low for m in _SERVICE_MARKERS):
+        return None
+    if "xray" in low or "utmka" in low:
+        return None
+    if "awg31" in low:
+        return "awg31"
+    if "awg2" in low:
+        return "awg2"
+    if "awg" in low or low.startswith("amnezia-awg"):
+        return "awg2"
+    return None
+
+
+def _docker_names(ssh) -> list[str]:
     out = ssh_exec.run(
         ssh,
         "docker ps -a --format '{{.Names}}' 2>/dev/null || true",
         timeout=20,
     ).stdout
-    names = [line.strip() for line in out.splitlines() if line.strip()]
-    service_markers = ("panel", "web", "db", "dind", "postgres", "redis")
-    candidates = [n for n in names if not any(m in n.lower() for m in service_markers)]
-    # AWG 2.0 приоритетнее legacy.
-    for name in candidates:
-        if "awg2" in name.lower() or "amnezia-awg2" in name.lower():
-            return name
-    for name in candidates:
-        low = name.lower()
-        if "awg" in low or "amnezia" in low:
-            return name
-    return None
+    return [line.strip() for line in out.splitlines() if line.strip()]
+
+
+def _find_protocol_containers(ssh) -> dict[str, str]:
+    names = _docker_names(ssh)
+    name_set = {n.strip() for n in names}
+    found: dict[str, str] = {}
+    for proto, exact in _PREFERRED_CONTAINERS:
+        if exact in name_set:
+            found[proto] = exact
+    for name in names:
+        proto = classify_awg_container(name)
+        if proto and proto not in found:
+            found[proto] = name
+    return found
+
+
+def _find_awg_container(ssh) -> Optional[str]:
+    """Контейнер 2.0 для ротации. 3.1 отсюда не берём — иначе сломаем Header Protection."""
+    return _find_protocol_containers(ssh).get("awg2")
 
 
 def _read_container_config(ssh, container: str) -> tuple[Optional[str], str]:
@@ -373,10 +430,26 @@ def _build_state(
         h4=params.get("H4"),
         h_is_ranges=h_is_ranges,
         i_present=i_present,
+        header_protection=bool(str(params.get("HeaderProtectionKey") or "").strip()),
+        random_trailers=params.get("RandomTrailers"),
+    )
+
+
+def is_awg31_params(params: dict[str, str]) -> bool:
+    """3.1: есть Header Protection или фиксированные H1–H4 = 1,2,3,4."""
+    if str(params.get("HeaderProtectionKey") or "").strip():
+        return True
+    return (
+        str(params.get("H1") or "") == "1"
+        and str(params.get("H2") or "") == "2"
+        and str(params.get("H3") or "") == "3"
+        and str(params.get("H4") or "") == "4"
     )
 
 
 def _detect_version(params: dict[str, str]) -> str:
+    if is_awg31_params(params):
+        return MASK_VERSION_AWG31
     has_s3 = "S3" in params
     has_s4 = "S4" in params
     has_i = any(k in params for k in ("I1", "I2", "I3", "I4", "I5"))
@@ -391,6 +464,9 @@ def _detect_version(params: dict[str, str]) -> str:
 
 
 def _collect_warnings(state: MaskingState) -> list[MaskingWarning]:
+    if state.version == MASK_VERSION_AWG31:
+        return _collect_warnings_31(state)
+
     warnings: list[MaskingWarning] = []
 
     overlap = _h_ranges_overlap(state)
@@ -399,7 +475,7 @@ def _collect_warnings(state: MaskingState) -> list[MaskingWarning]:
             MaskingWarning(
                 level="danger",
                 code="h_overlap",
-                message="Диапазоны H пересекаются — конфиг невалиден, применять нельзя.",
+                message="Конфиг 2.0 повреждён — обновление маскировки заблокировано.",
             )
         )
 
@@ -408,7 +484,7 @@ def _collect_warnings(state: MaskingState) -> list[MaskingWarning]:
             MaskingWarning(
                 level="warning",
                 code="no_s34",
-                message="Нет S3/S4 — это не сильная AWG 2.0. Рекомендуется установка/миграция на AWG 2.0.",
+                message="Это не полноценный AmneziaWG 2.0. Поставьте 2.0 на вкладке «Протоколы».",
             )
         )
     else:
@@ -417,7 +493,7 @@ def _collect_warnings(state: MaskingState) -> list[MaskingWarning]:
                 MaskingWarning(
                     level="warning",
                     code="s34_zero",
-                    message="S3/S4 равны 0 — версия AWG 2.0, но маскировка базовая.",
+                    message="Маскировка 2.0 слабее обычной. Можно обновить кнопкой ниже.",
                 )
             )
         if not state.h_is_ranges and any([state.h1, state.h2, state.h3, state.h4]):
@@ -433,7 +509,7 @@ def _collect_warnings(state: MaskingState) -> list[MaskingWarning]:
     jmax = _to_int(state.jmax)
     if jmin is not None and jmax is not None and jmin > jmax:
         warnings.append(
-            MaskingWarning(level="danger", code="j_order", message="Jmin больше Jmax — некорректные параметры J.")
+            MaskingWarning(level="danger", code="j_order", message="Конфиг 2.0 повреждён — обновление заблокировано.")
         )
     if jmin == 10 and jmax == 50:
         warnings.append(
@@ -475,14 +551,17 @@ def _collect_warnings(state: MaskingState) -> list[MaskingWarning]:
             MaskingWarning(
                 level="danger",
                 code="h_int32",
-                message="H1–H4 выше INT32_MAX (2147483647). Приложение AmneziaVPN на Android это не принимает. "
-                "Примените пресет «Как в Amnezia» — ключи клиентов перевыпустятся сами.",
+                message="Параметры 2.0 не подходят приложению Amnezia. Нажмите «Обновить маскировку 2.0».",
             )
         )
 
     if state.listen_port == DEFAULT_WG_PORT:
         warnings.append(
-            MaskingWarning(level="warning", code="default_port", message="Используется дефолтный WireGuard-порт 51820.")
+            MaskingWarning(
+                level="warning",
+                code="default_port",
+                message="Стоит стандартный порт WireGuard 51820 — операторы его часто режут.",
+            )
         )
     if state.listen_port == AMNEZIA_LEGACY_PORT:
         warnings.append(
@@ -499,7 +578,7 @@ def _collect_warnings(state: MaskingState) -> list[MaskingWarning]:
             MaskingWarning(
                 level="danger",
                 code="static_fallback",
-                message="Параметры совпадают со статическим fallback-профилем — это узнаваемый отпечаток.",
+                message="Маскировка как у учебника — лучше обновить, чтобы сервер не был похож на другие.",
             )
         )
 
@@ -515,10 +594,43 @@ def _collect_warnings(state: MaskingState) -> list[MaskingWarning]:
     return warnings
 
 
+def _collect_warnings_31(state: MaskingState) -> list[MaskingWarning]:
+    warnings: list[MaskingWarning] = []
+    trailers = (state.random_trailers or "").strip().lower()
+    if trailers in ("on", "true", "1"):
+        warnings.append(
+            MaskingWarning(
+                level="danger",
+                code="trailers_on",
+                message="У 3.1 включён лишний параметр (RandomTrailers). Телефон может не подключиться. "
+                "Откройте сервер в панели — она выключит его сама. Ключ — vpn:// в Amnezia VPN 5.0.1.5+.",
+            )
+        )
+    if not state.header_protection:
+        warnings.append(
+            MaskingWarning(
+                level="danger",
+                code="no_header_protection",
+                message="Нет Header Protection — это не полноценный 3.1. Переустановите 3.1 на вкладке «Протоколы».",
+            )
+        )
+    if state.listen_port == DEFAULT_WG_PORT:
+        warnings.append(
+            MaskingWarning(
+                level="warning",
+                code="default_port",
+                message="Стоит стандартный порт WireGuard 51820 — операторы его часто режут.",
+            )
+        )
+    return warnings
+
+
 def _score(state: MaskingState, warnings: list[MaskingWarning]) -> MaskingScore:
     codes = {w.code for w in warnings}
 
     if "h_overlap" in codes or "j_order" in codes or "h_int32" in codes:
+        return MaskingScore(status=MASK_STATUS_INVALID, label=_LABELS[MASK_STATUS_INVALID])
+    if "trailers_on" in codes or "no_header_protection" in codes:
         return MaskingScore(status=MASK_STATUS_INVALID, label=_LABELS[MASK_STATUS_INVALID])
 
     if state.version == MASK_VERSION_UNKNOWN:
@@ -529,6 +641,11 @@ def _score(state: MaskingState, warnings: list[MaskingWarning]) -> MaskingScore:
 
     if state.version == MASK_VERSION_AWG15:
         return MaskingScore(status=MASK_STATUS_WEAK, label=_LABELS[MASK_STATUS_WEAK])
+
+    if state.version == MASK_VERSION_AWG31:
+        if state.header_protection and (state.random_trailers or "off").strip().lower() in ("off", "false", "0", ""):
+            return MaskingScore(status=MASK_STATUS_STRONG, label=_LABELS[MASK_STATUS_STRONG])
+        return MaskingScore(status=MASK_STATUS_BASIC, label=_LABELS[MASK_STATUS_BASIC])
 
     # AWG 2.0
     s3 = _to_int(state.s3) or 0
@@ -632,3 +749,82 @@ def _rotation_age_days(last_rotation_at: Optional[str]) -> Optional[int]:
         parsed = parsed.replace(tzinfo=timezone.utc)
     delta = datetime.now(timezone.utc) - parsed
     return max(0, delta.days)
+
+
+def _client_counts(server_id: str) -> dict[str, int]:
+    counts = {"awg2": 0, "awg31": 0, "awg_legacy": 0}
+    for item in client_store.list_all(server_id):
+        proto = (item.protocol or "awg2").lower()
+        if proto in ("awg", "awg_legacy"):
+            counts["awg2"] += 1
+        elif proto in counts:
+            counts[proto] += 1
+    return counts
+
+
+def _visible_warnings(warnings: list[MaskingWarning]) -> list[MaskingWarning]:
+    hide = {
+        "j_amnezia",
+        "cps_present",
+        "j_range",
+        "s_range",
+        "h_single",
+        "amnezia_legacy_port",
+        "rotation_stale",
+    }
+    return [w for w in warnings if w.code not in hide]
+
+
+def _profile_summary(protocol: str, score: MaskingScore) -> str:
+    if protocol == "awg31":
+        if score.status == MASK_STATUS_INVALID:
+            return "Параметры 3.1 сломаны — телефон может не подключиться."
+        return "Header Protection. Ключ только в Amnezia VPN 5.0.1.5+ через vpn://."
+    if score.status == MASK_STATUS_STRONG:
+        return "Как в приложении AmneziaWG. Цифры вручную лучше не трогать."
+    if score.status == MASK_STATUS_BASIC:
+        return "Работает, но маскировка слабее обычной."
+    if score.status == MASK_STATUS_INVALID:
+        return "Конфиг 2.0 повреждён — обновление маскировки заблокировано."
+    return "Проверьте параметры 2.0."
+
+
+def _to_profile(
+    protocol: str,
+    state: MaskingState,
+    score: MaskingScore,
+    warnings: list[MaskingWarning],
+    clients_total: int,
+) -> MaskingProfile:
+    trailers = (state.random_trailers or "").strip().lower()
+    return MaskingProfile(
+        protocol=protocol,
+        label=_PROFILE_LABELS.get(protocol, protocol),
+        listen_port=state.listen_port,
+        clients_total=clients_total,
+        score=score,
+        summary=_profile_summary(protocol, score),
+        warnings=_visible_warnings(warnings),
+        can_rotate=(
+            protocol == "awg2"
+            and state.version == MASK_VERSION_AWG2
+            and score.status not in (MASK_STATUS_INVALID, MASK_STATUS_UNKNOWN)
+        ),
+        header_protection=state.header_protection if protocol == "awg31" else None,
+        random_trailers_off=(trailers not in ("on", "true", "1")) if protocol == "awg31" else None,
+    )
+
+
+def _overall_score(profiles: list[MaskingProfile]) -> MaskingScore:
+    if not profiles:
+        return MaskingScore(status=MASK_STATUS_UNKNOWN, label=_LABELS[MASK_STATUS_UNKNOWN])
+    rank = {
+        MASK_STATUS_INVALID: 0,
+        MASK_STATUS_UNKNOWN: 1,
+        MASK_STATUS_LEGACY: 2,
+        MASK_STATUS_WEAK: 3,
+        MASK_STATUS_BASIC: 4,
+        MASK_STATUS_STRONG: 5,
+    }
+    worst = min(profiles, key=lambda p: rank.get(p.score.status, 1))
+    return MaskingScore(status=worst.score.status, label=worst.score.label)

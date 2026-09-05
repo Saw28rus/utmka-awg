@@ -8,6 +8,7 @@ from pydantic import BaseModel
 
 # Версии протокола
 MASK_VERSION_AWG2 = "awg2"
+MASK_VERSION_AWG31 = "awg31"
 MASK_VERSION_AWG15 = "awg15"
 MASK_VERSION_LEGACY = "legacy"
 MASK_VERSION_UNKNOWN = "unknown"
@@ -72,11 +73,28 @@ class MaskingState(BaseModel):
     h4: Optional[str] = None
     h_is_ranges: bool = False
     i_present: list[str] = []
+    header_protection: bool = False
+    random_trailers: Optional[str] = None
 
 
 class MaskingScore(BaseModel):
     status: str = MASK_STATUS_UNKNOWN
     label: str = "Неизвестно"
+
+
+class MaskingProfile(BaseModel):
+    """Карточка одного протокола на странице маскировки (2.0 и 3.1 — разные)."""
+
+    protocol: str
+    label: str
+    listen_port: Optional[int] = None
+    clients_total: int = 0
+    score: MaskingScore
+    summary: str = ""
+    warnings: list[MaskingWarning] = []
+    can_rotate: bool = False
+    header_protection: Optional[bool] = None
+    random_trailers_off: Optional[bool] = None
 
 
 class RealityFallback(BaseModel):
@@ -105,6 +123,7 @@ class MaskingResponse(BaseModel):
     last_rotation_at: Optional[str] = None
     rotation_age_days: Optional[int] = None
     fallback: Optional[RealityFallback] = None
+    profiles: list[MaskingProfile] = []
 
 
 # --- M2: генератор / ротация --------------------------------------------------

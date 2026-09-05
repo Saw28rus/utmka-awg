@@ -1507,7 +1507,7 @@ const tabs = computed<DetailTabItem[]>(() => {
     { id: 'protocols', label: 'Протоколы', icon: ShieldCheck },
     { id: 'security', label: 'Безопасность', icon: Shield }
   ]
-  if (hasAwg2.value) {
+  if (hasAwg2.value || hasAwg31.value) {
     base.push({ id: 'masking', label: 'Маскировка', icon: Fingerprint })
   }
   base.push(

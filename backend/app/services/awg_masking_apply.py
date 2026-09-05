@@ -37,6 +37,7 @@ from app.services.awg_masking import (
     STATIC_FALLBACK_H,
     _find_awg_container,
     _read_container_config,
+    is_awg31_params,
     read_masking,
 )
 from app.services.cascade_store import cascade_store
@@ -610,7 +611,7 @@ def preview_rotation(server_id: str, preset_id: str, include_cps: bool = False) 
         container = _find_awg_container(ssh)
         if not container:
             return MaskingPreviewResponse(
-                ok=False, preset=preset_id, error="Контейнер AmneziaWG не найден."
+                ok=False, preset=preset_id, error="Контейнер AmneziaWG 2.0 не найден."
             )
         config_path, config_text = _read_container_config(ssh, container)
         if not config_path or not config_text.strip():
@@ -618,11 +619,17 @@ def preview_rotation(server_id: str, preset_id: str, include_cps: bool = False) 
                 ok=False, preset=preset_id, error="Конфиг AmneziaWG не найден в контейнере."
             )
         info = parse_interface(config_text)
+        if is_awg31_params(info.awg_params):
+            return MaskingPreviewResponse(
+                ok=False,
+                preset=preset_id,
+                error="Это AmneziaWG 3.1. Маскировку 2.0 сюда применять нельзя.",
+            )
         if not (info.awg_params.get("S3") and info.awg_params.get("S4")):
             return MaskingPreviewResponse(
                 ok=False,
                 preset=preset_id,
-                error="Сервер не AWG 2.0 (нет S3/S4) — ротация недоступна. Сначала установите AmneziaWG 2.0.",
+                error="Сервер не AWG 2.0 — ротация недоступна. Сначала установите AmneziaWG 2.0.",
             )
 
         params = generate_params(preset_id, include_cps=include_cps)
@@ -674,7 +681,7 @@ def apply_rotation(
     try:
         container = _find_awg_container(ssh)
         if not container:
-            return MaskingApplyResponse(ok=False, steps=steps, error="Контейнер AmneziaWG не найден.")
+            return MaskingApplyResponse(ok=False, steps=steps, error="Контейнер AmneziaWG 2.0 не найден.")
         config_path, old_text = _read_container_config(ssh, container)
         if not config_path or not old_text.strip():
             return MaskingApplyResponse(ok=False, steps=steps, error="Конфиг AmneziaWG не найден.")
@@ -688,6 +695,12 @@ def apply_rotation(
         if not (old_info.awg_params.get("S3") and old_info.awg_params.get("S4")):
             return MaskingApplyResponse(
                 ok=False, steps=steps, error="Сервер не AWG 2.0 (нет S3/S4) — ротация недоступна."
+            )
+        if is_awg31_params(old_info.awg_params):
+            return MaskingApplyResponse(
+                ok=False,
+                steps=steps,
+                error="Это AmneziaWG 3.1. Маскировку 2.0 сюда применять нельзя — сломается Header Protection.",
             )
         steps.append(MaskingStep(name="Чтение текущего конфига", status="ok", detail=config_path))
 
