@@ -176,3 +176,32 @@ def test_disable_random_trailers_rewrites_on() -> None:
     assert not changed_again
     assert again == out
 
+
+def test_resolve_endpoint_skips_sslip_uses_ip() -> None:
+    from app.services.awg_config import is_magic_dns_host, resolve_endpoint_host
+
+    assert is_magic_dns_host("155.212.246.237.sslip.io")
+    assert is_magic_dns_host("chat.1.2.3.4.nip.io")
+    assert not is_magic_dns_host("vpn.example.com")
+
+    record = {
+        "endpoint_host": None,
+        "panel_ssl": {"status": "active", "domain": "155.212.246.237.sslip.io"},
+    }
+    assert resolve_endpoint_host(record, "155.212.246.237") == "155.212.246.237"
+
+    record["panel_ssl"]["domain"] = "panel.example.com"
+    assert resolve_endpoint_host(record, "155.212.246.237") == "panel.example.com"
+
+    record["endpoint_host"] = "vpn.example.com"
+    assert resolve_endpoint_host(record, "155.212.246.237") == "vpn.example.com"
+
+
+def test_awg_reissue_variant_keeps_31_off_20() -> None:
+    from app.services.awg_transport import awg_reissue_variant
+
+    assert awg_reissue_variant("awg31") == "awg31"
+    assert awg_reissue_variant("awg2") == "awg2"
+    assert awg_reissue_variant("awg") == "awg2"
+    assert awg_reissue_variant("xray") is None
+

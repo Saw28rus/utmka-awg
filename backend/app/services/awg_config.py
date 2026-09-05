@@ -252,18 +252,25 @@ def build_peer_block(public_key: str, preshared_key: Optional[str], client_ip: s
     return "\n".join(lines) + "\n"
 
 
+def is_magic_dns_host(host: str) -> bool:
+    """sslip.io / nip.io — для браузерного HTTPS, не для UDP VPN.
+
+    Мобильные DNS операторов часто не резолвят эти зоны или подменяют их,
+    тогда ключ оживает на Wi‑Fi и молчит в LTE. Явный Endpoint-домен не трогаем.
+    """
+    h = (host or "").strip().lower().rstrip(".")
+    return h.endswith(".sslip.io") or h.endswith(".nip.io") or h.endswith(".xip.io")
+
+
 def resolve_endpoint_host(record: dict, fallback_host: str) -> str:
     """Хост для `[Peer] Endpoint` в клиентском конфиге.
 
     Приоритет того, что увидит клиент в Endpoint:
     1. Явно заданный endpoint-домен (вкладка «Маскировка» → Endpoint-домен).
-    2. Домен HTTPS-панели, если он активен — он уже DNS-проверен на этот сервер,
-       поэтому VPN-порт доступен по тому же адресу. Так пользователю не нужно
-       вводить домен второй раз: задал домен панели → конфиги ведут на домен.
-    3. IP сервера (fallback).
+    2. Настоящий домен HTTPS-панели (не sslip.io/nip.io) — тот же IP, обычный DNS.
+    3. IP сервера (fallback). Так же делает приложение AmneziaVPN.
 
-    Чат-субдомен сюда НЕ берём: он изолирован под мини-апп. Для отдельного
-    VPN-домена есть явное поле Endpoint-домен.
+    Чат-субдомен сюда НЕ берём: он изолирован под мини-апп.
     """
     explicit = (record.get("endpoint_host") or "").strip()
     if explicit:
@@ -271,7 +278,7 @@ def resolve_endpoint_host(record: dict, fallback_host: str) -> str:
     panel_ssl = record.get("panel_ssl") or {}
     if panel_ssl.get("status") == "active":
         domain = (panel_ssl.get("domain") or "").strip()
-        if domain:
+        if domain and not is_magic_dns_host(domain):
             return domain
     return fallback_host
 
