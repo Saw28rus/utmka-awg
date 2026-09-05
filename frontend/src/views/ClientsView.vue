@@ -90,7 +90,10 @@
             :to="{ name: 'client-detail', params: { id: client.id } }"
             class="row-cell server-name"
           >
-            {{ client.server_name || '—' }}
+            <CascadePath
+              :entry="client.server_name"
+              :exit="client.cascade_exit_name"
+            />
           </RouterLink>
           <RouterLink
             :to="{ name: 'client-detail', params: { id: client.id } }"
@@ -170,6 +173,7 @@ import AddClientModal from '@/components/AddClientModal.vue'
 import EditClientLimitsModal, { type ClientLimitsSource } from '@/components/EditClientLimitsModal.vue'
 import ExportClientsModal from '@/components/ExportClientsModal.vue'
 import ImportClientsModal from '@/components/ImportClientsModal.vue'
+import CascadePath from '@/components/CascadePath.vue'
 import EmptyState from '@/components/EmptyState.vue'
 import StatusBadge from '@/components/StatusBadge.vue'
 import {
@@ -188,6 +192,8 @@ type ClientListItem = {
   name: string
   server_id: string
   server_name?: string | null
+  cascade_exit_name?: string | null
+  cascade_active?: boolean
   protocol?: string
   status: string
   client_ip: string
@@ -500,7 +506,7 @@ p {
 .list-head,
 .client-row {
   display: grid;
-  grid-template-columns: minmax(160px, 1.2fr) 72px minmax(100px, 0.9fr) 64px minmax(120px, 1fr) 84px 92px 96px;
+  grid-template-columns: minmax(150px, 1.1fr) 72px minmax(160px, 1.3fr) 64px minmax(110px, 1fr) 84px 92px 96px;
   gap: 14px;
   align-items: center;
   padding: 0 18px;
@@ -508,7 +514,7 @@ p {
 
 .client-list--paid .list-head,
 .client-list--paid .client-row {
-  grid-template-columns: minmax(150px, 1.1fr) 72px minmax(90px, 0.8fr) 64px minmax(110px, 0.9fr) 80px 88px 76px 96px;
+  grid-template-columns: minmax(140px, 1fr) 72px minmax(150px, 1.2fr) 64px minmax(100px, 0.9fr) 80px 88px 76px 96px;
 }
 
 .list-head {
@@ -663,6 +669,7 @@ p {
 .server-name {
   color: var(--color-muted);
   font-size: 13px;
+  min-width: 0;
 }
 
 @media (max-width: 900px) {

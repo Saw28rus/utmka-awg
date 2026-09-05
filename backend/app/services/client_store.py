@@ -21,7 +21,10 @@ class ClientStore:
         write_json(CLIENTS_FILE, self._clients)
 
     def list_all(self, server_id: Optional[str] = None) -> list[ClientListItem]:
-        items = [self._to_list_item(record) for record in self._clients.values()]
+        from app.services.cascade_paths import CascadePathIndex
+
+        index = CascadePathIndex.load()
+        items = [self._to_list_item(record, index) for record in self._clients.values()]
         if server_id:
             items = [item for item in items if item.server_id == server_id]
         return sorted(items, key=lambda item: ((item.server_name or ""), item.name.lower()))
@@ -30,10 +33,12 @@ class ClientStore:
         record = self._clients.get(client_id)
         if not record:
             return None
+        from app.services.cascade_paths import CascadePathIndex
+
         config_text = decrypt(record.get("config_text_enc"))
         vpn_link = decrypt(record.get("vpn_link_enc"))
         return ClientDetail(
-            **self._common_fields(record),
+            **self._common_fields(record, CascadePathIndex.load()),
             config_text=config_text,
             vpn_link=vpn_link,
             qr_awg=build_qr_data_url(config_text) if config_text else None,
@@ -419,7 +424,13 @@ class ClientStore:
 
         return channel_id_for(server_id, protocol)
 
-    def _common_fields(self, record: dict) -> dict:
+    def _common_fields(self, record: dict, index=None) -> dict:
+        from app.services.cascade_paths import CascadePathIndex
+
+        path = index or CascadePathIndex.load()
+        exit_name, cascade_active = path.client_fields(
+            record["server_id"], record.get("protocol", "awg2")
+        )
         return {
             "id": record["id"],
             "name": record["name"],
@@ -446,10 +457,12 @@ class ClientStore:
             "billing_period_months": int(record.get("billing_period_months", 1) or 1),
             "fallback_client_id": record.get("fallback_client_id"),
             "fallback_of_client_id": record.get("fallback_of_client_id"),
+            "cascade_exit_name": exit_name,
+            "cascade_active": cascade_active,
         }
 
-    def _to_list_item(self, record: dict) -> ClientListItem:
-        return ClientListItem(**self._common_fields(record))
+    def _to_list_item(self, record: dict, index=None) -> ClientListItem:
+        return ClientListItem(**self._common_fields(record, index))
 
 
 def _is_expired(expires_at: str) -> bool:

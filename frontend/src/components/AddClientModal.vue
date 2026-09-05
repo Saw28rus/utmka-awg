@@ -27,13 +27,34 @@
             <span>Имя клиента</span>
             <input v-model="form.name" autocomplete="off" placeholder="Например, iPhone Ивана" />
           </label>
-          <label class="field">
-            <span>Сервер</span>
-            <select v-model="form.server_id">
-              <option v-for="server in eligibleServers" :key="server.id" :value="server.id">
-                {{ server.name }} ({{ server.host }}) — {{ serverProtocolSummary(server) }}
-              </option>
-            </select>
+          <label class="field field-wide">
+            <span>Маршрут</span>
+            <div class="server-picker" role="listbox" aria-label="Маршрут">
+              <button
+                v-for="server in eligibleServers"
+                :key="server.id"
+                type="button"
+                class="server-pick"
+                :class="[
+                  `server-pick--${pickerKind(server)}`,
+                  { selected: form.server_id === server.id }
+                ]"
+                role="option"
+                :aria-selected="form.server_id === server.id"
+                @click="form.server_id = server.id"
+              >
+                <span class="pick-path">
+                  <template v-if="pickerKind(server) === 'entry'">
+                    <span class="hop hop-entry">{{ server.name }}</span>
+                    <span class="pick-arrow" aria-hidden="true">→</span>
+                    <span class="hop hop-exit">{{ cascadeExitName(server) }}</span>
+                  </template>
+                  <span v-else class="hop">{{ server.name }}</span>
+                </span>
+                <span class="pick-badge">{{ pickerBadge(server) }}</span>
+                <span class="pick-meta">{{ pickerMeta(server) }}</span>
+              </button>
+            </div>
           </label>
           <label class="field">
             <span>Протокол</span>
@@ -44,7 +65,7 @@
             </select>
           </label>
           <p v-if="awg31ElsewhereHint" class="field-wide hint-text">{{ awg31ElsewhereHint }}</p>
-          <label class="field field-wide">
+          <label class="field">
             <span>Формат подключения</span>
             <select v-model="form.format">
               <option v-for="opt in formatOptions" :key="opt.value" :value="opt.value">
@@ -163,18 +184,20 @@ import { NAlert, NButton, NModal, NSpin, useMessage } from 'naive-ui'
 import { computed, reactive, ref, watch } from 'vue'
 
 import { api } from '@/api/client'
+import {
+  cascadeExitName,
+  pickerKind,
+  sortServersForClientPicker,
+  type CascadeAwareServer
+} from '@/utils/cascadePath'
 
-type ServerListItem = {
-  id: string
-  name: string
+type ServerListItem = CascadeAwareServer & {
   host: string
   awg2_imported: boolean
   protocols: string[]
   client_protocols?: string[]
   endpoint_host?: string | null
   panel_domain?: string | null
-  xray_cascade_active?: boolean
-  xray_cascade_exit_name?: string | null
 }
 
 const PROTOCOL_LABELS: Record<string, string> = {
@@ -221,7 +244,7 @@ const visible = computed({
 })
 
 const eligibleServers = computed(() =>
-  servers.value.filter((server) => protocolIdsFor(server).length > 0)
+  sortServersForClientPicker(servers.value.filter((server) => protocolIdsFor(server).length > 0))
 )
 
 const selectedServer = computed(() => servers.value.find((s) => s.id === form.server_id))
@@ -275,9 +298,22 @@ const serverDomain = computed(() => {
 const showEndpointChoice = computed(() => form.protocol === 'xray' && !!serverDomain.value)
 
 const cascadeHint = computed(() => {
-  if (form.protocol !== 'xray' || !selectedServer.value?.xray_cascade_active) return ''
-  const exit = selectedServer.value.xray_cascade_exit_name || 'exit'
-  return `На этом сервере включён Xray-каскад → ${exit}: достаточно обычного Xray-клиента. РФ-трафик выходит здесь, остальное уходит на exit (правило на сервере).`
+  const s = selectedServer.value
+  if (!s) return ''
+  const exit = cascadeExitName(s)
+  if (form.protocol === 'xray' && s.xray_cascade_active) {
+    return `Xray-каскад ${s.name} → ${exit || 'exit'}: обычный Xray-ключ. РФ-трафик выходит здесь, остальное уходит на выход.`
+  }
+  if ((form.protocol === 'awg2' || form.protocol === 'awg31') && pickerKind(s) === 'entry' && exit) {
+    return `Каскад ${s.name} → ${exit}: ключ ставится на вход, интернет выходит через ${exit}.`
+  }
+  if ((form.protocol === 'awg2' || form.protocol === 'awg31') && pickerKind(s) === 'exit') {
+    const entry = s.awg_cascade_peer_name
+    return entry
+      ? `«${s.name}» — выход каскада. Ключ будет прямым на этот сервер, без входа «${entry}».`
+      : `«${s.name}» — выход каскада. Ключ будет прямым на этот сервер.`
+  }
+  return ''
 })
 
 const showRealityFallback = computed(() => {
@@ -378,6 +414,22 @@ function serverProtocolSummary(server: ServerListItem): string {
   return ids.map((id) => PROTOCOL_LABELS[id] || id).join(', ')
 }
 
+function pickerBadge(server: ServerListItem): string {
+  const kind = pickerKind(server)
+  if (kind === 'entry') return 'каскад'
+  if (kind === 'exit') return 'прямой ключ'
+  return 'сервер'
+}
+
+function pickerMeta(server: ServerListItem): string {
+  const host = server.host || ''
+  const protos = serverProtocolSummary(server)
+  const kind = pickerKind(server)
+  if (kind === 'entry') return `ключ на входе · ${host} · ${protos}`
+  if (kind === 'exit') return `выход каскада · ${host} · ${protos}`
+  return `${host} · ${protos}`
+}
+
 function syncProtocolForServer() {
   const protos = availableProtocols.value
   if (!protos.length) return
@@ -458,7 +510,7 @@ function close() {
 
 <style scoped>
 .client-modal {
-  width: min(640px, calc(100vw - 32px));
+  width: min(720px, calc(100vw - 32px));
 }
 
 .wizard {
@@ -531,6 +583,116 @@ function close() {
   border-radius: 6px;
   background: rgba(255, 255, 255, 0.03);
   color: var(--color-text);
+}
+
+.server-picker {
+  display: grid;
+  gap: 8px;
+}
+
+.server-pick {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-areas:
+    'path badge'
+    'meta meta';
+  gap: 2px 10px;
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid var(--color-border);
+  border-radius: 10px;
+  background: #101214;
+  color: var(--color-text);
+  text-align: left;
+  cursor: pointer;
+  transition:
+    border-color 0.16s ease,
+    background-color 0.16s ease;
+}
+
+.server-pick:hover {
+  border-color: var(--color-border-hover);
+}
+
+.server-pick.selected {
+  border-color: var(--color-accent);
+  background: var(--color-accent-soft);
+}
+
+.server-pick--entry {
+  border-color: var(--color-cascade-border);
+  background: var(--color-cascade-bg);
+}
+
+.server-pick--entry.selected {
+  border-color: var(--color-cascade-border-active);
+  background: var(--color-cascade-bg-active);
+}
+
+.pick-path {
+  grid-area: path;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  font-size: 14px;
+  font-weight: 650;
+}
+
+.hop {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hop-entry {
+  color: var(--color-pill-entry-text);
+}
+
+.hop-exit {
+  color: var(--color-pill-exit-text);
+}
+
+.pick-arrow {
+  flex-shrink: 0;
+  color: var(--color-dim);
+  font-weight: 500;
+}
+
+.pick-badge {
+  grid-area: badge;
+  align-self: center;
+  padding: 2px 8px;
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  color: var(--color-muted);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+
+.server-pick--entry .pick-badge {
+  color: var(--color-pill-entry-text);
+  border-color: var(--color-pill-entry-border);
+  background: var(--color-pill-entry-bg);
+}
+
+.server-pick--exit .pick-badge {
+  color: var(--color-pill-exit-text);
+  border-color: var(--color-pill-exit-border);
+  background: var(--color-pill-exit-bg);
+}
+
+.pick-meta {
+  grid-area: meta;
+  color: var(--color-muted);
+  font-size: 12px;
+  font-weight: 400;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .check-row {

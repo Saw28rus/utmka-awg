@@ -118,6 +118,9 @@ class ClientListItem(BaseModel):
     last_paid_at: Optional[str] = None
     fallback_client_id: Optional[str] = None
     fallback_of_client_id: Optional[str] = None
+    # Активный каскад: ключ на server_name, интернет через cascade_exit_name.
+    cascade_exit_name: Optional[str] = None
+    cascade_active: bool = False
 
 
 class ClientDetail(ClientListItem):

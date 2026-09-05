@@ -57,7 +57,15 @@
           <dl class="kv">
             <div>
               <dt>Сервер</dt>
-              <dd>{{ client.server_name || '—' }}</dd>
+              <dd>
+                <CascadePath
+                  :entry="client.server_name"
+                  :exit="client.cascade_exit_name"
+                />
+                <span v-if="client.cascade_exit_name" class="route-hint">
+                  ключ на входе, интернет через выход
+                </span>
+              </dd>
             </div>
             <div v-if="client.protocol !== 'xray'">
               <dt>IP в сети</dt>
@@ -189,6 +197,7 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
 import { api } from '@/api/client'
+import CascadePath from '@/components/CascadePath.vue'
 import EditClientLimitsModal from '@/components/EditClientLimitsModal.vue'
 import StatusBadge from '@/components/StatusBadge.vue'
 import { useClientTrafficPoll } from '@/composables/useClientTrafficPoll'
@@ -201,6 +210,8 @@ type ClientDetail = {
   name: string
   server_id: string
   server_name?: string | null
+  cascade_exit_name?: string | null
+  cascade_active?: boolean
   protocol?: string
   status: string
   client_ip: string
@@ -660,6 +671,13 @@ dd {
 
 dd.warn {
   color: var(--color-warning);
+}
+
+.route-hint {
+  display: block;
+  margin-top: 4px;
+  color: var(--color-muted);
+  font-size: 12px;
 }
 
 .key {

@@ -43,6 +43,11 @@ class ServerRead(BaseModel):
     # даже если локального Xray на нём нет.
     xray_cascade_active: bool = False
     xray_cascade_exit_name: Optional[str] = None
+    # Активный AWG-каскад: роль узла и имя пары (вход показывает выход).
+    awg_cascade_active: bool = False
+    awg_cascade_role: Optional[str] = None  # entry | exit
+    awg_cascade_exit_name: Optional[str] = None
+    awg_cascade_peer_name: Optional[str] = None
     last_detect_message: Optional[str] = None
     created_at: Optional[str] = None
     former_entry: bool = False
@@ -83,6 +88,10 @@ class ServerMinimal(BaseModel):
     panel_domain: Optional[str] = None
     xray_cascade_active: bool = False
     xray_cascade_exit_name: Optional[str] = None
+    awg_cascade_active: bool = False
+    awg_cascade_role: Optional[str] = None
+    awg_cascade_exit_name: Optional[str] = None
+    awg_cascade_peer_name: Optional[str] = None
 
 
 class DetectCheck(BaseModel):

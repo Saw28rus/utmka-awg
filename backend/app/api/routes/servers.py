@@ -172,33 +172,44 @@ def _attach_xray_cascade(items: list[ServerListItem]) -> None:
             item.xray_cascade_exit_name = info.get("exit_name")
 
 
+def _decorate_servers(items: list[ServerListItem]) -> list[ServerListItem]:
+    from app.services.cascade_paths import apply_awg_cascade_to_servers
+
+    _attach_xray_cascade(items)
+    apply_awg_cascade_to_servers(items)
+    return items
+
+
+def _to_minimal(s: ServerListItem) -> ServerMinimal:
+    return ServerMinimal(
+        id=s.id,
+        name=s.name,
+        host=s.host,
+        status=s.status,
+        protocols=s.protocols,
+        awg2_imported=s.awg2_imported,
+        client_protocols=s.client_protocols,
+        panel_domain=s.panel_domain,
+        xray_cascade_active=s.xray_cascade_active,
+        xray_cascade_exit_name=s.xray_cascade_exit_name,
+        awg_cascade_active=s.awg_cascade_active,
+        awg_cascade_role=s.awg_cascade_role,
+        awg_cascade_exit_name=s.awg_cascade_exit_name,
+        awg_cascade_peer_name=s.awg_cascade_peer_name,
+    )
+
+
 @router.get("/minimal", response_model=list[ServerMinimal])
 async def list_servers_minimal(
     _: CurrentUser = Depends(get_current_user),
 ) -> list[ServerMinimal]:
-    items = server_store.list()
-    _attach_xray_cascade(items)
-    return [
-        ServerMinimal(
-            id=s.id,
-            name=s.name,
-            host=s.host,
-            status=s.status,
-            protocols=s.protocols,
-            awg2_imported=s.awg2_imported,
-            client_protocols=s.client_protocols,
-            panel_domain=s.panel_domain,
-            xray_cascade_active=s.xray_cascade_active,
-            xray_cascade_exit_name=s.xray_cascade_exit_name,
-        )
-        for s in items
-    ]
+    items = _decorate_servers(server_store.list())
+    return [_to_minimal(s) for s in items]
 
 
 @router.get("", response_model=list[ServerListItem])
 async def list_servers(_: CurrentUser = Depends(require_admin)) -> list[ServerListItem]:
-    items = server_store.list()
-    _attach_xray_cascade(items)
+    items = _decorate_servers(server_store.list())
     _schedule_country_backfill()
     return items
 

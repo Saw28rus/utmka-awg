@@ -547,6 +547,12 @@ import { api } from '@/api/client'
 import AppShell from '@/layouts/AppShell.vue'
 import { useAuthStore } from '@/stores/auth'
 import { useChatUnreadStore } from '@/stores/chatUnread'
+import {
+  clientRouteLabel,
+  serverRouteLabel,
+  sortServersForClientPicker,
+  type CascadeAwareServer
+} from '@/utils/cascadePath'
 
 type ChatStatus = {
   enabled: boolean
@@ -596,16 +602,16 @@ type AccountRow = {
   last_login_at: string | null
 }
 
-type ClientOption = { id: string; name: string; server_name?: string | null }
-
-type ServerRow = {
+type ClientOption = {
   id: string
   name: string
-  host?: string | null
+  server_name?: string | null
+  cascade_exit_name?: string | null
+}
+
+type ServerRow = CascadeAwareServer & {
   client_protocols?: string[]
   awg2_imported?: boolean
-  xray_cascade_active?: boolean
-  xray_cascade_exit_name?: string | null
 }
 
 type InvoiceRow = {
@@ -713,9 +719,9 @@ const provFingerprintOptions = [
   { value: 'random', label: 'Случайный' }
 ]
 const provisionServerOptions = computed(() =>
-  provisionServers.value
-    .filter((s) => (s.client_protocols?.length || (s.awg2_imported ? 1 : 0)) > 0)
-    .map((s) => ({ label: s.name, value: s.id }))
+  sortServersForClientPicker(
+    provisionServers.value.filter((s) => (s.client_protocols?.length || (s.awg2_imported ? 1 : 0)) > 0)
+  ).map((s) => ({ label: serverRouteLabel(s), value: s.id }))
 )
 const provisionSelectedServer = computed(() =>
   provisionServers.value.find((s) => s.id === provForm.server_id)
@@ -732,8 +738,21 @@ const provisionProtocolOptions = computed(() => {
 const provIsXray = computed(() => provForm.protocol === 'xray')
 const provCascadeHint = computed(() => {
   const s = provisionSelectedServer.value
-  if (!provIsXray.value || !s?.xray_cascade_active) return ''
-  return `Xray-каскад → ${s.xray_cascade_exit_name || 'exit'}: РФ-трафик выходит на этом сервере, остальное уходит на exit (правило на сервере).`
+  if (!s) return ''
+  if (provIsXray.value && s.xray_cascade_active) {
+    return `Xray-каскад → ${s.xray_cascade_exit_name || 'exit'}: РФ-трафик выходит на этом сервере, остальное уходит на exit (правило на сервере).`
+  }
+  if (
+    (provForm.protocol === 'awg2' || provForm.protocol === 'awg31') &&
+    s.awg_cascade_role === 'entry' &&
+    s.awg_cascade_exit_name
+  ) {
+    return `Каскад ${s.name} → ${s.awg_cascade_exit_name}: ключ ставится на вход, интернет выходит через ${s.awg_cascade_exit_name}.`
+  }
+  if ((provForm.protocol === 'awg2' || provForm.protocol === 'awg31') && s.awg_cascade_role === 'exit') {
+    return `«${s.name}» — выход каскада. Ключ будет прямым на этот сервер.`
+  }
+  return ''
 })
 
 const provShowRealityFallback = computed(() => {
@@ -1181,7 +1200,9 @@ async function loadClientOptions() {
   try {
     const { data } = await api.get<ClientOption[]>('/clients')
     clientOptions.value = data.map((c) => ({
-      label: c.server_name ? `${c.name} · ${c.server_name}` : c.name,
+      label: c.server_name
+        ? `${c.name} · ${clientRouteLabel(c.server_name, c.cascade_exit_name)}`
+        : c.name,
       value: c.id
     }))
   } catch {

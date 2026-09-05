@@ -263,28 +263,9 @@ async def chat_threads(
 async def chat_admin_servers(
     _: CurrentUser = Depends(require_chat_access),
 ) -> list[ServerMinimal]:
-    from app.services.xray_cascade import active_entry_map
+    from app.api.routes.servers import _decorate_servers, _to_minimal
 
-    items = server_store.list()
-    cmap = active_entry_map()
-    out: list[ServerMinimal] = []
-    for s in items:
-        info = cmap.get(s.id)
-        out.append(
-            ServerMinimal(
-                id=s.id,
-                name=s.name,
-                host=s.host,
-                status=s.status,
-                protocols=s.protocols,
-                awg2_imported=s.awg2_imported,
-                client_protocols=s.client_protocols,
-                panel_domain=s.panel_domain,
-                xray_cascade_active=bool(info),
-                xray_cascade_exit_name=(info or {}).get("exit_name"),
-            )
-        )
-    return out
+    return [_to_minimal(s) for s in _decorate_servers(server_store.list())]
 
 
 @router.get("/clients", response_model=list[ClientListItem])
@@ -354,16 +335,9 @@ async def chat_admin_overview(
     _: CurrentUser = Depends(require_chat_access),
 ) -> list[ServerListItem]:
     """Лёгкая сводка по серверам для вкладки «Состояние» операторского чата."""
-    from app.services.xray_cascade import active_entry_map
+    from app.api.routes.servers import _decorate_servers
 
-    items = server_store.list()
-    cmap = active_entry_map()
-    for it in items:
-        info = cmap.get(it.id)
-        if info:
-            it.xray_cascade_active = True
-            it.xray_cascade_exit_name = info.get("exit_name")
-    return items
+    return _decorate_servers(server_store.list())
 
 
 # --- папки диалогов (CH7) ----------------------------------------------------
