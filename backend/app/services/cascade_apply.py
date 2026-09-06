@@ -8,7 +8,10 @@ Policy routing, double-SNAT и структурный fail-closed добавля
 - безопасность: snapshot ip-rule/route/iptables до изменений; авто-rollback при
   любой ошибке шага после изменения трафика или при провале health-check;
 - fail-closed: таблица каскада содержит `default dev utmka-cas0` + `blackhole`,
-  поэтому при падении транзита клиентский трафик дропается, а не утекает direct;
+  плюс постоянный iptables DROP клиентского FORWARD (кроме транзита и split);
+  таблица заполняется до ip rule, без flush при живом правиле;
+- ошибка после смены трафика: блокировка сохраняется (state=apply_failed),
+  полный teardown — только по кнопке «Выключить каскад»;
 - health: из netns entry запрос с source = client addr через каскад обязан
   вернуть публичный IP exit. Иначе откат.
 
@@ -267,7 +270,8 @@ def apply_cascade(entry_id: str, protocols: Optional[list[str]] = None) -> Casca
     if not link:
         raise CascadeError("Сначала проверьте готовность серверов.")
     live = probe_cascade_live(entry_id)
-    adding_to_active = bool(live["active"])
+    stored_state = link.get("state")
+    adding_to_active = bool(live["active"]) and stored_state == "active"
     if adding_to_active:
         cascade_store.upsert_link(entry_id, state="active")
     exit_id = link.get("exit_server_id")
@@ -570,7 +574,68 @@ def apply_cascade(entry_id: str, protocols: Optional[list[str]] = None) -> Casca
 
     except Exception as exc:  # noqa: BLE001
         rb_ok = True
-        for ctx in reversed(applied or legs_ctx[:1]):
+        hold_closed = False
+        if adding_to_active:
+            for ctx in reversed(applied):
+                try:
+                    _teardown(
+                        entry_ssh, ctx["entry_ctn"], exit_ssh, ctx["exit_ctn"],
+                        ctx["client_subnet"], ctx["profile"],
+                        ctx["exit_ctn_ip"], ctx["entry_ctn_ip"],
+                        ctx["entry_public_ip"], ctx["exit_public_ip"],
+                        protocol=ctx["protocol"],
+                    )
+                except Exception:  # noqa: BLE001
+                    rb_ok = False
+            state = "active" if rb_ok else "rollback_failed"
+            steps.append(CascadeStep(
+                name="Откат нового протокола",
+                status="ok" if rb_ok else "failed",
+                detail="Рабочий каскад не выключали.",
+            ))
+            cascade_store.upsert_link(
+                entry_id, state=state,
+                message=f"Новый протокол не включён, текущий каскад на месте: {exc}",
+            )
+            msg = str(exc) if isinstance(exc, CascadeError) else f"Ошибка apply: {exc}"
+            return CascadeApplyResult(
+                ok=False, state=state,
+                entry_server_id=entry_id, exit_server_id=exit_id,
+                egress_ip=link.get("egress_ip"), expected_exit_ip=primary.get("exit_public_ip"),
+                transit_subnet=primary["profile"].subnet,
+                transit_port=primary["profile"].transit_port,
+                steps=steps, message=msg,
+            )
+        if applied:
+            for ctx in reversed(applied):
+                try:
+                    _hold_failclosed(entry_ssh, ctx["entry_ctn"], ctx["client_subnet"], ctx["profile"])
+                    hold_closed = True
+                except Exception:  # noqa: BLE001
+                    rb_ok = False
+            state = "apply_failed"
+            steps.append(CascadeStep(
+                name="Прямой выход закрыт",
+                status="ok" if hold_closed else "failed",
+                detail="Каскад не подтверждён. «Выключить каскад» вернёт выход через вход.",
+            ))
+            cascade_store.upsert_link(
+                entry_id, state=state, egress_ip=None,
+                message=(
+                    f"Каскад не подтверждён, прямой выход закрыт. "
+                    f"Выключите каскад, чтобы снова выходить через вход. {exc}"
+                ),
+            )
+            msg = str(exc) if isinstance(exc, CascadeError) else f"Ошибка apply: {exc}"
+            return CascadeApplyResult(
+                ok=False, state=state,
+                entry_server_id=entry_id, exit_server_id=exit_id,
+                egress_ip=None, expected_exit_ip=primary.get("exit_public_ip"),
+                transit_subnet=primary["profile"].subnet,
+                transit_port=primary["profile"].transit_port,
+                steps=steps, message=msg,
+            )
+        for ctx in reversed(legs_ctx[:1]):
             try:
                 _teardown(
                     entry_ssh, ctx["entry_ctn"], exit_ssh, ctx["exit_ctn"],
@@ -737,6 +802,19 @@ echo OK_SOCAT
 """
 
 
+def _host_iface_detect(via_ip: str, ctn_ip: str) -> str:
+    """WAN к публичному IP и docker-мост к контейнеру — не зашитые eth0/amn0."""
+    via = shlex.quote(via_ip or "1.1.1.1")
+    ctn = shlex.quote(ctn_ip or "172.29.172.1")
+    return f"""
+WAN=$(ip route get {via} 2>/dev/null | awk '{{for(i=1;i<=NF;i++) if($i=="dev"){{print $(i+1); exit}}}}')
+[ -n "$WAN" ] || WAN=$(ip route show default 2>/dev/null | awk '/default/{{print $5; exit}}')
+[ -n "$WAN" ] || WAN=eth0
+AMN=$(ip route get {ctn} 2>/dev/null | awk '{{for(i=1;i<=NF;i++) if($i=="dev"){{print $(i+1); exit}}}}')
+[ -n "$AMN" ] || AMN=amn0
+"""
+
+
 def _entry_host_udp_nat(
     ctn_ip: str,
     public_ip: str,
@@ -749,6 +827,7 @@ def _entry_host_udp_nat(
 
     Docker MASQUERADE не создаёт обратный путь; raw PREROUTING DROP режет DNAT
     на IP контейнера. Фиксированный порт + явные правила.
+    Интерфейсы: WAN по маршруту к exit, AMN по маршруту к контейнеру.
     """
     hp = str(int(host_port))
     ep = str(int(exit_port))
@@ -756,20 +835,49 @@ def _entry_host_udp_nat(
     pub = shlex.quote(public_ip)
     xip = shlex.quote(exit_ip)
     cm = entry_udp_comment(slot)
+    detect = _host_iface_detect(exit_ip, ctn_ip)
     return f"""
 set -e
+{detect}
 sysctl -w net.ipv4.ip_forward=1 >/dev/null 2>&1 || true
-iptables -t nat -D POSTROUTING -s {ctn} -p udp -o eth0 -d {xip} --dport {ep} -m comment --comment {cm}-snat -j SNAT --to-source {pub}:{hp} 2>/dev/null || true
-iptables -t nat -I POSTROUTING 1 -s {ctn} -p udp -o eth0 -d {xip} --dport {ep} -m comment --comment {cm}-snat -j SNAT --to-source {pub}:{hp}
-iptables -t nat -D PREROUTING -i eth0 -p udp -d {pub} --dport {hp} -m comment --comment {cm}-dnat -j DNAT --to-destination {ctn}:{hp} 2>/dev/null || true
-iptables -t nat -I PREROUTING 2 -i eth0 -p udp -d {pub} --dport {hp} -m comment --comment {cm}-dnat -j DNAT --to-destination {ctn}:{hp}
-iptables -t raw -D PREROUTING -i eth0 -p udp -d {ctn} --dport {hp} -m comment --comment {cm}-raw -j ACCEPT 2>/dev/null || true
-iptables -t raw -I PREROUTING 1 -i eth0 -p udp -d {ctn} --dport {hp} -m comment --comment {cm}-raw -j ACCEPT
-iptables -D FORWARD -i eth0 -o amn0 -p udp -d {ctn} --dport {hp} -m comment --comment {cm}-fwd-in -j ACCEPT 2>/dev/null || true
-iptables -I FORWARD 1 -i eth0 -o amn0 -p udp -d {ctn} --dport {hp} -m comment --comment {cm}-fwd-in -j ACCEPT
-iptables -D FORWARD -i amn0 -o eth0 -p udp -s {ctn} --sport {hp} -m comment --comment {cm}-fwd-out -j ACCEPT 2>/dev/null || true
-iptables -I FORWARD 1 -i amn0 -o eth0 -p udp -s {ctn} --sport {hp} -m comment --comment {cm}-fwd-out -j ACCEPT
+iptables -t nat -D POSTROUTING -s {ctn} -p udp -o "$WAN" -d {xip} --dport {ep} -m comment --comment {cm}-snat -j SNAT --to-source {pub}:{hp} 2>/dev/null || true
+iptables -t nat -I POSTROUTING 1 -s {ctn} -p udp -o "$WAN" -d {xip} --dport {ep} -m comment --comment {cm}-snat -j SNAT --to-source {pub}:{hp}
+iptables -t nat -D PREROUTING -i "$WAN" -p udp -d {pub} --dport {hp} -m comment --comment {cm}-dnat -j DNAT --to-destination {ctn}:{hp} 2>/dev/null || true
+iptables -t nat -I PREROUTING 2 -i "$WAN" -p udp -d {pub} --dport {hp} -m comment --comment {cm}-dnat -j DNAT --to-destination {ctn}:{hp}
+iptables -t raw -D PREROUTING -i "$WAN" -p udp -d {ctn} --dport {hp} -m comment --comment {cm}-raw -j ACCEPT 2>/dev/null || true
+iptables -t raw -I PREROUTING 1 -i "$WAN" -p udp -d {ctn} --dport {hp} -m comment --comment {cm}-raw -j ACCEPT
+iptables -D FORWARD -i "$WAN" -o "$AMN" -p udp -d {ctn} --dport {hp} -m comment --comment {cm}-fwd-in -j ACCEPT 2>/dev/null || true
+iptables -I FORWARD 1 -i "$WAN" -o "$AMN" -p udp -d {ctn} --dport {hp} -m comment --comment {cm}-fwd-in -j ACCEPT
+iptables -D FORWARD -i "$AMN" -o "$WAN" -p udp -s {ctn} --sport {hp} -m comment --comment {cm}-fwd-out -j ACCEPT 2>/dev/null || true
+iptables -I FORWARD 1 -i "$AMN" -o "$WAN" -p udp -s {ctn} --sport {hp} -m comment --comment {cm}-fwd-out -j ACCEPT
 echo OK_ENTRY_HOST_NAT
+"""
+
+
+def _failclosed_up_script(client_subnet: str, iface: str, table: str) -> str:
+    """Постоянный DROP клиентского FORWARD, кроме транзита и split-mark.
+
+    Ставится ДО перестройки маршрутов: пустая таблица больше не даёт выход в WAN.
+    """
+    cs = shlex.quote(client_subnet)
+    return f"""
+iptables -C FORWARD -s {cs} -o {iface} -m comment --comment utmka-fc-transit -j ACCEPT 2>/dev/null \\
+  || iptables -I FORWARD 1 -s {cs} -o {iface} -m comment --comment utmka-fc-transit -j ACCEPT
+iptables -C FORWARD -s {cs} -m mark --mark 0x1 -m comment --comment utmka-fc-split -j ACCEPT 2>/dev/null \\
+  || iptables -I FORWARD 1 -s {cs} -m mark --mark 0x1 -m comment --comment utmka-fc-split -j ACCEPT
+iptables -C FORWARD -s {cs} -m comment --comment utmka-failclosed -j DROP 2>/dev/null \\
+  || iptables -A FORWARD -s {cs} -m comment --comment utmka-failclosed -j DROP
+ip route replace default dev {iface} table {table} 2>/dev/null || true
+ip route replace blackhole default metric 100 table {table} 2>/dev/null || true
+"""
+
+
+def _failclosed_down_script(client_subnet: str, iface: str) -> str:
+    cs = shlex.quote(client_subnet)
+    return f"""
+iptables -D FORWARD -s {cs} -o {iface} -m comment --comment utmka-fc-transit -j ACCEPT 2>/dev/null || true
+iptables -D FORWARD -s {cs} -m mark --mark 0x1 -m comment --comment utmka-fc-split -j ACCEPT 2>/dev/null || true
+iptables -D FORWARD -s {cs} -m comment --comment utmka-failclosed -j DROP 2>/dev/null || true
 """
 
 
@@ -780,20 +888,24 @@ def _entry_up_script(client_subnet: str, profile: TransitProfile) -> str:
     table = profile.table
     prio = profile.rule_priority
     entry_ip = profile.entry_ip
+    hold = _failclosed_up_script(client_subnet, iface, table)
     return f"""
 set -e
+# Fail-closed ДО перестройки туннеля: клиентский FORWARD в WAN закрыт.
+{hold}
 awg-quick down {conf} 2>/dev/null || true
 ip link del {iface} 2>/dev/null || true
 awg-quick up {conf}
-ip rule del from {cs} lookup {table} 2>/dev/null || true
-ip rule add from {cs} lookup {table} priority {prio}
-ip route flush table {table} 2>/dev/null || true
-ip route add default dev {iface} table {table}
-ip route add blackhole default metric 100 table {table}
+# Таблицу заполняем, не снимая rule (replace, не flush). Затем rule, если его ещё нет.
+ip route replace default dev {iface} table {table}
+ip route replace blackhole default metric 100 table {table}
+ip rule show | grep -q "from {cs} lookup {table}" \\
+  || ip rule add from {cs} lookup {table} priority {prio}
 iptables -t nat -D POSTROUTING -s {cs} -o {iface} -j SNAT --to-source {entry_ip} 2>/dev/null || true
 iptables -t nat -A POSTROUTING -s {cs} -o {iface} -j SNAT --to-source {entry_ip}
 iptables -D FORWARD -s {cs} -o {iface} -j ACCEPT 2>/dev/null || true
-iptables -A FORWARD -s {cs} -o {iface} -j ACCEPT
+iptables -C FORWARD -s {cs} -o {iface} -m comment --comment utmka-fc-transit -j ACCEPT 2>/dev/null \\
+  || iptables -A FORWARD -s {cs} -o {iface} -j ACCEPT
 iptables -D FORWARD -d {cs} -i {iface} -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || true
 iptables -A FORWARD -d {cs} -i {iface} -m state --state RELATED,ESTABLISHED -j ACCEPT
 # MTU/MSS fix: транзит {iface} имеет MTU {MTU}. Клиентский интерфейс (awg0) по
@@ -803,10 +915,38 @@ iptables -A FORWARD -d {cs} -i {iface} -m state --state RELATED,ESTABLISHED -j A
 # к PMTU, чтобы сайты грузились даже когда крупные UDP теряются.
 CLIENT_IF=$(ip route show {cs} 2>/dev/null | awk '{{print $3; exit}}')
 [ -n "$CLIENT_IF" ] && ip link set dev "$CLIENT_IF" mtu {MTU} 2>/dev/null || true
-iptables -t mangle -C FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null \
+iptables -t mangle -C FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null \\
   || iptables -t mangle -A FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
 echo OK_ENTRY
 """
+
+
+def _hold_failclosed(entry_ssh, entry_ctn: str, client_subnet: str, profile: TransitProfile) -> None:
+    script = "set +e\n" + _failclosed_up_script(client_subnet, profile.iface, profile.table) + "echo HOLD_OK\n"
+    run_container_script(entry_ssh, entry_ctn, script, timeout=30)
+
+
+def reinforce_failclosed_for_link(entry_id: str) -> None:
+    """На уже живом каскаде дописать fail-closed, не переподнимая транзит."""
+    from app.services.cascade_protocol import slot_for_protocol
+    from app.services.transit_allocator import profile_for_slot
+
+    link = cascade_store.get_link(entry_id) or {}
+    legs = link.get("legs") or {}
+    ssh = _connect(entry_id)
+    try:
+        for proto in link_protocols(link):
+            data = legs.get(proto) or {}
+            rec = server_store.get_record(entry_id) or {}
+            ctn = data.get("container") or _amnezia_container(rec, proto)
+            subnet = data.get("client_subnet") or link.get("client_subnet")
+            if not ctn or not subnet:
+                continue
+            slot = slot_for_protocol(link, proto)
+            profile = profile_for_slot(slot if slot is not None else 0)
+            _hold_failclosed(ssh, ctn, subnet, profile)
+    finally:
+        ssh.close()
 
 
 def _health_egress(entry_ssh, entry_ctn, server_addr: str, iface: str) -> tuple[Optional[str], bool]:
@@ -854,7 +994,9 @@ def _teardown(
     entry_ip = profile.entry_ip
     subnet = profile.subnet
     p = str(int(port))
+    fc_down = _failclosed_down_script(client_subnet or "10.8.1.0/24", iface)
     entry_down = f"""
+{fc_down}
 ip rule del from {cs} lookup {table} 2>/dev/null || true
 ip route flush table {table} 2>/dev/null || true
 iptables -t nat -D POSTROUTING -s {cs} -o {iface} -j SNAT --to-source {entry_ip} 2>/dev/null || true
@@ -885,12 +1027,14 @@ echo DOWN_SOCAT
         pub = shlex.quote(entry_public_ip)
         xip = shlex.quote(exit_public_ip or "0.0.0.0")
         cm = entry_udp_comment(profile.slot)
+        detect = _host_iface_detect(exit_public_ip or "1.1.1.1", entry_ctn_ip)
         entry_host_down = f"""
-iptables -t nat -D POSTROUTING -s {ctn} -p udp -o eth0 -d {xip} --dport {p} -m comment --comment {cm}-snat -j SNAT --to-source {pub}:{hp} 2>/dev/null || true
-iptables -t nat -D PREROUTING -i eth0 -p udp -d {pub} --dport {hp} -m comment --comment {cm}-dnat -j DNAT --to-destination {ctn}:{hp} 2>/dev/null || true
-iptables -t raw -D PREROUTING -i eth0 -p udp -d {ctn} --dport {hp} -m comment --comment {cm}-raw -j ACCEPT 2>/dev/null || true
-iptables -D FORWARD -i eth0 -o amn0 -p udp -d {ctn} --dport {hp} -m comment --comment {cm}-fwd-in -j ACCEPT 2>/dev/null || true
-iptables -D FORWARD -i amn0 -o eth0 -p udp -s {ctn} --sport {hp} -m comment --comment {cm}-fwd-out -j ACCEPT 2>/dev/null || true
+{detect}
+iptables -t nat -D POSTROUTING -s {ctn} -p udp -o "$WAN" -d {xip} --dport {p} -m comment --comment {cm}-snat -j SNAT --to-source {pub}:{hp} 2>/dev/null || true
+iptables -t nat -D PREROUTING -i "$WAN" -p udp -d {pub} --dport {hp} -m comment --comment {cm}-dnat -j DNAT --to-destination {ctn}:{hp} 2>/dev/null || true
+iptables -t raw -D PREROUTING -i "$WAN" -p udp -d {ctn} --dport {hp} -m comment --comment {cm}-raw -j ACCEPT 2>/dev/null || true
+iptables -D FORWARD -i "$WAN" -o "$AMN" -p udp -d {ctn} --dport {hp} -m comment --comment {cm}-fwd-in -j ACCEPT 2>/dev/null || true
+iptables -D FORWARD -i "$AMN" -o "$WAN" -p udp -s {ctn} --sport {hp} -m comment --comment {cm}-fwd-out -j ACCEPT 2>/dev/null || true
 echo DOWN_ENTRY_HOST
 """
     errors = []

@@ -230,6 +230,8 @@ def reconcile_cascade_state(entry_server_id: str, link: dict) -> tuple[str, bool
         return stored, False
 
     live = probe_cascade_live(entry_server_id)
+    if stored == "apply_failed":
+        return stored, False
     if live["active"]:
         if stored != "active":
             cascade_store.upsert_link(
@@ -280,8 +282,16 @@ def reconcile_all_cascades() -> dict:
         checked += 1
         live = probe_cascade_live(entry_id)
         if live["active"]:
+            if state == "apply_failed":
+                continue
             if state != "active":
                 cascade_store.upsert_link(entry_id, state="active", message="Каскад работает на сервере.")
+            try:
+                from app.services.cascade_apply import reinforce_failclosed_for_link
+
+                reinforce_failclosed_for_link(entry_id)
+            except Exception:  # noqa: BLE001
+                pass
             continue
 
         # Каскад должен работать, но не обнаружен. Узел может быть и недоступен —

@@ -21,6 +21,7 @@ Fail-closed сохраняется: только не-RU трафик завис
 from __future__ import annotations
 
 import base64
+import ipaddress
 import shlex
 from typing import Optional
 
@@ -45,6 +46,14 @@ class SplitError(Exception):
 # ---------------------------------------------------------------------------
 # helpers
 # ---------------------------------------------------------------------------
+
+
+def probe_src_from_subnet(subnet: str) -> Optional[str]:
+    try:
+        net = ipaddress.ip_network(subnet, strict=False)
+        return str(next(net.hosts()))
+    except (ValueError, StopIteration):
+        return None
 
 
 def netns_pid(ssh, container: str) -> Optional[int]:
@@ -188,16 +197,17 @@ echo SPLIT_DOWN
     run_script(ssh, script, timeout=60)
 
 
-def split_health(ssh, pid: int) -> dict:
-    """Структурная проверка: RU-IP в set (direct), зарубежный — нет (каскад)."""
+def split_health(ssh, pid: int, client_subnet: str = "10.8.1.0/24") -> dict:
+    """Структурная проверка: RU-IP в set (direct), зарубежный — нет, rule и mangle на месте."""
     nse = _nse(pid)
+    cs = shlex.quote(client_subnet)
     script = f"""
 RU=$({nse} ipset test {SET_NAME} 77.88.8.8 2>&1 | grep -c 'is in set' || true)
 RU2=$({nse} ipset test {SET_NAME} 87.240.190.78 2>&1 | grep -c 'is in set' || true)
 FOREIGN=$({nse} ipset test {SET_NAME} 8.8.8.8 2>&1 | grep -c 'is in set' || true)
 RULE=$({nse} ip rule show 2>/dev/null | grep -c 'fwmark {MARK} ' || true)
-MANGLE=$({nse} iptables -t mangle -C PREROUTING -m set --match-set {SET_NAME} dst -j MARK --set-mark {MARK} 2>/dev/null && echo 1 || echo 0)
-echo "ru=$RU ru2=$RU2 foreign=$FOREIGN rule=$RULE"
+MANGLE=$({nse} iptables -t mangle -C PREROUTING -s {cs} -m set --match-set {SET_NAME} dst -j MARK --set-mark {MARK} 2>/dev/null && echo 1 || echo 0)
+echo "ru=$RU ru2=$RU2 foreign=$FOREIGN rule=$RULE mangle=$MANGLE"
 """
     res = run_script(ssh, script, timeout=30)
     vals: dict[str, int] = {}
@@ -211,12 +221,74 @@ echo "ru=$RU ru2=$RU2 foreign=$FOREIGN rule=$RULE"
     ru_ok = bool(vals.get("ru") or vals.get("ru2"))
     foreign_excluded = not vals.get("foreign")
     rule_ok = bool(vals.get("rule"))
+    mangle_ok = bool(vals.get("mangle"))
+    return evaluate_split_health(
+        ru_in_set=ru_ok,
+        foreign_excluded=foreign_excluded,
+        rule_present=rule_ok,
+        mangle_present=mangle_ok,
+    )
+
+
+def evaluate_split_health(
+    *,
+    ru_in_set: bool,
+    foreign_excluded: bool,
+    rule_present: bool,
+    mangle_present: bool,
+    ru_egress: Optional[str] = None,
+    foreign_egress: Optional[str] = None,
+    entry_ip: Optional[str] = None,
+    exit_ip: Optional[str] = None,
+) -> dict:
+    """Собрать вердикт: структурные проверки обязательны; несовпадение egress — провал."""
+    structural = bool(ru_in_set and foreign_excluded and rule_present and mangle_present)
+    egress_confirmed = False
+    egress_mismatch = False
+    if ru_egress and foreign_egress and entry_ip and exit_ip:
+        ru_match = ru_egress.strip() == entry_ip.strip()
+        foreign_match = foreign_egress.strip() == exit_ip.strip()
+        if ru_match and foreign_match:
+            egress_confirmed = True
+        else:
+            egress_mismatch = True
     return {
-        "ru_in_set": ru_ok,
+        "ru_in_set": ru_in_set,
         "foreign_excluded": foreign_excluded,
-        "rule_present": rule_ok,
-        "ok": ru_ok and foreign_excluded and rule_ok,
+        "rule_present": rule_present,
+        "mangle_present": mangle_present,
+        "egress_confirmed": egress_confirmed,
+        "egress_mismatch": egress_mismatch,
+        "ru_egress": ru_egress,
+        "foreign_egress": foreign_egress,
+        "ok": structural and not egress_mismatch,
     }
+
+
+def merge_split_health(items: list[dict]) -> dict:
+    if not items:
+        return evaluate_split_health(
+            ru_in_set=False,
+            foreign_excluded=False,
+            rule_present=False,
+            mangle_present=False,
+        )
+    merged = evaluate_split_health(
+        ru_in_set=all(h.get("ru_in_set") for h in items),
+        foreign_excluded=all(h.get("foreign_excluded") for h in items),
+        rule_present=all(h.get("rule_present") for h in items),
+        mangle_present=all(bool(h.get("mangle_present", True)) for h in items),
+        ru_egress=items[-1].get("ru_egress"),
+        foreign_egress=items[-1].get("foreign_egress"),
+        entry_ip=items[-1].get("entry_ip"),
+        exit_ip=items[-1].get("exit_ip"),
+    )
+    if any(h.get("egress_mismatch") for h in items):
+        merged["egress_mismatch"] = True
+        merged["ok"] = False
+    if all(h.get("egress_confirmed") for h in items):
+        merged["egress_confirmed"] = True
+    return merged
 
 
 def egress_probe(ssh, pid: int, client_addr: str) -> dict:

@@ -38,6 +38,7 @@ class ServerStore:
             "ssh_username": payload.ssh_username,
             "ssh_password_enc": encrypt(payload.ssh_password),
             "ssh_key_enc": encrypt(payload.ssh_key),
+            "ssh_hostkey_fp": (payload.ssh_hostkey_fp or "").strip() or None,
             "status": "online" if branch in {"import", "install"} else "unknown",
             "awg2_imported": branch == "import",
             "notes": payload.notes,
@@ -101,6 +102,49 @@ class ServerStore:
             return
         record.update(fields)
         self._persist()
+
+    def hostkey_fp_for(self, host: str, port: int) -> Optional[str]:
+        fps: list[str] = []
+        for record in self._servers.values():
+            if record.get("host") != host:
+                continue
+            if int(record.get("ssh_port") or 22) != int(port):
+                continue
+            fp = (record.get("ssh_hostkey_fp") or "").strip()
+            if fp:
+                fps.append(fp)
+        if not fps:
+            return None
+        return fps[0]
+
+    def remember_hostkey_fp(self, host: str, port: int, fingerprint: str) -> None:
+        fp = (fingerprint or "").strip()
+        if not fp:
+            return
+        changed = False
+        for record in self._servers.values():
+            if record.get("host") != host:
+                continue
+            if int(record.get("ssh_port") or 22) != int(port):
+                continue
+            if record.get("ssh_hostkey_fp"):
+                continue
+            record["ssh_hostkey_fp"] = fp
+            changed = True
+        if changed:
+            self._persist()
+
+    def set_hostkey_fp(self, server_id: str, fingerprint: Optional[str]) -> Optional[dict]:
+        record = self._servers.get(server_id)
+        if not record:
+            return None
+        fp = (fingerprint or "").strip()
+        if fp:
+            record["ssh_hostkey_fp"] = fp
+        else:
+            record.pop("ssh_hostkey_fp", None)
+        self._persist()
+        return record
 
     def delete(self, server_id: str) -> bool:
         if server_id in self._servers:
@@ -188,6 +232,7 @@ class ServerStore:
             last_detect_message=record.get("last_detect_message"),
             created_at=record.get("created_at"),
             former_entry=record.get("former_entry", False),
+            ssh_hostkey_fp=record.get("ssh_hostkey_fp"),
         )
 
     def _to_list_item(self, record: dict) -> ServerListItem:

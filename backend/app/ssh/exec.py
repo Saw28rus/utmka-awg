@@ -1,3 +1,5 @@
+import base64
+import hashlib
 import io
 import time
 from dataclasses import dataclass
@@ -10,11 +12,78 @@ class SSHTimeoutError(TimeoutError):
     """SSH-команда не завершилась за отведённое время (узел завис / связь оборвалась)."""
 
 
+class HostKeyMismatchError(Exception):
+    """Ключ SSH-сервера не совпал с сохранённым отпечатком."""
+
+    def __init__(self, host: str, expected: str, seen: str):
+        self.host = host
+        self.expected = expected
+        self.seen = seen
+        super().__init__(
+            f"SSH-ключ сервера {host} изменился. Было {expected}, стало {seen}. "
+            "Это может быть переустановка ОС — или чужой узел. "
+            "Подтвердите новый ключ на вкладке «Безопасность»."
+        )
+
+
 @dataclass
 class CommandResult:
     exit_code: int
     stdout: str
     stderr: str
+
+
+def key_fingerprint(key: paramiko.PKey) -> str:
+    digest = hashlib.sha256(key.asbytes()).digest()
+    b64 = base64.b64encode(digest).decode("ascii").rstrip("=")
+    return f"SHA256:{b64}"
+
+
+def fingerprints_equal(left: Optional[str], right: Optional[str]) -> bool:
+    if not left or not right:
+        return False
+    return left.strip() == right.strip()
+
+
+def seen_fingerprint(client: paramiko.SSHClient) -> Optional[str]:
+    stored = getattr(client, "_utmka_hostkey_fp", None)
+    if stored:
+        return stored
+    transport = client.get_transport()
+    if transport is None:
+        return None
+    key = transport.get_remote_server_key()
+    return key_fingerprint(key) if key else None
+
+
+class _FingerprintPolicy(paramiko.MissingHostKeyPolicy):
+    def __init__(self, expected: Optional[str] = None) -> None:
+        self.expected = expected
+        self.seen: Optional[str] = None
+
+    def missing_host_key(self, client, hostname, key) -> None:  # noqa: ANN001
+        self.seen = key_fingerprint(key)
+        if self.expected and not fingerprints_equal(self.expected, self.seen):
+            raise HostKeyMismatchError(hostname, self.expected, self.seen)
+        client.get_host_keys().add(hostname, key.get_name(), key)
+
+
+def _lookup_stored_fp(host: str, port: int) -> Optional[str]:
+    try:
+        from app.services.server_store import server_store
+
+        return server_store.hostkey_fp_for(host, port)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _remember_stored_fp(host: str, port: int, fingerprint: str) -> None:
+    try:
+        from app.services.server_store import server_store
+
+        server_store.remember_hostkey_fp(host, port, fingerprint)
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def load_private_key(raw_key: str):
@@ -41,22 +110,36 @@ def connect(
     password: Optional[str] = None,
     key: Optional[str] = None,
     timeout: int = 10,
+    expected_fingerprint: Optional[str] = None,
 ) -> paramiko.SSHClient:
+    expected = expected_fingerprint if expected_fingerprint else _lookup_stored_fp(host, port)
+    policy = _FingerprintPolicy(expected)
     client = paramiko.SSHClient()
-    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    client.set_missing_host_key_policy(policy)
     pkey = load_private_key(key) if key else None
-    client.connect(
-        hostname=host,
-        port=port,
-        username=username,
-        password=password or None,
-        pkey=pkey,
-        timeout=timeout,
-        banner_timeout=timeout,
-        auth_timeout=timeout,
-        look_for_keys=False,
-        allow_agent=False,
-    )
+    try:
+        client.connect(
+            hostname=host,
+            port=port,
+            username=username,
+            password=password or None,
+            pkey=pkey,
+            timeout=timeout,
+            banner_timeout=timeout,
+            auth_timeout=timeout,
+            look_for_keys=False,
+            allow_agent=False,
+        )
+    except HostKeyMismatchError:
+        try:
+            client.close()
+        except Exception:  # noqa: BLE001
+            pass
+        raise
+    seen = policy.seen or seen_fingerprint(client)
+    if seen:
+        client._utmka_hostkey_fp = seen  # noqa: SLF001
+        _remember_stored_fp(host, port, seen)
     return client
 
 

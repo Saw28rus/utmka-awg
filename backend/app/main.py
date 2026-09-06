@@ -1,13 +1,15 @@
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from app.api.router import api_router
 from app.core.config import settings
 from app.db.bootstrap import bootstrap_database
 from app.db.session import AsyncSessionLocal, engine
 from app.services.panel_update import PANEL_VERSION_FILE
+from app.ssh.exec import HostKeyMismatchError
 from app.workers.scheduler import shutdown_scheduler, start_scheduler
 
 
@@ -51,6 +53,19 @@ def create_app() -> FastAPI:
     )
 
     app.include_router(api_router, prefix=settings.api_v1_prefix)
+
+    @app.exception_handler(HostKeyMismatchError)
+    async def ssh_hostkey_mismatch(_request: Request, exc: HostKeyMismatchError) -> JSONResponse:
+        return JSONResponse(
+            status_code=409,
+            content={
+                "detail": str(exc),
+                "code": "ssh_hostkey_mismatch",
+                "host": exc.host,
+                "expected": exc.expected,
+                "seen": exc.seen,
+            },
+        )
 
     @app.get("/")
     async def root() -> dict[str, str]:

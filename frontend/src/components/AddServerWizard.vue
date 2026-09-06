@@ -74,7 +74,7 @@
             </div>
           </div>
 
-          <dl v-if="detectResult.config_path || detectResult.peers_count" class="result-meta">
+          <dl v-if="detectResult.config_path || detectResult.peers_count || detectResult.ssh_hostkey_fp" class="result-meta">
             <div v-if="detectResult.config_path">
               <dt>Config</dt>
               <dd class="mono">{{ detectResult.config_path }}</dd>
@@ -82,6 +82,10 @@
             <div>
               <dt>Peers</dt>
               <dd>{{ detectResult.peers_count }}</dd>
+            </div>
+            <div v-if="detectResult.ssh_hostkey_fp">
+              <dt>SSH-ключ</dt>
+              <dd class="mono">{{ detectResult.ssh_hostkey_fp }}</dd>
             </div>
           </dl>
         </section>
@@ -140,6 +144,7 @@ type DetectResult = {
   container_names: string[]
   docker_available: boolean
   os_release?: string | null
+  ssh_hostkey_fp?: string | null
 }
 
 const props = defineProps<{
@@ -260,7 +265,8 @@ async function saveServer(branch: 'import' | 'install' | 'needs_review') {
       awg2_detected: detectResult.value.awg2_detected,
       config_path: detectResult.value.config_path,
       active_peers: detectResult.value.peers_count,
-      container_names: detectResult.value.container_names
+      container_names: detectResult.value.container_names,
+      ssh_hostkey_fp: detectResult.value.ssh_hostkey_fp || null
     })
     message.success(branch === 'import' ? 'Найденная Amnezia подключена.' : 'Сервер добавлен.')
     emit('created')

@@ -16,6 +16,7 @@ class ServerCreate(BaseModel):
     config_path: Optional[str] = None
     active_peers: int = 0
     container_names: list[str] = []
+    ssh_hostkey_fp: Optional[str] = Field(default=None, max_length=128)
 
 
 class ServerRead(BaseModel):
@@ -51,6 +52,7 @@ class ServerRead(BaseModel):
     last_detect_message: Optional[str] = None
     created_at: Optional[str] = None
     former_entry: bool = False
+    ssh_hostkey_fp: Optional[str] = None
 
 
 class ServerMetrics(BaseModel):
@@ -113,10 +115,16 @@ class DetectResult(BaseModel):
     container_names: list[str] = []
     docker_available: bool = False
     os_release: Optional[str] = None
+    ssh_hostkey_fp: Optional[str] = None
 
 
 class DetectPreviewRequest(ServerCreate):
     pass
+
+
+class TrustSshHostKeyRequest(BaseModel):
+    fingerprint: Optional[str] = Field(default=None, max_length=128)
+    accept_next: bool = False
 
 
 class SystemInfo(BaseModel):

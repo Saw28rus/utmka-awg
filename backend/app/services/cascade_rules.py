@@ -80,9 +80,12 @@ def get_rules_status(entry_id: str) -> CascadeRulesStatus:
         try:
             ssh = _connect(entry_id)
             try:
-                pid = cascade_split.netns_pid(ssh, _entry_container(entry_id))
-                if pid:
-                    health = cascade_split.split_health(ssh, pid)
+                healths: list[dict] = []
+                for ctn, subnet in _split_targets(entry_id):
+                    pid = cascade_split.netns_pid(ssh, ctn)
+                    if pid:
+                        healths.append(cascade_split.split_health(ssh, pid, subnet))
+                health = cascade_split.merge_split_health(healths) if healths else None
             finally:
                 ssh.close()
         except Exception:  # noqa: BLE001
@@ -215,27 +218,61 @@ def update_rules(
     ssh = _connect(entry_id)
     try:
         count = 0
-        health = None
+        healths: list[dict] = []
+        entry_ip = (entry_rec or {}).get("host")
+        exit_ip = (exit_rec or {}).get("host")
         for ctn, subnet in _split_targets(entry_id):
             pid = cascade_split.netns_pid(ssh, ctn)
             if not pid:
                 raise CascadeError("Не найден netns контейнера entry для split.")
             count = cascade_split.apply_split(ssh, pid, subnet, build.cidrs)
-            health = cascade_split.split_health(ssh, pid)
+            item = cascade_split.split_health(ssh, pid, subnet)
+            src = cascade_split.probe_src_from_subnet(subnet)
+            if src and item.get("ok"):
+                probe = cascade_split.egress_probe(ssh, pid, src)
+                item = cascade_split.evaluate_split_health(
+                    ru_in_set=bool(item.get("ru_in_set")),
+                    foreign_excluded=bool(item.get("foreign_excluded")),
+                    rule_present=bool(item.get("rule_present")),
+                    mangle_present=bool(item.get("mangle_present")),
+                    ru_egress=probe.get("ru_egress"),
+                    foreign_egress=probe.get("foreign_egress"),
+                    entry_ip=entry_ip,
+                    exit_ip=exit_ip,
+                )
+            healths.append(item)
+        health = cascade_split.merge_split_health(healths)
         steps.append(CascadeStep(
             name="Применение на сервере", status="ok",
             detail=f"{count} адресов в правиле",
         ))
         steps.append(CascadeStep(
             name="Проверка",
-            status="ok" if (health or {}).get("ok") else "failed",
-            detail=_health_detail(health or {}),
+            status="ok" if health.get("ok") else "failed",
+            detail=_health_detail(health),
         ))
     except cascade_split.SplitError as exc:
         cascade_store.set_split(entry_id, last_error=str(exc))
         raise CascadeError(f"Split не применён: {exc}")
     finally:
         ssh.close()
+
+    if not health.get("ok"):
+        cascade_store.set_split(
+            entry_id,
+            enabled=True,
+            applied=False,
+            source_ids=new_sources,
+            custom_cidrs=new_custom,
+            direct_cidr_count=build.total_count,
+            last_error=_health_detail(health),
+        )
+        return CascadeRulesApplyResult(
+            ok=False, enabled=True, applied=False,
+            direct_cidr_count=build.total_count,
+            steps=steps, health=health, invalid_cidrs=invalid,
+            message="Правила на сервер записаны, но проверка не прошла — успехом не считаем.",
+        )
 
     split = cascade_store.set_split(
         entry_id,
@@ -251,7 +288,7 @@ def update_rules(
         ok=True, enabled=True, applied=True,
         direct_cidr_count=build.total_count,
         steps=steps, health=health, invalid_cidrs=invalid,
-        message="Правило применено: Россия — напрямую, зарубеж — через выходной сервер.",
+        message=_success_message(health),
     )
 
 
@@ -268,8 +305,12 @@ def refresh_lists(entry_id: str) -> CascadeRulesApplyResult:
 
 
 def _health_detail(health: dict) -> str:
+    if health.get("egress_confirmed"):
+        return "Проверено: российские адреса выходят через вход, зарубежные — через выход."
+    if health.get("egress_mismatch"):
+        return "Живой выход пакетов не совпал с ожидаемым (вход / выход)."
     if health.get("ok"):
-        return "Российские и зарубежные сайты маршрутизируются правильно."
+        return "На сервере стоят ipset, mark и правило. Живой выход пакетов не измерялся."
     parts = []
     if not health.get("ru_in_set"):
         parts.append("российские адреса не распознаны")
@@ -277,7 +318,15 @@ def _health_detail(health: dict) -> str:
         parts.append("зарубеж попал в российский маршрут")
     if not health.get("rule_present"):
         parts.append("настройка на сервере не найдена")
+    if health.get("mangle_present") is False:
+        parts.append("mangle-правило не совпало")
     return "; ".join(parts) or "проверка не прошла"
+
+
+def _success_message(health: dict) -> str:
+    if health.get("egress_confirmed"):
+        return "Правило работает: Россия — через входной сервер, зарубеж — через выходной."
+    return "Правило применено на сервере. Структурная проверка прошла."
 
 
 # ---------------------------------------------------------------------------
@@ -291,7 +340,6 @@ def apply_split_after_cascade(entry_id: str) -> Optional[CascadeStep]:
     if not split.get("enabled"):
         return None
     link = cascade_store.get_link(entry_id) or {}
-    client_subnet = link.get("client_subnet") or "10.8.1.0/24"
     exit_id = link.get("exit_server_id")
     extra: list[str] = []
     for rec in (server_store.get_record(exit_id) if exit_id else None, server_store.get_record(entry_id)):
@@ -306,11 +354,16 @@ def apply_split_after_cascade(entry_id: str) -> Optional[CascadeStep]:
         ssh = _connect(entry_id)
         try:
             count = 0
+            healths: list[dict] = []
             for ctn, subnet in _split_targets(entry_id):
                 pid = cascade_split.netns_pid(ssh, ctn)
                 if not pid:
                     raise cascade_split.SplitError("нет netns контейнера")
                 count = cascade_split.apply_split(ssh, pid, subnet, build.cidrs)
+                healths.append(cascade_split.split_health(ssh, pid, subnet))
+            health = cascade_split.merge_split_health(healths)
+            if not health.get("ok"):
+                raise cascade_split.SplitError(_health_detail(health))
         finally:
             ssh.close()
         cascade_store.set_split(

@@ -1,4 +1,3 @@
-import io
 import re
 import shlex
 from dataclasses import dataclass
@@ -7,6 +6,7 @@ from typing import Optional
 import paramiko
 
 from app.schemas.servers import DetectCheck, DetectPreviewRequest, DetectResult
+from app.ssh import exec as ssh_exec
 
 
 CONFIG_PATHS = (
@@ -28,9 +28,11 @@ class CommandResult:
 
 def run_awg_detect(payload: DetectPreviewRequest) -> DetectResult:
     checks: list[DetectCheck] = []
+    hostkey_fp: Optional[str] = None
 
     try:
         ssh = _connect(payload)
+        hostkey_fp = ssh_exec.seen_fingerprint(ssh)
     except Exception as exc:
         return DetectResult(
             confidence="error",
@@ -136,6 +138,7 @@ def run_awg_detect(payload: DetectPreviewRequest) -> DetectResult:
                 container_names=container_names,
                 docker_available=docker_available,
                 os_release=os_release or None,
+                ssh_hostkey_fp=hostkey_fp,
             )
 
         if config_path and has_interface:
@@ -150,6 +153,7 @@ def run_awg_detect(payload: DetectPreviewRequest) -> DetectResult:
                 container_names=container_names,
                 docker_available=docker_available,
                 os_release=os_release or None,
+                ssh_hostkey_fp=hostkey_fp,
             )
 
         return DetectResult(
@@ -163,46 +167,22 @@ def run_awg_detect(payload: DetectPreviewRequest) -> DetectResult:
             container_names=container_names,
             docker_available=docker_available,
             os_release=os_release or None,
+            ssh_hostkey_fp=hostkey_fp,
         )
     finally:
         ssh.close()
 
 
 def _connect(payload: DetectPreviewRequest) -> paramiko.SSHClient:
-    client = paramiko.SSHClient()
-    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-
-    pkey = _load_private_key(payload.ssh_key) if payload.ssh_key else None
-    client.connect(
-        hostname=payload.host,
+    return ssh_exec.connect(
+        host=payload.host,
         port=payload.ssh_port,
         username=payload.ssh_username,
-        password=payload.ssh_password or None,
-        pkey=pkey,
+        password=payload.ssh_password,
+        key=payload.ssh_key,
         timeout=10,
-        banner_timeout=10,
-        auth_timeout=10,
-        look_for_keys=False,
-        allow_agent=False,
+        expected_fingerprint=payload.ssh_hostkey_fp,
     )
-    return client
-
-
-def _load_private_key(raw_key: str):
-    key_stream = io.StringIO(raw_key)
-    loaders = (
-        paramiko.Ed25519Key.from_private_key,
-        paramiko.RSAKey.from_private_key,
-        paramiko.ECDSAKey.from_private_key,
-    )
-    last_error: Optional[Exception] = None
-    for loader in loaders:
-        key_stream.seek(0)
-        try:
-            return loader(key_stream)
-        except Exception as exc:
-            last_error = exc
-    raise ValueError(f"SSH-ключ не удалось прочитать: {last_error}")
 
 
 def _run(ssh: paramiko.SSHClient, command: str, timeout: int = 12) -> CommandResult:

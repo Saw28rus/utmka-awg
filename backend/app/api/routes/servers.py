@@ -36,6 +36,7 @@ from app.schemas.servers import (
     ServerMinimal,
     ServerOverview,
     ServerRead,
+    TrustSshHostKeyRequest,
     UfwPreviewResult,
 )
 from app.schemas.awg_masking import (
@@ -252,6 +253,29 @@ async def create_server(
 
 @router.get("/{server_id}", response_model=ServerRead)
 async def get_server(server_id: str, _: CurrentUser = Depends(require_admin)) -> ServerRead:
+    server = server_store.get(server_id)
+    if not server:
+        raise HTTPException(status_code=404, detail="Сервер не найден.")
+    return server
+
+
+@router.post("/{server_id}/ssh-hostkey", response_model=ServerRead)
+async def trust_ssh_hostkey(
+    server_id: str,
+    payload: TrustSshHostKeyRequest,
+    _: CurrentUser = Depends(require_admin),
+) -> ServerRead:
+    if not server_store.get_record(server_id):
+        raise HTTPException(status_code=404, detail="Сервер не найден.")
+    if payload.accept_next:
+        server_store.set_hostkey_fp(server_id, None)
+    elif payload.fingerprint:
+        server_store.set_hostkey_fp(server_id, payload.fingerprint.strip())
+    else:
+        raise HTTPException(
+            status_code=400,
+            detail="Укажите fingerprint или accept_next, чтобы принять ключ при следующем подключении.",
+        )
     server = server_store.get(server_id)
     if not server:
         raise HTTPException(status_code=404, detail="Сервер не найден.")

@@ -314,6 +314,26 @@
             Настраивается один раз, по порядку. Следующий шаг открывается после предыдущего.
           </p>
 
+          <div class="ssh-fp-box">
+            <div>
+              <strong>SSH-ключ сервера</strong>
+              <p class="sec-note" style="margin: 4px 0 0">
+                Панель запоминает отпечаток и не подключается, если ключ внезапно сменился.
+              </p>
+              <p v-if="server.ssh_hostkey_fp" class="mono ssh-fp-value">{{ server.ssh_hostkey_fp }}</p>
+              <p v-else class="sec-note">Зафиксируется при следующем подключении.</p>
+            </div>
+            <n-button
+              size="small"
+              tertiary
+              :loading="sshHostkeyBusy"
+              :disabled="sshHostkeyBusy"
+              @click="trustNextSshHostkey"
+            >
+              Принять новый ключ
+            </n-button>
+          </div>
+
           <div v-if="sslLoading || hardenLoading || chatLoading" class="ssl-loading">
             <n-spin size="small" />
             <span>Проверяю состояние…</span>
@@ -648,7 +668,7 @@
               Добавить 3.1 к каскаду
             </n-button>
             <n-button
-              v-if="cascadeActive"
+              v-if="cascadeActive || cascadeHeldClosed"
               type="error"
               size="large"
               :loading="cascadeApplyBusy === 'rollback'"
@@ -657,6 +677,9 @@
             >
               Выключить каскад
             </n-button>
+            <p v-if="cascadeHeldClosed" class="cascade-hint">
+              Каскад не подтвердился, прямой выход закрыт. «Выключить» вернёт интернет через этот сервер.
+            </p>
             <p v-if="!canApplyCascade && !cascadeActive" class="cascade-hint">
               Сначала выберите выходной сервер и нажмите «Проверить».
             </p>
@@ -911,6 +934,12 @@
                 <span>Зарубеж — через {{ rulesStatus.exit_name || 'выходной' }}</span>
               </div>
             </div>
+            <p v-if="rulesStatus.health.egress_confirmed" class="rules-hint" style="margin-top: 10px">
+              Живой выход пакетов совпал с входом и выходом.
+            </p>
+            <p v-else-if="rulesStatus.health.ok" class="rules-hint subtle" style="margin-top: 10px">
+              Проверены правила на сервере, не сам выход сайтов.
+            </p>
           </div>
 
           <!-- Настройки списка -->
@@ -1243,6 +1272,7 @@ type ServerRead = {
   client_protocols?: string[]
   country_code?: string | null
   country_name?: string | null
+  ssh_hostkey_fp?: string | null
 }
 
 type ServerMetrics = {
@@ -1439,7 +1469,7 @@ type CascadeRulesStatus = {
   exit_name: string | null
   entry_public_ip: string | null
   exit_public_ip: string | null
-  health: Record<string, boolean> | null
+  health: Record<string, boolean | string | null> | null
   last_error: string | null
   message: string | null
 }
@@ -1450,7 +1480,7 @@ type CascadeRulesApplyResult = {
   applied: boolean
   direct_cidr_count: number
   steps: CascadeStep[]
-  health: Record<string, boolean> | null
+  health: Record<string, boolean | string | null> | null
   invalid_cidrs: string[]
   message: string
 }
@@ -2316,6 +2346,8 @@ const cascadeActive = computed(
   () => Boolean(cascadeLink.value?.live_active) || cascadeLink.value?.state === 'active'
 )
 
+const cascadeHeldClosed = computed(() => cascadeLink.value?.state === 'apply_failed')
+
 const setupBannerText = computed(() => {
   if (cascadeActive.value) return 'Каскад работает — связь в порядке.'
   if (!cascadeResult.value) return ''
@@ -2352,7 +2384,7 @@ const canApplyCascade = computed(() => {
   if (cascadeActive.value) return false
   if (!cascadeSelectedProtocols().length) return false
   const s = cascadeLink.value?.state
-  return s === 'preflight_ok' || s === 'rolled_back' || (cascadeResult.value?.ok ?? false)
+  return s === 'preflight_ok' || s === 'rolled_back' || s === 'apply_failed' || (cascadeResult.value?.ok ?? false)
 })
 
 watch([hasAwg2, hasAwg31], ([v2, v31]) => {
@@ -2488,6 +2520,7 @@ const createdText = computed(() => {
 })
 
 const securityBusy = ref<string>('')
+const sshHostkeyBusy = ref(false)
 
 function toggleSecurity(check: SecurityCheck) {
   if (!check.control) return
@@ -2555,6 +2588,21 @@ function confirmSecurityDisable(control: string, title: string, content: string)
       void doSecurityAction(control, 'disable')
     }
   })
+}
+
+async function trustNextSshHostkey() {
+  sshHostkeyBusy.value = true
+  try {
+    const { data } = await api.post<ServerRead>(`/servers/${serverId}/ssh-hostkey`, {
+      accept_next: true
+    })
+    server.value = data
+    message.success('Следующее подключение запомнит новый SSH-ключ.')
+  } catch (error: any) {
+    message.error(error?.response?.data?.detail || 'Не удалось сбросить SSH-ключ.')
+  } finally {
+    sshHostkeyBusy.value = false
+  }
 }
 
 async function doSecurityAction(control: string, action: 'enable' | 'disable') {
@@ -3597,6 +3645,23 @@ function confirmDeleteServer() {
   margin: -6px 0 14px;
   font-size: 13px;
   color: var(--color-muted);
+}
+
+.ssh-fp-box {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 0 0 16px;
+  padding: 12px 14px;
+  border: 1px solid var(--color-border);
+  border-radius: 10px;
+}
+
+.ssh-fp-value {
+  margin: 8px 0 0;
+  font-size: 12px;
+  word-break: break-all;
 }
 
 .sec-steps {
