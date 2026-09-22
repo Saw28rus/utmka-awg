@@ -8,6 +8,8 @@ __pycache__/
 *.pyc
 node_modules/
 .npm-cache/
+.pip-cache/
+backend/wheels/
 dist/
 coverage/
 .idea/

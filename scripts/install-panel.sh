@@ -5,7 +5,8 @@
 #   curl -fsSL https://raw.githubusercontent.com/Saw28rus/utmka-awg/main/scripts/install-panel.sh | sudo bash
 #
 # Скрипт: ставит Docker (если нет), клонирует репозиторий в /opt/utmka-awg,
-# генерирует случайные секреты в .env и поднимает прод-стек. По завершении
+# генерирует случайные секреты в .env и поднимает прод-стек. Сборка сама
+# переключает зеркала PyPI/npm, если официальные каналы рвутся. По завершении
 # печатает адрес панели и одноразовый пароль администратора.
 #
 # (Опционально) приватный форк: sudo GITHUB_TOKEN="ghp_..." bash install-panel.sh
@@ -19,6 +20,8 @@ BRANCH="${BRANCH:-main}"
 GITHUB_TOKEN="${GITHUB_TOKEN:-}"
 ADMIN_EMAIL="${ADMIN_EMAIL:-admin@utmka.app}"
 ADMIN_PASSWORD="${ADMIN_PASSWORD:-}"
+FRESH_ENV=0
+GENERATED_ADMIN_PASS=""
 
 need_root() {
   if [ "$(id -u)" -ne 0 ]; then
@@ -138,28 +141,41 @@ EOF
   # старого админа, и напечатанный пароль не подойдёт).
   FRESH_ENV=1
   GENERATED_ADMIN_PASS="$admin_pass"
-  local ip
-  ip="$(public_ip)"
-  echo ""
-  echo "╔══════════════════════════════════════════╗"
-  echo "║       UTMka+AWG — данные для входа       ║"
-  echo "╠══════════════════════════════════════════╣"
-  echo "║  Адрес:  http://${ip}:8080"
-  echo "║  Email:  ${ADMIN_EMAIL}"
-  echo "║  Пароль: ${admin_pass}"
-  echo "╚══════════════════════════════════════════╝"
-  echo "Сохрани пароль — повторно не покажется."
+}
+
+open_panel_port() {
+  # На хосте: если ufw включён — открываем 8080. Облачный firewall хостера скрипт открыть не может.
+  if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -qi 'Status: active'; then
+    echo "Открываю TCP 8080 в ufw…"
+    ufw allow 8080/tcp comment 'utmka-panel' >/dev/null 2>&1 || true
+  fi
+  if command -v iptables >/dev/null 2>&1; then
+    if iptables -L INPUT -n 2>/dev/null | grep -q 'policy DROP'; then
+      iptables -C INPUT -p tcp --dport 8080 -j ACCEPT 2>/dev/null \
+        || iptables -I INPUT -p tcp --dport 8080 -j ACCEPT || true
+    fi
+  fi
 }
 
 start_stack() {
   cd "$INSTALL_DIR"
-  docker compose up -d --build
-  local ip
-  ip="$(public_ip)"
-  echo ""
-  echo "Готово. Открой в браузере: http://${ip}:8080"
-  echo "Если не открывается — открой порт 8080 в firewall облака/VPS."
-  echo "Позже: домен + HTTPS во вкладке «Безопасность» у сервера в панели."
+  export DOCKER_BUILDKIT=1
+  export COMPOSE_DOCKER_CLI_BUILD=1
+
+  local attempt max=4
+  for attempt in $(seq 1 "$max"); do
+    echo "Собираю и запускаю панель (попытка ${attempt}/${max})…"
+    if docker compose up -d --build; then
+      return 0
+    fi
+    if [ "$attempt" -eq "$max" ]; then
+      echo "Не удалось собрать образы после ${max} попыток (сеть/зеркало)."
+      echo "Повторите ту же команду установки — кэш Docker сохранится."
+      exit 1
+    fi
+    echo "Сборка оборвалась. Повтор через 8 сек — pip/npm сами сменят зеркало."
+    sleep 8
+  done
 }
 
 wait_for_health() {
@@ -188,11 +204,31 @@ ensure_admin_password() {
     return 0
   fi
   if docker compose exec -T backend python /host/utmka-awg/scripts/reset-admin.py "$GENERATED_ADMIN_PASS" >/dev/null 2>&1; then
-    echo "Пароль администратора синхронизирован с напечатанным выше."
+    echo "Пароль администратора синхронизирован."
   else
     echo "ВНИМАНИЕ: не удалось синхронизировать пароль админа автоматически."
     echo "Сбросьте вручную: docker compose exec -T backend python /host/utmka-awg/scripts/reset-admin.py 'НОВЫЙ_ПАРОЛЬ'"
   fi
+}
+
+print_login() {
+  local ip
+  ip="$(public_ip)"
+  echo ""
+  if [ "${FRESH_ENV:-0}" = "1" ] && [ -n "${GENERATED_ADMIN_PASS:-}" ]; then
+    echo "╔══════════════════════════════════════════╗"
+    echo "║       UTMka+AWG — данные для входа       ║"
+    echo "╠══════════════════════════════════════════╣"
+    echo "║  Адрес:  http://${ip}:8080"
+    echo "║  Email:  ${ADMIN_EMAIL}"
+    echo "║  Пароль: ${GENERATED_ADMIN_PASS}"
+    echo "╚══════════════════════════════════════════╝"
+    echo "Сохрани пароль — повторно не покажется."
+  else
+    echo "Готово. Открой в браузере: http://${ip}:8080"
+  fi
+  echo "Если страница не открывается снаружи — в панели хостинга откройте входящий TCP 8080."
+  echo "Позже: домен + HTTPS во вкладке «Безопасность» у сервера в панели."
 }
 
 main() {
@@ -201,8 +237,10 @@ main() {
   preflight
   clone_or_update
   write_env
+  open_panel_port
   start_stack
   ensure_admin_password
+  print_login
 }
 
 main "$@"
