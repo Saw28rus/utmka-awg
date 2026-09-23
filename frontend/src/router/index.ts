@@ -80,7 +80,7 @@ router.beforeEach(async (to) => {
     const integrations = useIntegrationsStore()
     if (!integrations.loaded) await integrations.load()
     if (!integrations.chatEnabled) {
-      message.warning('Сначала подключите домен чата (Сервер → Безопасность, шаг 3).')
+      message.warning('Сначала подключите домен чата (Настройки → Домен и чат).')
       return { name: 'dashboard' }
     }
   }

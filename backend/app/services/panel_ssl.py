@@ -147,6 +147,7 @@ def get_panel_ssl_status(server_id: str) -> PanelSslStatus:
     try:
         ssh = _connect(target)
     except Exception as exc:  # noqa: BLE001
+        kind = "Хост" if getattr(target, "local", False) else "SSH"
         return PanelSslStatus(
             domain=stored.get("domain"),
             url=stored.get("url"),
@@ -158,16 +159,26 @@ def get_panel_ssl_status(server_id: str) -> PanelSslStatus:
             cert_expires_at=stored.get("cert_expires_at"),
             public_ip=record.get("host"),
             fallback_url=stored.get("fallback_url"),
-            message=f"SSH не отвечает: {exc}",
+            message=f"{kind} не отвечает: {exc}",
         )
 
     try:
-        public_ip = _server_public_ip(ssh) or record.get("host")
+        public_ip = _effective_public_ip(ssh, record, target)
         panel_detected = _panel_running(ssh)
         xray_on_443 = _xray_published_on_443(ssh)
         nginx_installed = _nginx_installed(ssh)
         domain = stored.get("domain")
         cert_present = bool(domain and _cert_exists(ssh, domain))
+        message = None
+        if getattr(target, "local", False) and not panel_detected:
+            probe = ssh_exec.run(ssh, "echo UTMKA_HOST_OK", timeout=30)
+            if probe.exit_code != 0 or "UTMKA_HOST_OK" not in (probe.stdout or ""):
+                tail = ((probe.stderr or "") + "\n" + (probe.stdout or "")).strip()[-500:]
+                message = (
+                    "Не удалось выполнить команды на этом сервере панели "
+                    "(нужны docker.sock и nsenter). "
+                    f"{tail or 'нет вывода'}"
+                )
         return PanelSslStatus(
             domain=domain,
             url=stored.get("url"),
@@ -178,8 +189,8 @@ def get_panel_ssl_status(server_id: str) -> PanelSslStatus:
             cert_present=cert_present,
             cert_expires_at=stored.get("cert_expires_at"),
             public_ip=public_ip,
-            fallback_url=stored.get("fallback_url") or _fallback_url(record.get("host")),
-            message=None,
+            fallback_url=stored.get("fallback_url") or _fallback_url(public_ip or record.get("host")),
+            message=message,
         )
     finally:
         ssh.close()
@@ -195,7 +206,7 @@ def verify_panel_domain(server_id: str, domain: str) -> PanelSslVerifyResult:
     resolved = _resolve_domain_ips(domain)
     ssh = _connect(target)
     try:
-        public_ip = _server_public_ip(ssh) or record.get("host")
+        public_ip = _effective_public_ip(ssh, record, target)
         panel_detected = _panel_running(ssh)
         xray_on_443 = _xray_published_on_443(ssh)
         port_80_ok = _port_80_available(ssh)
@@ -251,11 +262,16 @@ def verify_panel_domain(server_id: str, domain: str) -> PanelSslVerifyResult:
                 "Освободи его для Let's Encrypt (nginx — не помеха, его мастер перенастроит сам).",
             )
 
-        hint = (
-            " Xray уже на :443 — перенесём его на 127.0.0.1, VPN не отключится."
-            if xray_on_443
-            else " :443 зарезервируем под Xray (панель уйдёт на 8443)."
-        )
+        from app.services.panel_host import is_panel_host_id
+
+        if is_panel_host_id(server_id):
+            hint = " Сертификат встанет на этот хост панели (nginx :443 → :8080)."
+        else:
+            hint = (
+                " Xray уже на :443 — перенесём его на 127.0.0.1, VPN не отключится."
+                if xray_on_443
+                else " :443 зарезервируем под Xray (панель уйдёт на 8443)."
+            )
 
         return PanelSslVerifyResult(
             ok=True,
@@ -287,13 +303,17 @@ def install_panel_ssl(server_id: str, domain: str, *, email: Optional[str] = Non
         backup_dir = f"{SSL_BACKUP_ROOT}/{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}"
         chat_stored = record.get("chat_domain") or {}
         chat_domain = (chat_stored.get("domain") or "").lower() if chat_stored.get("enabled") else ""
+        from app.services.panel_host import is_panel_host_id
+
+        reserve_xray = not is_panel_host_id(server_id)
         script = _build_install_script(
             domain=domain,
             email=email or "",
             backup_dir=backup_dir,
-            move_xray=verify.xray_on_443,
+            move_xray=verify.xray_on_443 and reserve_xray,
             public_ip=verify.server_public_ip or record.get("host"),
             chat_domain=chat_domain,
+            reserve_xray=reserve_xray,
         )
         result = ssh_exec.run(ssh, f"bash -s <<'UTMKA_SSL_EOF'\n{script}\nUTMKA_SSL_EOF", timeout=600)
         output = (result.stdout + "\n" + result.stderr).strip()
@@ -305,7 +325,8 @@ def install_panel_ssl(server_id: str, domain: str, *, email: Optional[str] = Non
             raise PanelSslError(f"Установка HTTPS не удалась:\n{tail}")
 
         url = f"https://{domain}"
-        fallback = _fallback_url(record.get("host"))
+        fallback_host = verify.server_public_ip or record.get("host")
+        fallback = _fallback_url(fallback_host)
         cert_expires = _cert_expiry(ssh, domain)
         server_store.update_runtime(
             server_id,
@@ -315,31 +336,32 @@ def install_panel_ssl(server_id: str, domain: str, *, email: Optional[str] = Non
                 "status": "active",
                 "fallback_url": fallback,
                 "cert_expires_at": cert_expires,
-                # :443 всегда зарезервирован под Xray (panel→8443, chat→8444, default→Xray).
-                # Поле сохраняем под прежним именем — на него опирается chat_domain.
-                "xray_passthrough": True,
+                # VPN-узел: :443 под Xray (panel→8443). Хост панели: обычный nginx :443.
+                "xray_passthrough": reserve_xray,
                 "installed_at": datetime.now(timezone.utc).isoformat(),
                 "backup_dir": backup_dir,
             },
         )
-        # Если на сервере есть AmneziaWG-клиенты — перевыпускаем их конфиги, чтобы
-        # Endpoint указывал на только что привязанный домен панели, а не на голый IP
-        # (пользователь задал домен один раз — VPN сразу ведёт на него). Best-effort:
-        # ошибка перевыпуска не должна валить успешную установку HTTPS.
-        try:
-            from app.services.awg_transport import _reissue as _reissue_awg_configs
+        if reserve_xray:
+            try:
+                from app.services.awg_transport import _reissue as _reissue_awg_configs
 
-            _reissue_awg_configs(server_id)
-        except Exception:  # noqa: BLE001
-            pass
+                _reissue_awg_configs(server_id)
+            except Exception:  # noqa: BLE001
+                pass
+        done_msg = (
+            "HTTPS настроен, порт :443 зарезервирован под Xray (Reality). "
+            "Сохрани запасной адрес на случай проблем с DNS."
+            if reserve_xray
+            else "HTTPS панели настроен на этом сервере. Запасной вход — :8080, пока не закроете его шагом 2."
+        )
         return PanelSslInstallResult(
             ok=True,
             domain=domain,
             url=url,
             fallback_url=fallback,
-            xray_passthrough=True,
-            message="HTTPS настроен, порт :443 зарезервирован под Xray (Reality). "
-            "Сохрани запасной адрес на случай проблем с DNS.",
+            xray_passthrough=reserve_xray,
+            message=done_msg,
         )
     finally:
         ssh.close()
@@ -376,7 +398,7 @@ def resolve_magic_domain(server_id: str) -> str:
         raise PanelSslError("Сервер не найден.")
     ssh = _connect(target)
     try:
-        public_ip = _server_public_ip(ssh) or record.get("host")
+        public_ip = _effective_public_ip(ssh, record, target)
     finally:
         ssh.close()
     return magic_domain_for_ip(public_ip)
@@ -444,6 +466,10 @@ def panel_https_security_check(server_id: str) -> dict:
 
 
 def _connect(target) -> object:
+    if getattr(target, "local", False):
+        from app.ssh.host_exec import LocalHostSession
+
+        return LocalHostSession()
     return ssh_exec.connect(
         host=target.host,
         port=target.port,
@@ -486,10 +512,35 @@ def _resolve_domain_ips(domain: str) -> list[str]:
 def _server_public_ip(ssh) -> Optional[str]:
     out = ssh_exec.run(
         ssh,
-        "curl -4 -s --max-time 5 ifconfig.me 2>/dev/null || hostname -I 2>/dev/null | awk '{print $1}'",
-        timeout=15,
+        "curl -4 -s --max-time 5 ifconfig.me 2>/dev/null "
+        "|| curl -4 -s --max-time 5 icanhazip.com 2>/dev/null "
+        "|| curl -4 -s --max-time 5 api.ipify.org 2>/dev/null "
+        "|| hostname -I 2>/dev/null | awk '{print $1}'",
+        timeout=20,
     ).stdout.strip()
-    return out.split()[0] if out else None
+    token = out.split()[0] if out else None
+    if not token:
+        return None
+    try:
+        addr = ipaddress.ip_address(token)
+    except ValueError:
+        return None
+    if addr.version != 4:
+        return None
+    return token
+
+
+def _effective_public_ip(ssh, record: dict, target) -> Optional[str]:
+    ip = _server_public_ip(ssh)
+    dummy = {"local-panel", "127.0.0.1", "localhost"}
+    if ip and ip not in dummy:
+        return ip
+    host = (record.get("host") or "").strip()
+    if host and host not in dummy:
+        return host
+    if getattr(target, "local", False):
+        return None
+    return host or None
 
 
 def _panel_running(ssh) -> bool:
@@ -566,8 +617,8 @@ def _cert_expiry(ssh, domain: str) -> Optional[str]:
 
 
 def _fallback_url(host: Optional[str]) -> str:
-    if not host:
-        return f"http://127.0.0.1:8080"
+    if not host or host in {"local-panel", "127.0.0.1", "localhost"}:
+        return "http://127.0.0.1:8080"
     return f"http://{host}:8080"
 
 
@@ -586,6 +637,7 @@ def _build_install_script(
     move_xray: bool,
     public_ip: str,
     chat_domain: str = "",
+    reserve_xray: bool = True,
 ) -> str:
     http_initial_conf = _render_template(
         "nginx-panel-http-initial.conf",
@@ -645,7 +697,54 @@ def _build_install_script(
 
     email_flag = f"-m {shlex.quote(email)}" if email else "--register-unsafely-without-email"
 
-    # shell script — heredocs escaped for embedding in Python
+    if reserve_xray:
+        stream_setup = f"""
+# Резерв :443 = SNI passthrough, для него нужен модуль stream.
+if [ ! -e /usr/lib/nginx/modules/ngx_stream_module.so ]; then
+  apt-get install -y -qq libnginx-mod-stream || apt-get update -qq && apt-get install -y -qq libnginx-mod-stream
+fi
+grep -q 'stream.d' /etc/nginx/nginx.conf 2>/dev/null || {{
+  sed -i '/^http {{/i stream {{\\n    include /etc/nginx/stream.d/*.conf;\\n}}\\n' /etc/nginx/nginx.conf
+}}
+
+if [ "{'1' if move_xray else '0'}" = "1" ]; then
+  if docker ps -a --format '{{{{.Names}}}}' | grep -qx {shlex.quote(XRAY_CONTAINER)}; then
+    echo "Перенос Xray на 127.0.0.1:{XRAY_LOCAL_PORT} для совместного :443..."
+    IMG=$(docker inspect -f '{{{{.Config.Image}}}}' {shlex.quote(XRAY_CONTAINER)} 2>/dev/null || true)
+    docker stop {shlex.quote(XRAY_CONTAINER)} >/dev/null 2>&1 || true
+    docker rm {shlex.quote(XRAY_CONTAINER)} >/dev/null 2>&1 || true
+    if [ -n "$IMG" ]; then
+      docker run -d --privileged --log-driver none --restart always --cap-add=NET_ADMIN \\
+        -p 127.0.0.1:{XRAY_LOCAL_PORT}:443/tcp \\
+        --name {shlex.quote(XRAY_CONTAINER)} "$IMG"
+      docker network connect amnezia-dns-net {shlex.quote(XRAY_CONTAINER)} 2>/dev/null || true
+      docker exec -i {shlex.quote(XRAY_CONTAINER)} bash -c 'mkdir -p /dev/net; if [ ! -c /dev/net/tun ]; then mknod /dev/net/tun c 10 200; fi' 2>/dev/null || true
+      docker exec -d {shlex.quote(XRAY_CONTAINER)} /opt/amnezia/start.sh 2>/dev/null || true
+    fi
+  fi
+fi
+
+cat > {shlex.quote(STREAM_CONF)} <<'NGINX_STREAM_EOF'
+{stream_conf}
+NGINX_STREAM_EOF
+{chat_fix}
+"""
+        listen_fix = f"""
+sed -i 's/listen 443 ssl/listen {PANEL_HTTPS_INTERNAL} ssl/g' {shlex.quote(NGINX_SITE)}
+sed -i 's/listen \\[::\\]:443 ssl/listen [::]:{PANEL_HTTPS_INTERNAL} ssl/g' {shlex.quote(NGINX_SITE)}
+"""
+        health = f"""curl -sf --max-time 10 -H "Host: {domain}" http://127.0.0.1/api/v1/health >/dev/null \\
+  || curl -sf --max-time 10 https://{shlex.quote(domain)}/api/v1/health >/dev/null \\
+  || curl -sf --max-time 10 -k https://127.0.0.1:{PANEL_HTTPS_INTERNAL}/api/v1/health >/dev/null
+"""
+    else:
+        stream_setup = "rm -f " + shlex.quote(STREAM_CONF) + " 2>/dev/null || true\n"
+        listen_fix = ""
+        health = f"""curl -sf --max-time 10 http://127.0.0.1:8080/api/v1/health >/dev/null \\
+  || curl -sf --max-time 10 -H "Host: {domain}" http://127.0.0.1/api/v1/health >/dev/null \\
+  || curl -sf --max-time 10 https://{shlex.quote(domain)}/api/v1/health >/dev/null
+"""
+
     return f"""set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
 
@@ -667,33 +766,7 @@ if [ -d /etc/nginx ]; then
   cp -a /etc/nginx/stream.d {shlex.quote(backup_dir)}/ 2>/dev/null || true
 fi
 
-# Резерв :443 = SNI passthrough, для него нужен модуль stream. В Ubuntu это отдельный
-# пакет libnginx-mod-stream; без него директива "stream" роняет nginx -t.
-if [ ! -e /usr/lib/nginx/modules/ngx_stream_module.so ]; then
-  apt-get install -y -qq libnginx-mod-stream || apt-get update -qq && apt-get install -y -qq libnginx-mod-stream
-fi
-grep -q 'stream.d' /etc/nginx/nginx.conf 2>/dev/null || {{
-  sed -i '/^http {{/i stream {{\\n    include /etc/nginx/stream.d/*.conf;\\n}}\\n' /etc/nginx/nginx.conf
-}}
-
-# Если Xray уже опубликован на 0.0.0.0:443 (старая установка) — переносим его на
-# 127.0.0.1:{XRAY_LOCAL_PORT}, чтобы :443 освободился под stream-блок.
-if [ "{'1' if move_xray else '0'}" = "1" ]; then
-  if docker ps -a --format '{{{{.Names}}}}' | grep -qx {shlex.quote(XRAY_CONTAINER)}; then
-    echo "Перенос Xray на 127.0.0.1:{XRAY_LOCAL_PORT} для совместного :443..."
-    IMG=$(docker inspect -f '{{{{.Config.Image}}}}' {shlex.quote(XRAY_CONTAINER)} 2>/dev/null || true)
-    docker stop {shlex.quote(XRAY_CONTAINER)} >/dev/null 2>&1 || true
-    docker rm {shlex.quote(XRAY_CONTAINER)} >/dev/null 2>&1 || true
-    if [ -n "$IMG" ]; then
-      docker run -d --privileged --log-driver none --restart always --cap-add=NET_ADMIN \\
-        -p 127.0.0.1:{XRAY_LOCAL_PORT}:443/tcp \\
-        --name {shlex.quote(XRAY_CONTAINER)} "$IMG"
-      docker network connect amnezia-dns-net {shlex.quote(XRAY_CONTAINER)} 2>/dev/null || true
-      docker exec -i {shlex.quote(XRAY_CONTAINER)} bash -c 'mkdir -p /dev/net; if [ ! -c /dev/net/tun ]; then mknod /dev/net/tun c 10 200; fi' 2>/dev/null || true
-      docker exec -d {shlex.quote(XRAY_CONTAINER)} /opt/amnezia/start.sh 2>/dev/null || true
-    fi
-  fi
-fi
+{stream_setup}
 
 cat > {shlex.quote(NGINX_SITE)} <<'NGINX_HTTP_EOF'
 {http_initial_conf}
@@ -702,33 +775,21 @@ NGINX_HTTP_EOF
 ln -sf {shlex.quote(NGINX_SITE)} {shlex.quote(NGINX_SITE_ENABLED)}
 rm -f /etc/nginx/sites-enabled/default 2>/dev/null || true
 
-# :443 → stream (panel→8443, chat→8444, default→Xray). Пишем ДО certbot: ACME идёт
-# по :80 (webroot), а upstream'ы на :443 проверяются nginx -t лишь синтаксически.
-cat > {shlex.quote(STREAM_CONF)} <<'NGINX_STREAM_EOF'
-{stream_conf}
-NGINX_STREAM_EOF
-{chat_fix}
 nginx -t
 systemctl enable nginx
 systemctl reload nginx || systemctl start nginx
 
 {certbot_issue_script(domain, email_flag)}
 
-# HTTPS-vhost панели слушает локальный 8443 (за stream-блоком), не :443.
 cat > {shlex.quote(NGINX_SITE)} <<'NGINX_HTTPS_EOF'
 {http_final_conf}
 
 {https_conf}
 NGINX_HTTPS_EOF
-sed -i 's/listen 443 ssl/listen {PANEL_HTTPS_INTERNAL} ssl/g' {shlex.quote(NGINX_SITE)}
-sed -i 's/listen \\[::\\]:443 ssl/listen [::]:{PANEL_HTTPS_INTERNAL} ssl/g' {shlex.quote(NGINX_SITE)}
-
+{listen_fix}
 nginx -t
 systemctl reload nginx
 
-curl -sf --max-time 10 -H "Host: {domain}" http://127.0.0.1/api/v1/health >/dev/null \\
-  || curl -sf --max-time 10 https://{shlex.quote(domain)}/api/v1/health >/dev/null \\
-  || curl -sf --max-time 10 -k https://127.0.0.1:{PANEL_HTTPS_INTERNAL}/api/v1/health >/dev/null
-
+{health}
 echo UTMKA_SSL_OK domain={domain} ip={public_ip}
 """

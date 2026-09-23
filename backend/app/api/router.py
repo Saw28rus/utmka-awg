@@ -17,6 +17,7 @@ from app.api.routes import (
     node_migration,
     notifications,
     operations,
+    panel_host,
     servers,
     settings,
     users,
@@ -38,6 +39,7 @@ api_router.include_router(channels.router, prefix="/channels", tags=["channels"]
 api_router.include_router(invoices.router, prefix="/invoices", tags=["invoices"])
 api_router.include_router(users.router, prefix="/users", tags=["users"])
 api_router.include_router(settings.router, prefix="/settings", tags=["settings"])
+api_router.include_router(panel_host.router, prefix="/settings/panel-host", tags=["panel-host"])
 api_router.include_router(audit.router, prefix="/audit", tags=["audit"])
 api_router.include_router(operations.router, prefix="/operations", tags=["operations"])
 api_router.include_router(notifications.router, prefix="/notifications", tags=["notifications"])

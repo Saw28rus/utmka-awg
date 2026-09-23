@@ -154,6 +154,11 @@ def run(ssh: paramiko.SSHClient, command: str, timeout: int = 20) -> CommandResu
         с большим выводом «зависнет» в ожидании чтения);
       * выходим по дедлайну (wall-clock), закрывая канал и бросая SSHTimeoutError.
     """
+    if getattr(ssh, "_utmka_local_host", False):
+        from app.ssh.host_exec import run_host
+
+        return run_host(command, timeout=timeout)
+
     transport = ssh.get_transport()
     if transport is None:
         raise paramiko.SSHException("SSH-транспорт закрыт.")

@@ -26,11 +26,11 @@ from app.services.panel_ssl import (
     transient_acme_hint,
     _cert_expiry,
     _connect,
+    _effective_public_ip,
     _normalize_domain,
     _port_80_available,
     _render_template,
     _resolve_domain_ips,
-    _server_public_ip,
     magic_domain_for_ip,
 )
 from app.services.server_store import server_store
@@ -132,7 +132,7 @@ def get_chat_domain_state(server_id: str) -> ChatDomainState:
         )
 
     try:
-        public_ip = _server_public_ip(ssh) or record.get("host")
+        public_ip = _effective_public_ip(ssh, record, target)
         harden_active = _harden_active(ssh)
         vhost_present = (
             ssh_exec.run(ssh, f"test -f {shlex.quote(CHAT_NGINX_SITE_ENABLED)}", timeout=10).exit_code == 0
@@ -181,7 +181,7 @@ def verify_chat_domain(server_id: str, domain: str) -> ChatDomainVerifyResult:
                 "Сначала ограничьте :8080 (блок «Аварийный вход :8080») — это предусловие чата.",
             )
 
-        public_ip = _server_public_ip(ssh) or record.get("host")
+        public_ip = _effective_public_ip(ssh, record, target)
         resolved = _resolve_domain_ips(domain)
         if not resolved:
             return _verify_fail(
@@ -297,7 +297,7 @@ def install_chat_domain_auto(server_id: str) -> ChatDomainInstallResult:
         raise ChatDomainError("Сервер не найден.")
     ssh = _connect(target)
     try:
-        public_ip = _server_public_ip(ssh) or record.get("host")
+        public_ip = _effective_public_ip(ssh, record, target)
     finally:
         ssh.close()
     try:

@@ -29,8 +29,13 @@
           </div>
         </header>
 
+        <!-- Домен и чат (хост панели) -->
+        <section v-if="activeSection === 'domain'" class="section-body section-body--wide">
+          <PanelHostSecurity />
+        </section>
+
         <!-- Безопасность -->
-        <section v-if="activeSection === 'security'" class="section-body">
+        <section v-else-if="activeSection === 'security'" class="section-body">
           <div class="field-group">
             <h3>Смена пароля</h3>
             <label class="field">
@@ -247,6 +252,7 @@ import {
   CreditCard,
   Database,
   Download,
+  Globe,
   Link2,
   ScrollText,
   Shield,
@@ -267,6 +273,7 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { api } from '@/api/client'
 import { onRevisit } from '@/composables/useRevisit'
 import AppShell from '@/layouts/AppShell.vue'
+import PanelHostSecurity from '@/components/PanelHostSecurity.vue'
 import { useIntegrationsStore } from '@/stores/integrations'
 import { usePanelStore } from '@/stores/panel'
 import { usePanelUpdateStore } from '@/stores/panelUpdate'
@@ -274,6 +281,7 @@ import { usePanelUpdateStore } from '@/stores/panelUpdate'
 defineOptions({ name: 'SettingsView' })
 
 type SectionId =
+  | 'domain'
   | 'security'
   | 'awg'
   | 'integrations'
@@ -320,6 +328,7 @@ type YooKassaStatus = {
 }
 
 const sections: { id: SectionId; label: string; title: string; desc: string; icon: object }[] = [
+  { id: 'domain', label: 'Домен и чат', title: 'Домен и чат', desc: 'HTTPS и чат на этом сервере, где стоит панель.', icon: Globe },
   { id: 'security', label: 'Безопасность', title: 'Безопасность', desc: 'Пароль и параметры сессий.', icon: Shield },
   { id: 'awg', label: 'AWG defaults', title: 'AWG по умолчанию', desc: 'Значения для wizard установки протокола.', icon: SlidersHorizontal },
   { id: 'integrations', label: 'Интеграции', title: 'Интеграции', desc: 'Платежи и подключение внешних сервисов.', icon: Link2 },
@@ -342,7 +351,7 @@ const integrationTabs = computed(() => [
   }
 ])
 
-const activeSection = ref<SectionId>('security')
+const activeSection = ref<SectionId>('domain')
 const activeIntegration = ref<IntegrationId>('yookassa')
 const loading = ref(true)
 const settings = ref<SettingsData | null>(null)

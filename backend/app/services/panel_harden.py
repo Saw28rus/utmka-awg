@@ -217,6 +217,10 @@ def disable_harden(server_id: str) -> PanelHardenApplyResult:
 
 
 def _connect(target) -> object:
+    if getattr(target, "local", False):
+        from app.ssh.host_exec import LocalHostSession
+
+        return LocalHostSession()
     return ssh_exec.connect(
         host=target.host,
         port=target.port,

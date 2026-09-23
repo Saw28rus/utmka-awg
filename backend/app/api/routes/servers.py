@@ -552,6 +552,13 @@ async def protocol_install(
 ) -> ProtocolInstallResult:
     if not server_store.get_record(server_id):
         raise HTTPException(status_code=404, detail="Сервер не найден.")
+    from app.services.panel_host import is_panel_host_id
+
+    if is_panel_host_id(server_id):
+        raise HTTPException(
+            status_code=400,
+            detail="На хосте панели VPN не ставится. HTTPS и чат — в Настройках → Домен и чат.",
+        )
     try:
         if protocol_id == "xray":
             result = await asyncio.to_thread(

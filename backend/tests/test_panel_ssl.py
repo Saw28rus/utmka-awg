@@ -30,3 +30,59 @@ def test_certbot_issue_script_retries_webroot_not_standalone() -> None:
     assert "попытка" in script
     assert "UTMKA_CERTBOT_FAIL" in script
     assert "155.212.246.237.sslip.io" in script
+
+
+def test_panel_host_ssl_script_skips_xray_stream() -> None:
+    from app.services.panel_ssl import _build_install_script
+
+    script = _build_install_script(
+        domain="2.59.161.189.sslip.io",
+        email="",
+        backup_dir="/opt/utmka/ssl-backup/t",
+        move_xray=False,
+        public_ip="2.59.161.189",
+        reserve_xray=False,
+    )
+    assert "libnginx-mod-stream" not in script
+    assert "listen 8443" not in script
+    assert "amnezia-xray" not in script
+    assert "UTMKA_SSL_OK" in script
+    assert "/etc/nginx/sites-available/utmka-panel" in script
+
+
+def test_vpn_node_ssl_script_reserves_xray_stream() -> None:
+    from app.services.panel_ssl import _build_install_script
+
+    script = _build_install_script(
+        domain="panel.example.com",
+        email="",
+        backup_dir="/opt/utmka/ssl-backup/t",
+        move_xray=False,
+        public_ip="1.2.3.4",
+        reserve_xray=True,
+    )
+    assert "libnginx-mod-stream" in script
+    assert "listen 8443" in script
+    assert "utmka-xray.conf" in script
+
+
+def test_panel_host_hidden_from_server_list() -> None:
+    from app.services.server_store import ServerStore
+
+    assert ServerStore._hidden({"id": "__panel__", "kind": "panel_host"})
+    assert ServerStore._hidden({"id": "__panel__"})
+    assert ServerStore._hidden({"id": "abc", "kind": "panel_host"})
+    assert not ServerStore._hidden({"id": "abc", "host": "1.2.3.4"})
+
+
+def test_chat_on_panel_host_listens_443() -> None:
+    from app.services.chat_domain import _build_install_script
+
+    script = _build_install_script(
+        domain="chat.2.59.161.189.sslip.io",
+        backup_dir="/opt/utmka/chat-ssl-backup/t",
+        passthrough=False,
+    )
+    assert "utmka-xray.conf" not in script
+    assert "8444" not in script
+    assert "UTMKA_CHAT_OK" in script

@@ -12,12 +12,22 @@ SERVERS_FILE = "servers.json"
 
 
 class SshTarget:
-    def __init__(self, host: str, port: int, username: str, password: Optional[str], key: Optional[str]):
+    def __init__(
+        self,
+        host: str,
+        port: int,
+        username: str,
+        password: Optional[str],
+        key: Optional[str],
+        *,
+        local: bool = False,
+    ):
         self.host = host
         self.port = port
         self.username = username
         self.password = password
         self.key = key
+        self.local = local
 
 
 class ServerStore:
@@ -56,11 +66,13 @@ class ServerStore:
         return self._to_read(record)
 
     def list(self) -> list[ServerListItem]:
-        return [self._to_list_item(record) for record in self._servers.values()]
+        return [self._to_list_item(record) for record in self._servers.values() if not self._hidden(record)]
 
     def get(self, server_id: str) -> Optional[ServerRead]:
         record = self._servers.get(server_id)
-        return self._to_read(record) if record else None
+        if not record or self._hidden(record):
+            return None
+        return self._to_read(record)
 
     def get_record(self, server_id: str) -> Optional[dict]:
         return self._servers.get(server_id)
@@ -69,6 +81,15 @@ class ServerStore:
         record = self._servers.get(server_id)
         if not record:
             return None
+        if self._hidden(record):
+            return SshTarget(
+                host=record.get("host") or "local-panel",
+                port=0,
+                username=record.get("ssh_username") or "local",
+                password=None,
+                key=None,
+                local=True,
+            )
         return SshTarget(
             host=record["host"],
             port=record["ssh_port"],
@@ -147,6 +168,9 @@ class ServerStore:
         return record
 
     def delete(self, server_id: str) -> bool:
+        record = self._servers.get(server_id)
+        if record and self._hidden(record):
+            return False
         if server_id in self._servers:
             del self._servers[server_id]
             self._persist()
@@ -154,7 +178,11 @@ class ServerStore:
         return False
 
     def list_records(self) -> list[dict]:
-        return list(self._servers.values())
+        return [rec for rec in self._servers.values() if not self._hidden(rec)]
+
+    @staticmethod
+    def _hidden(record: dict) -> bool:
+        return record.get("kind") == "panel_host" or record.get("id") == "__panel__"
 
     def client_protocols(self, record: dict) -> list[str]:
         return self._client_protocols(record)
