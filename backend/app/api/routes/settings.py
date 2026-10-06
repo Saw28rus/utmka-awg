@@ -1,3 +1,4 @@
+import asyncio
 import uuid
 from typing import Optional
 
@@ -9,6 +10,10 @@ from app.core.deps import client_ip, get_current_user, require_admin
 from app.db.session import get_db
 from app.schemas.auth import ChangePasswordRequest, CurrentUser
 from app.schemas.settings import (
+    IcmpStealthBulkResult,
+    IcmpStealthOverview,
+    IcmpStealthServerRead,
+    IcmpStealthBulkItem,
     PanelJobRead,
     PanelSettingsRead,
     PanelSettingsUpdate,
@@ -316,3 +321,96 @@ async def yookassa_disconnect(
         ip=client_ip(request),
     )
     return YooKassaStatusRead(**data)
+
+
+@router.get("/icmp-stealth", response_model=IcmpStealthOverview)
+async def icmp_stealth_overview(_: CurrentUser = Depends(require_admin)) -> IcmpStealthOverview:
+    from app.services.icmp_stealth import IcmpStealthError, list_vpn_states
+
+    try:
+        rows = await asyncio.to_thread(list_vpn_states)
+    except IcmpStealthError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return IcmpStealthOverview(
+        servers=[
+            IcmpStealthServerRead(
+                server_id=r.server_id,
+                name=r.name,
+                host=r.host,
+                enabled=r.enabled,
+                role=r.role,
+                ping_replies=r.ping_replies,
+                message=r.message,
+            )
+            for r in rows
+        ]
+    )
+
+
+@router.post("/icmp-stealth/apply-all", response_model=IcmpStealthBulkResult)
+async def icmp_stealth_apply_all(
+    request: Request,
+    admin: CurrentUser = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+) -> IcmpStealthBulkResult:
+    from app.services.icmp_stealth import IcmpStealthError, apply_all
+
+    try:
+        items = await asyncio.to_thread(apply_all)
+    except IcmpStealthError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    payload = [
+        IcmpStealthBulkItem(
+            ok=i.ok, enabled=i.enabled, ping_replies=i.ping_replies, message=i.message
+        )
+        for i in items
+    ]
+    ok = all(i.ok for i in payload)
+    await AuditService(db).log(
+        "icmp_stealth_apply_all",
+        user_id=uuid.UUID(admin.id),
+        user_email=admin.email,
+        target_type="settings",
+        detail={"ok": ok, "count": len(payload)},
+        ip=client_ip(request),
+    )
+    message = (
+        "Двусторонний пинг закрыт на всех VPN-серверах."
+        if ok
+        else "Часть серверов не обновилась — смотрите список ниже."
+    )
+    return IcmpStealthBulkResult(ok=ok, items=payload, message=message)
+
+
+@router.post("/icmp-stealth/disable-all", response_model=IcmpStealthBulkResult)
+async def icmp_stealth_disable_all(
+    request: Request,
+    admin: CurrentUser = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+) -> IcmpStealthBulkResult:
+    from app.services.icmp_stealth import IcmpStealthError, disable_all
+
+    try:
+        items = await asyncio.to_thread(disable_all)
+    except IcmpStealthError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    payload = [
+        IcmpStealthBulkItem(
+            ok=i.ok, enabled=i.enabled, ping_replies=i.ping_replies, message=i.message
+        )
+        for i in items
+    ]
+    ok = all(i.ok for i in payload)
+    await AuditService(db).log(
+        "icmp_stealth_disable_all",
+        user_id=uuid.UUID(admin.id),
+        user_email=admin.email,
+        target_type="settings",
+        detail={"ok": ok, "count": len(payload)},
+        ip=client_ip(request),
+    )
+    return IcmpStealthBulkResult(
+        ok=ok,
+        items=payload,
+        message="Ответ на ping снова включён." if ok else "Часть серверов не обновилась.",
+    )

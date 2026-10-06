@@ -279,7 +279,7 @@ class PanelHardenResult(BaseModel):
 
 
 class SecurityActionRequest(BaseModel):
-    control: str  # ufw | fail2ban | updates
+    control: str  # ufw | fail2ban | updates | icmp_stealth
     action: str  # enable | disable
 
 

@@ -545,6 +545,31 @@
         </div>
 
         <div class="panel block">
+          <div class="security-head">
+            <h3>Двусторонний пинг (2ip)</h3>
+            <span class="security-score" :class="icmpStealthOn ? 'ok' : 'warn'">
+              {{ icmpStealthOn ? 'закрыт' : 'открыт' }}
+            </span>
+          </div>
+          <p class="sec-sub">
+            2ip пингует IP, который видят сайты. Домашний NAT молчит, VPS отвечает — так ловят туннель.
+            При каскаде закрывайте на <strong>выходном</strong> сервере.
+          </p>
+          <p v-if="icmpStealthCheck?.recommendation" class="sec-note">{{ icmpStealthCheck.recommendation }}</p>
+          <div class="ssl-actions">
+            <n-button
+              v-if="icmpStealthCheck"
+              :type="icmpStealthOn ? 'default' : 'primary'"
+              :loading="securityBusy === 'icmp_stealth'"
+              :disabled="!!securityBusy"
+              @click="toggleIcmpStealth"
+            >
+              {{ icmpStealthOn ? 'Снова отвечать на ping' : 'Закрыть двусторонний пинг' }}
+            </n-button>
+          </div>
+        </div>
+
+        <div class="panel block">
           <button type="button" class="sec-audit-head" @click="auditOpen = !auditOpen">
             <h3>Аудит безопасности</h3>
             <span class="security-score" :class="securityWarnings ? 'warn' : 'ok'">
@@ -2541,6 +2566,11 @@ function toggleSecurity(check: SecurityCheck) {
     else confirmSecurityDisable(control, 'Выключить автообновления?', 'Сервер перестанет автоматически получать патчи безопасности.')
     return
   }
+  if (control === 'icmp_stealth') {
+    if (turningOn) void doSecurityAction(control, 'enable')
+    else confirmSecurityDisable(control, 'Снова отвечать на ping?', '2ip снова сможет определить туннель по двустороннему пингу.')
+    return
+  }
 }
 
 async function confirmUfwEnable() {
@@ -2628,6 +2658,12 @@ const securityWarnings = computed(
 const securityOkCount = computed(
   () => (overview.value?.security || []).filter((c) => c.status === 'ok').length
 )
+const icmpStealthCheck = computed(() => (overview.value?.security || []).find((c) => c.control === 'icmp_stealth'))
+const icmpStealthOn = computed(() => !!icmpStealthCheck.value?.enabled)
+
+function toggleIcmpStealth() {
+  if (icmpStealthCheck.value) toggleSecurity(icmpStealthCheck.value)
+}
 
 function checkTone(status: SecurityCheck['status']) {
   if (status === 'ok') return 'ok'

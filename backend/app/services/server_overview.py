@@ -88,6 +88,7 @@ else
   echo "password_auth=$(grep -iE '^\s*PasswordAuthentication' /etc/ssh/sshd_config 2>/dev/null | tail -1 | awk '{print $2}')"
 fi
 echo "unattended=$(dpkg -l unattended-upgrades 2>/dev/null | awk '/^ii/{print "installed"}')"
+echo "icmp_stealth=$(cat /proc/sys/net/ipv4/icmp_echo_ignore_all 2>/dev/null || echo 0)"
 """
 
 ALLOWED_CONTAINER_ACTIONS = {"start", "stop", "restart"}
@@ -576,6 +577,45 @@ def _collect_security(ssh, record: dict, server_id: str) -> list[SecurityCheck]:
             recommendation=panel.get("recommendation"),
         )
     )
+
+    icmp = (values.get("icmp_stealth") or "").strip()
+    from app.services.icmp_stealth import server_cascade_role
+
+    role = server_cascade_role(server_id)
+    role_hint = {
+        "exit": "2ip пингует этот сервер (выход каскада).",
+        "entry": "При каскаде закройте пинг на выходном сервере; здесь — по желанию.",
+        "standalone": "2ip пингует IP этого сервера.",
+    }.get(role, "")
+    if icmp == "1":
+        checks.append(
+            SecurityCheck(
+                id="icmp_stealth",
+                label="Двусторонний пинг (2ip)",
+                status="ok",
+                value="Закрыт",
+                recommendation=role_hint or None,
+                actionable=True,
+                control="icmp_stealth",
+                enabled=True,
+            )
+        )
+    else:
+        checks.append(
+            SecurityCheck(
+                id="icmp_stealth",
+                label="Двусторонний пинг (2ip)",
+                status="warning",
+                value="Открыт",
+                recommendation=(
+                    f"{role_hint} Включите — сервер перестанет отвечать на ping, "
+                    "и 2ip не пометит туннель."
+                ).strip(),
+                actionable=True,
+                control="icmp_stealth",
+                enabled=False,
+            )
+        )
 
     return checks
 

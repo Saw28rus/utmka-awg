@@ -68,6 +68,11 @@
           </div>
         </section>
 
+        <!-- Антиотпечаток -->
+        <section v-else-if="activeSection === 'stealth'" class="section-body section-body--wide">
+          <IcmpStealthSettings />
+        </section>
+
         <!-- AWG -->
         <section v-else-if="activeSection === 'awg'" class="section-body">
           <label class="field"><span>DNS</span><n-input v-model:value="form.default_dns" /></label>
@@ -252,6 +257,7 @@ import {
   CreditCard,
   Database,
   Download,
+  EyeOff,
   Globe,
   Link2,
   ScrollText,
@@ -273,6 +279,7 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { api } from '@/api/client'
 import { onRevisit } from '@/composables/useRevisit'
 import AppShell from '@/layouts/AppShell.vue'
+import IcmpStealthSettings from '@/components/IcmpStealthSettings.vue'
 import PanelHostSecurity from '@/components/PanelHostSecurity.vue'
 import { useIntegrationsStore } from '@/stores/integrations'
 import { usePanelStore } from '@/stores/panel'
@@ -283,6 +290,7 @@ defineOptions({ name: 'SettingsView' })
 type SectionId =
   | 'domain'
   | 'security'
+  | 'stealth'
   | 'awg'
   | 'integrations'
   | 'data'
@@ -330,6 +338,7 @@ type YooKassaStatus = {
 const sections: { id: SectionId; label: string; title: string; desc: string; icon: object }[] = [
   { id: 'domain', label: 'Домен и чат', title: 'Домен и чат', desc: 'HTTPS и чат на этом сервере, где стоит панель.', icon: Globe },
   { id: 'security', label: 'Безопасность', title: 'Безопасность', desc: 'Пароль и параметры сессий.', icon: Shield },
+  { id: 'stealth', label: 'Антиотпечаток', title: 'Двусторонний пинг', desc: 'Закрыть ICMP echo, чтобы 2ip не видел туннель.', icon: EyeOff },
   { id: 'awg', label: 'AWG defaults', title: 'AWG по умолчанию', desc: 'Значения для wizard установки протокола.', icon: SlidersHorizontal },
   { id: 'integrations', label: 'Интеграции', title: 'Интеграции', desc: 'Платежи и подключение внешних сервисов.', icon: Link2 },
   { id: 'data', label: 'Данные', title: 'Резервные копии', desc: 'Экспорт и восстановление данных панели.', icon: Database },

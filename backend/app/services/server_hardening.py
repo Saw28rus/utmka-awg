@@ -3,7 +3,8 @@
 Управляемые контролы:
 - ``fail2ban``  — установка/включение/выключение (низкий риск);
 - ``updates``   — unattended-upgrades без авто-ребута (низкий риск);
-- ``ufw``       — включение/выключение файрвола (средний риск, защита от локаута).
+- ``ufw``       — включение/выключение файрвола (средний риск, защита от локаута);
+- ``icmp_stealth`` — не отвечать на ICMP echo (2ip «двусторонний пинг»).
 
 Защита от локаута (для UFW):
 1. **dead-man switch** — перед включением UFW на сервере взводится отложенный
@@ -38,7 +39,7 @@ DEADMAN_SCRIPT = "/opt/utmka/ufw-revert.sh"
 DEADMAN_TIMEOUT = 120  # секунд до авто-отката UFW
 UTMKA_DIR = "/opt/utmka"
 
-CONTROLS = {"fail2ban", "updates", "ufw"}
+CONTROLS = {"fail2ban", "updates", "ufw", "icmp_stealth"}
 
 
 class HardeningError(Exception):
@@ -427,4 +428,14 @@ def run_action(server_id: str, control: str, action: str, *, caller_ip: Optional
         return apply_updates(server_id) if enable else disable_updates(server_id)
     if control == "ufw":
         return apply_ufw(server_id) if enable else disable_ufw(server_id)
+    if control == "icmp_stealth":
+        from app.services.icmp_stealth import IcmpStealthError, apply_stealth, disable_stealth
+
+        try:
+            result = apply_stealth(server_id) if enable else disable_stealth(server_id)
+        except IcmpStealthError as exc:
+            raise HardeningError(str(exc)) from exc
+        return HardeningResult(
+            ok=result.ok, control="icmp_stealth", enabled=result.enabled, message=result.message
+        )
     raise HardeningError("Неизвестный контрол.")

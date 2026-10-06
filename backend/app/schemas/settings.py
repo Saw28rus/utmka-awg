@@ -69,6 +69,33 @@ class YooKassaConnectRequest(BaseModel):
     secret_key: str = Field(min_length=1, max_length=256)
 
 
+class IcmpStealthServerRead(BaseModel):
+    server_id: str
+    name: str
+    host: str
+    enabled: bool
+    role: str
+    ping_replies: Optional[bool] = None
+    message: Optional[str] = None
+
+
+class IcmpStealthOverview(BaseModel):
+    servers: list[IcmpStealthServerRead] = []
+
+
+class IcmpStealthBulkItem(BaseModel):
+    ok: bool
+    enabled: bool
+    ping_replies: Optional[bool] = None
+    message: str
+
+
+class IcmpStealthBulkResult(BaseModel):
+    ok: bool
+    items: list[IcmpStealthBulkItem] = []
+    message: str
+
+
 class AuditEventRead(BaseModel):
     id: str
     user_email: Optional[str] = None
