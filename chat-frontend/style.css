@@ -375,8 +375,25 @@ input:focus, textarea:focus { border-color: var(--accent); }
 }
 .msg.admin .att { border-color: var(--border); background: var(--panel2); }
 .att.expired { color: var(--muted); }
-.att-title { margin-bottom: 8px; font-weight: 600; }
+.att-title { margin-bottom: 4px; font-weight: 600; }
+.att-hint { font-size: 12.5px; color: var(--muted); margin-bottom: 10px; }
+.att-hint-block { margin: 0; font-size: 14px; line-height: 1.5; color: var(--muted); text-align: left; }
+.att-launch { display: flex; flex-direction: column; gap: 8px; margin-bottom: 10px; }
 .att-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+
+.att-launch-btn {
+  width: 100%;
+  background: var(--panel);
+  color: var(--accent);
+  border: 1px solid var(--accent);
+  border-radius: 12px;
+  padding: 13px 14px;
+  font-size: 15px;
+  font-weight: 700;
+  text-align: center;
+}
+.att-launch-btn.primary { background: var(--accent); color: var(--accent-ink); }
+.att-launch-btn:disabled, .att-btn:disabled { opacity: 0.55; }
 
 .att-btn {
   background: var(--panel);

@@ -14,7 +14,7 @@ logger = logging.getLogger("utmka.chat.delivery")
 
 ROTATION_BODY = (
     "Маскировка VPN обновлена. Старый ключ больше не работает — "
-    "откройте вложение и импортируйте новый конфиг в AmneziaWG / AmneziaVPN."
+    "нажмите «Открыть в Amnezia VPN», приложение само подставит новый ключ."
 )
 
 

@@ -566,8 +566,7 @@ class ChatService:
         await self.session.flush()
 
         text = body or (
-            "Ключ подключения готов. Скачайте файл конфигурации или отсканируйте QR "
-            "в приложении AmneziaWG/AmneziaVPN.\n"
+            "Ключ готов. Нажмите «Открыть в Amnezia VPN» — приложение само подставит ключ.\n"
             f"Ссылка действует {KEY_ATTACHMENT_TTL_HOURS} ч."
         )
         if payload.get("fallback_vpn_link") or payload.get("fallback_config_text"):

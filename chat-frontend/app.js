@@ -58,6 +58,7 @@
   // --- утилиты ----------------------------------------------------------------
 
   var isIos = /iphone|ipad|ipod/i.test(navigator.userAgent) && !window.MSStream;
+  var isAndroid = /android/i.test(navigator.userAgent);
   function isStandalone() {
     return (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches) ||
       navigator.standalone === true;
@@ -549,6 +550,8 @@
 
   // --- вложения (ключ подключения) --------------------------------------------
 
+  var viewCache = {};
+
   function attButton(label, primary, handler) {
     var b = document.createElement('button');
     b.type = 'button';
@@ -556,6 +559,191 @@
     b.textContent = label;
     b.addEventListener('click', function () { handler(b); });
     return b;
+  }
+
+  function launchButton(label, primary, handler) {
+    var b = attButton(label, primary, handler);
+    b.className = 'att-launch-btn' + (primary ? ' primary' : '');
+    return b;
+  }
+
+  function looksLikeWg(text) {
+    return !!(text && /\[Interface\]/i.test(text) && /\[Peer\]/i.test(text));
+  }
+
+  function isAwg31(text) {
+    return !!(text && /HeaderProtectionKey|RandomTrailers\s*=\s*on/i.test(text));
+  }
+
+  function stemName(filename) {
+    return String(filename || 'vpn').replace(/\.(conf|vpn|txt)$/i, '') || 'vpn';
+  }
+
+  function loadAttachmentView(att) {
+    if (viewCache[att.id]) return viewCache[att.id];
+    var p = authFetch('/attachments/' + att.id + '/view').then(function (res) {
+      return res.json().then(function (data) {
+        if (!res.ok) throw new Error(data.detail || 'Не удалось открыть ключ.');
+        return data;
+      });
+    });
+    viewCache[att.id] = p;
+    p.catch(function () { delete viewCache[att.id]; });
+    return p;
+  }
+
+  function downloadNamed(filename, text) {
+    var blob = new Blob([text], { type: 'application/octet-stream' });
+    var a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(function () { URL.revokeObjectURL(a.href); }, 5000);
+  }
+
+  function shareOrDownload(filename, text) {
+    var file;
+    try {
+      file = new File([text], filename, { type: 'application/octet-stream' });
+    } catch (e) {
+      downloadNamed(filename, text);
+      return Promise.resolve('download');
+    }
+    if (navigator.canShare) {
+      var payload = { files: [file], title: 'Ключ VPN' };
+      var can = false;
+      try { can = navigator.canShare(payload); } catch (e2) { can = false; }
+      if (can) {
+        return navigator.share(payload).then(function () { return 'shared'; }).catch(function (err) {
+          if (err && err.name === 'AbortError') return 'shared';
+          downloadNamed(filename, text);
+          return 'download';
+        });
+      }
+    }
+    downloadNamed(filename, text);
+    return Promise.resolve('download');
+  }
+
+  function navigateScheme(url) {
+    try {
+      window.location.href = url;
+    } catch (e) {
+      var a = document.createElement('a');
+      a.href = url;
+      a.rel = 'noopener';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+    }
+  }
+
+  function androidVpnIntent(vpnLink) {
+    var payload = String(vpnLink || '').replace(/^vpn:\/\//i, '');
+    return 'intent://' + payload +
+      '#Intent;scheme=vpn;package=org.amnezia.vpn;S.browser_fallback_url=' +
+      encodeURIComponent('https://play.google.com/store/apps/details?id=org.amnezia.vpn') +
+      ';end';
+  }
+
+  function pageProbablyLeft() {
+    return document.hidden || document.visibilityState === 'hidden';
+  }
+
+  function showOpenHint(kind, onContinue) {
+    var overlay = document.createElement('div');
+    overlay.className = 'qr-overlay';
+    var card = document.createElement('div');
+    card.className = 'overlay-card';
+    var h = document.createElement('strong');
+    var p = document.createElement('p');
+    p.className = 'att-hint-block';
+    if (kind === 'vpn') {
+      h.textContent = 'Откройте в Amnezia VPN';
+      p.textContent = 'Приложение не открылось. Установите Amnezia VPN и нажмите кнопку ещё раз — или сохраните файл и откройте его через это приложение.';
+    } else if (kind === 'vpn-ios') {
+      h.textContent = 'Откройте файл в Amnezia VPN';
+      p.textContent = 'В «Файлах» нажмите скачанный .vpn → Поделиться → Amnezia VPN.';
+    } else {
+      h.textContent = 'Откройте в AmneziaWG';
+      p.textContent = 'AmneziaWG само не подхватывает ссылку. В приложении нажмите «+» → из файла и выберите скачанный .conf.';
+    }
+    var row = document.createElement('div');
+    row.className = 'att-actions';
+    var ok = document.createElement('button');
+    ok.type = 'button';
+    ok.className = 'att-btn primary';
+    ok.textContent = onContinue ? 'Сохранить файл' : 'Понятно';
+    ok.addEventListener('click', function () {
+      overlay.remove();
+      if (onContinue) onContinue();
+    });
+    row.appendChild(ok);
+    if (onContinue) {
+      var cancel = document.createElement('button');
+      cancel.type = 'button';
+      cancel.className = 'att-btn';
+      cancel.textContent = 'Закрыть';
+      cancel.addEventListener('click', function () { overlay.remove(); });
+      row.appendChild(cancel);
+    }
+    card.appendChild(h);
+    card.appendChild(p);
+    card.appendChild(row);
+    overlay.addEventListener('click', function (e) { if (e.target === overlay) overlay.remove(); });
+    overlay.appendChild(card);
+    document.body.appendChild(overlay);
+  }
+
+  function openAmneziaVpn(data, att) {
+    var link = data.vpn_link;
+    if (!link) {
+      if (data.config_text) return shareOrDownload(stemName(att.filename) + '.conf', data.config_text);
+      alert('Ссылка для Amnezia VPN недоступна.');
+      return Promise.resolve();
+    }
+    if (isAndroid) {
+      var intent = androidVpnIntent(link);
+      return new Promise(function (resolve) {
+        var left = false;
+        function markLeave() { left = true; }
+        document.addEventListener('visibilitychange', markLeave);
+        window.addEventListener('pagehide', markLeave);
+        function cleanup() {
+          document.removeEventListener('visibilitychange', markLeave);
+          window.removeEventListener('pagehide', markLeave);
+        }
+        function appOpened() { return left || pageProbablyLeft(); }
+        navigateScheme(intent.length < 7000 ? intent : link);
+        setTimeout(function () {
+          if (appOpened()) { cleanup(); resolve(); return; }
+          navigateScheme(link);
+          setTimeout(function () {
+            cleanup();
+            if (appOpened()) { resolve(); return; }
+            showOpenHint('vpn', function () {
+              shareOrDownload(stemName(att.filename) + '.vpn', link).then(resolve);
+            });
+          }, 800);
+        }, 1200);
+      });
+    }
+    return shareOrDownload(stemName(att.filename) + '.vpn', link).then(function (how) {
+      if (how === 'download' && isIos) showOpenHint('vpn-ios');
+    });
+  }
+
+  function openAmneziaWg(data, att) {
+    var conf = data.config_text;
+    if (!looksLikeWg(conf)) {
+      alert('Этот ключ только для Amnezia VPN, не для AmneziaWG.');
+      return Promise.resolve();
+    }
+    return shareOrDownload(stemName(att.filename) + '.conf', conf).then(function (how) {
+      if (how === 'download') showOpenHint('awg');
+    });
   }
 
   function buildAttachment(att) {
@@ -568,15 +756,44 @@
     }
     var title = document.createElement('div');
     title.className = 'att-title';
-    title.textContent = '🔑 Ключ подключения · ' + att.filename;
+    title.textContent = '🔑 Ключ подключения';
     box.appendChild(title);
+
+    var hint = document.createElement('div');
+    hint.className = 'att-hint';
+    hint.textContent = 'Нажмите кнопку — откроется приложение';
+    box.appendChild(hint);
+
+    var launch = document.createElement('div');
+    launch.className = 'att-launch';
+    box.appendChild(launch);
 
     var row = document.createElement('div');
     row.className = 'att-actions';
+    row.appendChild(attButton('QR-код', false, function (btn) { showQr(att, btn); }));
     row.appendChild(attButton('Просмотр', false, function (btn) { showText(att, btn); }));
-    row.appendChild(attButton('Скачать', false, function (btn) { downloadAttachment(att, btn); }));
-    row.appendChild(attButton('QR', false, function (btn) { showQr(att, btn); }));
+    row.appendChild(attButton('Файл', false, function (btn) { downloadAttachment(att, btn); }));
     box.appendChild(row);
+
+    loadAttachmentView(att).then(function (data) {
+      if (data.vpn_link) {
+        launch.appendChild(launchButton('Открыть в Amnezia VPN', true, function (btn) {
+          btn.disabled = true;
+          Promise.resolve(openAmneziaVpn(data, att)).finally(function () { btn.disabled = false; });
+        }));
+      }
+      if (looksLikeWg(data.config_text) && !isAwg31(data.config_text)) {
+        launch.appendChild(launchButton('Открыть в AmneziaWG', false, function (btn) {
+          btn.disabled = true;
+          Promise.resolve(openAmneziaWg(data, att)).finally(function () { btn.disabled = false; });
+        }));
+      }
+      if (!launch.childNodes.length) {
+        hint.textContent = 'Скачайте файл или отсканируйте QR-код';
+      }
+    }).catch(function () {
+      hint.textContent = 'Не удалось загрузить ключ. Нажмите «Файл» или «QR-код».';
+    });
     return box;
   }
 
@@ -706,7 +923,7 @@
       b.className = 'att-btn';
       b.dataset.mode = v.id;
       b.textContent = v.label;
-      b.addEventListener('click', function () { activate(v); });
+      b.addEventListener('click', function () { activate(v); syncOpenLabel(); });
       tabs.appendChild(b);
     });
     activate(current);
@@ -728,6 +945,27 @@
       } else { fallbackCopy(pre); done(); }
     });
     row.appendChild(copy);
+
+    var openApp = document.createElement('button');
+    openApp.type = 'button';
+    openApp.className = 'att-btn';
+    openApp.textContent = 'Открыть в приложении';
+    function syncOpenLabel() {
+      if (current.id === 'vpn' || current.id === 'reality') openApp.textContent = 'Открыть в Amnezia VPN';
+      else if (current.id === 'awg') openApp.textContent = 'Открыть в AmneziaWG';
+      else openApp.textContent = 'Сохранить файл';
+    }
+    syncOpenLabel();
+    openApp.addEventListener('click', function () {
+      openApp.disabled = true;
+      var job;
+      if (current.id === 'vpn') job = openAmneziaVpn(data, att);
+      else if (current.id === 'reality') job = openAmneziaVpn({ vpn_link: data.fallback_vpn_link }, att);
+      else if (current.id === 'awg') job = openAmneziaWg(data, att);
+      else job = shareOrDownload(stemName(att.filename) + '.txt', current.text);
+      Promise.resolve(job).finally(function () { openApp.disabled = false; });
+    });
+    row.appendChild(openApp);
 
     var save = document.createElement('button');
     save.type = 'button';
@@ -1017,7 +1255,7 @@
 
   function initServiceWorker() {
     if (!('serviceWorker' in navigator)) return;
-    navigator.serviceWorker.register('/sw.js?v=15').catch(function () {});
+    navigator.serviceWorker.register('/sw.js?v=16').catch(function () {});
     navigator.serviceWorker.addEventListener('message', function (e) {
       if (!e.data) return;
       if (e.data.type === 'open-chat') {
