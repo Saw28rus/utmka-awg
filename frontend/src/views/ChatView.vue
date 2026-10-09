@@ -226,11 +226,35 @@
         </p>
 
         <transition name="acc-fold">
-          <div v-if="showCreateForm" class="acc-create">
-            <n-input v-model:value="newUsername" placeholder="логин: латиница, цифры, _" :disabled="creating" @keyup.enter="createAccount" />
-            <n-input v-model:value="newDisplayName" placeholder="Имя (необязательно)" :disabled="creating" @keyup.enter="createAccount" />
-            <n-button type="primary" :loading="creating" @click="createAccount">Создать</n-button>
-          </div>
+          <form v-if="showCreateForm" class="acc-create" @submit.prevent="createAccount">
+            <div class="acc-create-head">
+              <strong>Новый аккаунт</strong>
+              <span>Пароль панель придумает сама и покажет один раз — его можно сразу отправить клиенту.</span>
+            </div>
+            <label class="acc-field">
+              <span>Логин</span>
+              <n-input
+                v-model:value="newUsername"
+                placeholder="например, kris"
+                :disabled="creating"
+                :input-props="{ autocomplete: 'off', autocapitalize: 'off', spellcheck: 'false' }"
+              />
+              <small>От 3 до 32 символов: латинские буквы, цифры и _. Клиент входит по этому логину.</small>
+            </label>
+            <label class="acc-field">
+              <span>Имя <em>необязательно</em></span>
+              <n-input
+                v-model:value="newDisplayName"
+                placeholder="как видно в списке, например Крис"
+                :disabled="creating"
+              />
+              <small>Это подпись в списке аккаунтов. На вход в чат не влияет.</small>
+            </label>
+            <div class="acc-create-actions">
+              <n-button attr-type="button" @click="showCreateForm = false">Отмена</n-button>
+              <n-button attr-type="submit" type="primary" :loading="creating">Создать аккаунт</n-button>
+            </div>
+          </form>
         </transition>
 
         <n-input
@@ -1797,6 +1821,7 @@ async function copyCredentials() {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-shrink: 0;
   gap: 12px;
 }
 
@@ -1811,10 +1836,64 @@ async function copyCredentials() {
 }
 
 .acc-create {
-  display: grid;
-  grid-template-columns: 1fr 1fr auto;
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid var(--color-border-hover);
+  border-radius: 12px;
+  background: var(--color-surface-2);
+}
+
+.acc-create-head strong {
+  display: block;
+  margin-bottom: 4px;
+  font-size: 14px;
+}
+
+.acc-create-head span,
+.acc-field small {
+  color: var(--color-muted);
+  font-size: 12.5px;
+  line-height: 1.45;
+}
+
+.acc-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.acc-field > span {
+  color: var(--color-text);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.acc-field em {
+  font-style: normal;
+  font-weight: 500;
+  color: var(--color-dim);
+}
+
+.acc-create :deep(.n-input) {
+  --n-color: var(--color-bg) !important;
+  --n-color-focus: var(--color-bg) !important;
+  --n-text-color: var(--color-text) !important;
+  --n-placeholder-color: var(--color-muted) !important;
+  --n-caret-color: var(--color-text) !important;
+  --n-border: 1px solid var(--color-border-hover) !important;
+  --n-border-hover: 1px solid var(--color-accent) !important;
+  --n-border-focus: 1px solid var(--color-accent) !important;
+  --n-box-shadow-focus: 0 0 0 2px var(--color-accent-soft) !important;
+}
+
+.acc-create-actions {
+  display: flex;
+  justify-content: flex-end;
   gap: 8px;
-  overflow: hidden;
 }
 
 .acc-fold-enter-active,
@@ -1954,6 +2033,7 @@ async function copyCredentials() {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-shrink: 0;
   gap: 12px;
   font-size: 12px;
 }
