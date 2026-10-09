@@ -71,6 +71,24 @@ class TransportReissueResult(BaseModel):
     error: Optional[str] = None
 
 
+class ClientFolderCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=40)
+
+
+class ClientFolderUpdate(BaseModel):
+    name: str = Field(min_length=1, max_length=40)
+
+
+class ClientFolderRead(BaseModel):
+    id: str
+    name: str
+    sort_order: int = 0
+
+
+class ClientFolderAssign(BaseModel):
+    folder_id: Optional[str] = Field(default=None, max_length=64)
+
+
 class ClientUpdate(BaseModel):
     traffic_limit_bytes: Optional[int] = Field(default=None, ge=0)
     expires_at: Optional[str] = None
@@ -121,6 +139,7 @@ class ClientListItem(BaseModel):
     # Активный каскад: ключ на server_name, интернет через cascade_exit_name.
     cascade_exit_name: Optional[str] = None
     cascade_active: bool = False
+    folder_id: Optional[str] = None
 
 
 class ClientDetail(ClientListItem):

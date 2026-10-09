@@ -12,6 +12,10 @@ from app.schemas.clients import (
     ClientCreate,
     ClientDetail,
     ClientExportRequest,
+    ClientFolderAssign,
+    ClientFolderCreate,
+    ClientFolderRead,
+    ClientFolderUpdate,
     ClientImportRequest,
     ClientImportResult,
     ClientListItem,
@@ -187,6 +191,73 @@ async def create_client(
         detail={"name": payload.name.strip(), "server_id": payload.server_id},
         ip=client_ip(request),
     )
+    return detail
+
+
+@router.get("/folders", response_model=list[ClientFolderRead])
+async def list_client_folders(_: CurrentUser = Depends(get_current_user)) -> list[ClientFolderRead]:
+    from app.services.client_folders import client_folder_store
+
+    return [ClientFolderRead(**folder) for folder in client_folder_store.list_all()]
+
+
+@router.post("/folders", response_model=ClientFolderRead)
+async def create_client_folder(
+    payload: ClientFolderCreate,
+    _: CurrentUser = Depends(require_client_manager),
+) -> ClientFolderRead:
+    from app.services.client_folders import ClientFolderError, client_folder_store
+
+    try:
+        folder = client_folder_store.create(payload.name)
+    except ClientFolderError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return ClientFolderRead(**folder)
+
+
+@router.patch("/folders/{folder_id}", response_model=ClientFolderRead)
+async def rename_client_folder(
+    folder_id: str,
+    payload: ClientFolderUpdate,
+    _: CurrentUser = Depends(require_client_manager),
+) -> ClientFolderRead:
+    from app.services.client_folders import ClientFolderError, client_folder_store
+
+    try:
+        folder = client_folder_store.rename(folder_id, payload.name)
+    except ClientFolderError as exc:
+        status = 404 if str(exc) == "Папка не найдена." else 400
+        raise HTTPException(status_code=status, detail=str(exc)) from exc
+    return ClientFolderRead(**folder)
+
+
+@router.delete("/folders/{folder_id}")
+async def delete_client_folder(
+    folder_id: str,
+    _: CurrentUser = Depends(require_client_manager),
+) -> dict:
+    from app.services.client_folders import client_folder_store
+
+    if not client_folder_store.delete(folder_id):
+        raise HTTPException(status_code=404, detail="Папка не найдена.")
+    client_store.clear_folder(folder_id)
+    return {"ok": True}
+
+
+@router.patch("/{client_id}/folder", response_model=ClientDetail)
+async def assign_client_folder(
+    client_id: str,
+    payload: ClientFolderAssign,
+    _: CurrentUser = Depends(require_client_manager),
+) -> ClientDetail:
+    from app.services.client_folders import client_folder_store
+
+    folder_id = (payload.folder_id or "").strip() or None
+    if folder_id and not client_folder_store.get(folder_id):
+        raise HTTPException(status_code=400, detail="Папка не найдена.")
+    detail = client_store.set_folder(client_id, folder_id)
+    if not detail:
+        raise HTTPException(status_code=404, detail="Клиент не найден.")
     return detail
 
 

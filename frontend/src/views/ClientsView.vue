@@ -40,13 +40,77 @@
           <n-button tertiary circle title="Импорт клиентов" @click="showImport = true">
             <template #icon><Upload :size="16" /></template>
           </n-button>
+          <n-button tertiary circle title="Новая папка" @click="startCreateFolder">
+            <template #icon><FolderPlus :size="16" /></template>
+          </n-button>
           <n-button type="primary" circle title="Добавить клиента" @click="showAddClient = true">
             <template #icon><Plus :size="16" /></template>
           </n-button>
         </div>
       </div>
 
-      <div v-if="clients.length" class="client-list" :class="{ 'client-list--paid': hasPaidClients }">
+      <div v-if="showFolderBar" class="folder-bar">
+        <button
+          type="button"
+          class="folder-chip"
+          :class="{ active: folderFilter === 'all' }"
+          @click="folderFilter = 'all'"
+        >
+          Все
+          <span>{{ clients.length }}</span>
+        </button>
+        <button
+          type="button"
+          class="folder-chip"
+          :class="{ active: folderFilter === 'none' }"
+          @click="folderFilter = 'none'"
+        >
+          Без папки
+          <span>{{ unfiledCount }}</span>
+        </button>
+        <template v-for="folder in folders" :key="folder.id">
+          <form
+            v-if="editingFolderId === folder.id"
+            class="folder-create"
+            @submit.prevent="saveFolderRename(folder.id)"
+          >
+            <input
+              v-model="folderDraft"
+              class="folder-input"
+              maxlength="40"
+              @keydown.esc="editingFolderId = ''"
+            />
+            <button type="submit" class="folder-chip active">Ок</button>
+          </form>
+          <button
+            v-else
+            type="button"
+            class="folder-chip"
+            :class="{ active: folderFilter === folder.id }"
+            @click="folderFilter = folder.id"
+          >
+            {{ folder.name }}
+            <span>{{ folderCount(folder.id) }}</span>
+            <span v-if="folderFilter === folder.id" class="folder-tools" @click.stop>
+              <span class="folder-tool" title="Переименовать" @click="startRenameFolder(folder)">✎</span>
+              <span class="folder-tool" title="Удалить папку" @click="removeFolder(folder)">✕</span>
+            </span>
+          </button>
+        </template>
+        <form v-if="creatingFolder" class="folder-create" @submit.prevent="createFolder">
+          <input
+            ref="folderNameInput"
+            v-model="newFolderName"
+            class="folder-input"
+            maxlength="40"
+            placeholder="Например, друзья"
+            @keydown.esc="creatingFolder = false"
+          />
+          <button type="submit" class="folder-chip active">Создать</button>
+        </form>
+      </div>
+
+      <div v-if="visibleClients.length" class="client-list" :class="{ 'client-list--paid': hasPaidClients }">
         <div class="list-head">
           <span>Клиент</span>
           <span class="actions-head" />
@@ -60,14 +124,27 @@
           </template>
           <span class="center">Статус</span>
         </div>
-        <div v-for="client in clients" :key="client.id" class="client-row">
-          <RouterLink
-            :to="{ name: 'client-detail', params: { id: client.id } }"
-            class="row-cell client-cell"
-          >
-            <span class="entity-avatar entity-avatar--sm">{{ client.name.charAt(0).toUpperCase() }}</span>
-            <strong class="client-name">{{ client.name }}</strong>
-          </RouterLink>
+        <div v-for="client in visibleClients" :key="client.id" class="client-row">
+          <div class="client-identity">
+            <RouterLink
+              :to="{ name: 'client-detail', params: { id: client.id } }"
+              class="row-cell client-cell"
+            >
+              <span class="entity-avatar entity-avatar--sm">{{ client.name.charAt(0).toUpperCase() }}</span>
+              <strong class="client-name">{{ client.name }}</strong>
+            </RouterLink>
+            <select
+              v-if="folders.length"
+              class="folder-pick"
+              :value="knownFolderId(client)"
+              title="Переместить в папку"
+              @click.stop
+              @change="moveClient(client, $event)"
+            >
+              <option value="">Без папки</option>
+              <option v-for="folder in folders" :key="folder.id" :value="folder.id">{{ folder.name }}</option>
+            </select>
+          </div>
           <div class="row-actions" @click.stop>
             <n-switch
               size="small"
@@ -144,6 +221,8 @@
         </div>
       </div>
 
+      <p v-else-if="clients.length" class="folder-empty">В этой папке пока никого. Выберите её в строке клиента.</p>
+
       <EmptyState
         v-else
         title="Клиентов пока нет"
@@ -163,9 +242,9 @@
 </template>
 
 <script setup lang="ts">
-import { Download, ArrowDownUp, Pencil, Plus, RefreshCw, Upload } from '@lucide/vue'
+import { Download, ArrowDownUp, FolderPlus, Pencil, Plus, RefreshCw, Upload } from '@lucide/vue'
 import { NButton, NSwitch, useMessage } from 'naive-ui'
-import { computed, onMounted, ref } from 'vue'
+import { computed, nextTick, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 
 import { api } from '@/api/client'
@@ -211,6 +290,13 @@ type ClientListItem = {
   billing_period_months?: number
   fallback_client_id?: string | null
   fallback_of_client_id?: string | null
+  folder_id?: string | null
+}
+
+type ClientFolder = {
+  id: string
+  name: string
+  sort_order: number
 }
 
 const router = useRouter()
@@ -223,6 +309,26 @@ const showImport = ref(false)
 const editVisible = ref(false)
 const editClient = ref<ClientLimitsSource | null>(null)
 const clients = ref<ClientListItem[]>([])
+const folders = ref<ClientFolder[]>([])
+const folderFilter = ref<'all' | 'none' | string>('all')
+const creatingFolder = ref(false)
+const newFolderName = ref('')
+const editingFolderId = ref('')
+const folderDraft = ref('')
+const folderNameInput = ref<HTMLInputElement | null>(null)
+
+const showFolderBar = computed(() => folders.value.length > 0 || creatingFolder.value)
+
+const visibleClients = computed(() =>
+  clients.value.filter((client) => {
+    const folderId = knownFolderId(client)
+    if (folderFilter.value === 'all') return true
+    if (folderFilter.value === 'none') return !folderId
+    return folderId === folderFilter.value
+  })
+)
+
+const unfiledCount = computed(() => clients.value.filter((client) => !knownFolderId(client)).length)
 
 useClientTrafficPoll(clients)
 
@@ -248,6 +354,7 @@ const totalTraffic = computed(() => {
 
 onMounted(() => {
   void loadClients()
+  void loadFolders()
   void syncTrafficNow()
 })
 
@@ -283,9 +390,102 @@ async function refreshClients() {
   loading.value = true
   try {
     await loadClients(false)
+    await loadFolders()
     await syncTrafficNow()
   } finally {
     loading.value = false
+  }
+}
+
+function knownFolderId(client: ClientListItem) {
+  const id = client.folder_id || ''
+  return folders.value.some((folder) => folder.id === id) ? id : ''
+}
+
+function folderCount(folderId: string) {
+  return clients.value.filter((client) => client.folder_id === folderId).length
+}
+
+async function loadFolders() {
+  try {
+    const { data } = await api.get<ClientFolder[]>('/clients/folders')
+    folders.value = data
+    if (
+      folderFilter.value !== 'all' &&
+      folderFilter.value !== 'none' &&
+      !data.some((folder) => folder.id === folderFilter.value)
+    ) {
+      folderFilter.value = 'all'
+    }
+  } catch {
+    folders.value = []
+  }
+}
+
+async function startCreateFolder() {
+  creatingFolder.value = true
+  newFolderName.value = ''
+  await nextTick()
+  folderNameInput.value?.focus()
+}
+
+async function createFolder() {
+  const name = newFolderName.value.trim()
+  if (!name) return
+  try {
+    const { data } = await api.post<ClientFolder>('/clients/folders', { name })
+    folders.value = [...folders.value, data]
+    creatingFolder.value = false
+    newFolderName.value = ''
+    folderFilter.value = data.id
+    message.success(`Папка «${data.name}» создана.`)
+  } catch (err: any) {
+    message.error(err?.response?.data?.detail || 'Не удалось создать папку.')
+  }
+}
+
+function startRenameFolder(folder: ClientFolder) {
+  editingFolderId.value = folder.id
+  folderDraft.value = folder.name
+}
+
+async function saveFolderRename(folderId: string) {
+  const name = folderDraft.value.trim()
+  editingFolderId.value = ''
+  if (!name) return
+  try {
+    const { data } = await api.patch<ClientFolder>(`/clients/folders/${folderId}`, { name })
+    const idx = folders.value.findIndex((folder) => folder.id === folderId)
+    if (idx !== -1) folders.value[idx] = data
+  } catch (err: any) {
+    message.error(err?.response?.data?.detail || 'Не удалось переименовать папку.')
+  }
+}
+
+async function removeFolder(folder: ClientFolder) {
+  if (!window.confirm(`Удалить папку «${folder.name}»? Клиенты останутся в общем списке.`)) return
+  try {
+    await api.delete(`/clients/folders/${folder.id}`)
+    folders.value = folders.value.filter((item) => item.id !== folder.id)
+    for (const client of clients.value) {
+      if (client.folder_id === folder.id) client.folder_id = null
+    }
+    if (folderFilter.value === folder.id) folderFilter.value = 'all'
+    message.success('Папка удалена.')
+  } catch (err: any) {
+    message.error(err?.response?.data?.detail || 'Не удалось удалить папку.')
+  }
+}
+
+async function moveClient(client: ClientListItem, event: Event) {
+  const folderId = (event.target as HTMLSelectElement).value || null
+  const prev = client.folder_id || null
+  client.folder_id = folderId
+  try {
+    await api.patch(`/clients/${client.id}/folder`, { folder_id: folderId })
+  } catch (err: any) {
+    client.folder_id = prev
+    message.error(err?.response?.data?.detail || 'Не удалось переместить клиента.')
   }
 }
 
@@ -536,11 +736,98 @@ p {
   text-decoration: none;
 }
 
+.client-identity {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
 .client-cell {
   display: flex;
   align-items: center;
   gap: 10px;
   min-width: 0;
+}
+
+.folder-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 18px;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.folder-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 30px;
+  padding: 0 10px;
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--color-muted);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.folder-chip.active {
+  color: var(--color-text);
+  border-color: color-mix(in srgb, var(--color-accent) 45%, var(--color-border));
+  background: var(--color-accent-soft);
+}
+
+.folder-chip span {
+  color: var(--color-dim);
+  font-variant-numeric: tabular-nums;
+}
+
+.folder-tools {
+  display: inline-flex;
+  gap: 2px;
+}
+
+.folder-tool {
+  padding: 0 3px;
+  color: var(--color-muted);
+}
+
+.folder-create {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.folder-input {
+  width: 160px;
+  height: 30px;
+  padding: 0 10px;
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  background: var(--color-surface);
+  color: var(--color-text);
+  font-size: 12px;
+}
+
+.folder-pick {
+  max-width: 160px;
+  height: 24px;
+  padding: 0 6px;
+  border: 1px solid var(--color-border);
+  border-radius: 7px;
+  background: var(--color-surface);
+  color: var(--color-muted);
+  font-size: 11px;
+}
+
+.folder-empty {
+  margin: 0;
+  padding: 28px 18px;
+  color: var(--color-muted);
+  font-size: 13px;
 }
 
 .proto-cell {
@@ -684,7 +971,7 @@ p {
     padding: 12px 18px;
   }
 
-  .client-cell {
+  .client-identity {
     grid-column: 1;
     grid-row: 1;
   }

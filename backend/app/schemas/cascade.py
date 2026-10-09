@@ -79,6 +79,11 @@ class CascadeLinkSummary(BaseModel):
     live_active: bool = False
     egress_ip: Optional[str] = None
     transit_port: Optional[int] = None
+    display_name: Optional[str] = None
+
+
+class CascadeRenameRequest(BaseModel):
+    display_name: str = Field(default="", max_length=80)
 
 
 class CascadeLinkStatus(BaseModel):
@@ -101,6 +106,7 @@ class CascadeLinkStatus(BaseModel):
     live_active: bool = False
     protocol: Optional[str] = None
     protocols: list[str] = Field(default_factory=list)
+    display_name: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------

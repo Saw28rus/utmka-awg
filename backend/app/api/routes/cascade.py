@@ -10,6 +10,7 @@ from app.schemas.cascade import (
     CascadeLinkStatus,
     CascadeLinkSummary,
     CascadePreflightRequest,
+    CascadeRenameRequest,
     CascadePreflightResult,
     CascadeRulesApplyResult,
     CascadeRulesStatus,
@@ -22,6 +23,7 @@ from app.services.cascade import (
     run_preflight,
 )
 from app.services.cascade_apply import apply_cascade, rollback_cascade
+from app.services.cascade_store import cascade_store
 from app.services.cascade_rules import (
     get_rules_status,
     refresh_lists,
@@ -38,6 +40,26 @@ async def cascade_links(
     _: CurrentUser = Depends(require_admin),
 ) -> list[CascadeLinkSummary]:
     return await asyncio.to_thread(list_cascade_links, live_probe=live)
+
+
+@router.patch("/cascade/links/{entry_server_id}", response_model=CascadeLinkSummary)
+async def cascade_rename(
+    entry_server_id: str,
+    payload: CascadeRenameRequest,
+    _: CurrentUser = Depends(require_admin),
+) -> CascadeLinkSummary:
+    def _rename() -> CascadeLinkSummary | None:
+        if not cascade_store.set_display_name(entry_server_id, payload.display_name):
+            return None
+        for item in list_cascade_links(live_probe=False):
+            if item.entry_server_id == entry_server_id:
+                return item
+        return None
+
+    item = await asyncio.to_thread(_rename)
+    if not item:
+        raise HTTPException(status_code=404, detail="Каскад не найден.")
+    return item
 
 
 @router.get("/{server_id}/cascade/status", response_model=CascadeLinkStatus)

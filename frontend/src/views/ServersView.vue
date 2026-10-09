@@ -27,7 +27,32 @@
           <div class="cascade-group-head">
             <span class="cascade-group-title">
               <Network :size="14" />
-              Каскад
+              <form
+                v-if="renamingId === item.link.entry_server_id"
+                class="cascade-rename-form"
+                @submit.prevent="saveCascadeName(item.link)"
+              >
+                <input
+                  v-model="renameDraft"
+                  class="cascade-rename-input"
+                  maxlength="80"
+                  autofocus
+                  :placeholder="cascadeFallbackTitle(item.link)"
+                  @keydown.esc="cancelCascadeRename"
+                  @blur="saveCascadeName(item.link)"
+                />
+              </form>
+              <template v-else>
+                {{ cascadeTitle(item.link) }}
+                <button
+                  type="button"
+                  class="cascade-rename"
+                  title="Переименовать каскад"
+                  @click="startCascadeRename(item.link)"
+                >
+                  <Pencil :size="13" />
+                </button>
+              </template>
             </span>
             <StatusBadge
               :label="labelCascadeState(item.link.state)"
@@ -101,9 +126,9 @@
 </template>
 
 <script setup lang="ts">
-import { ArrowRight, Network, Plus, RefreshCw } from '@lucide/vue'
+import { ArrowRight, Network, Pencil, Plus, RefreshCw } from '@lucide/vue'
 import { NButton, useDialog, useMessage } from 'naive-ui'
-import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
 import { api } from '@/api/client'
@@ -125,6 +150,7 @@ type CascadeLinkSummary = {
   exit_name: string
   state: string
   is_active: boolean
+  display_name?: string | null
 }
 
 type CascadePeerRole = {
@@ -153,6 +179,9 @@ const metrics = reactive<Record<string, ServerMetrics>>({})
 const metricsLoading = reactive<Record<string, boolean>>({})
 const health = reactive<Record<string, NodeHealth>>({})
 const healthChecking = reactive<Record<string, boolean>>({})
+const renamingId = ref('')
+const renameDraft = ref('')
+const renameReady = ref(false)
 
 type HealthNodeApi = {
   server_id: string
@@ -372,6 +401,50 @@ function onNodeMigrated() {
   void loadServers({ refresh: true, liveCascade: true })
 }
 
+function cascadeFallbackTitle(link: CascadeLinkSummary) {
+  return `${link.entry_name} → ${link.exit_name}`
+}
+
+function cascadeTitle(link: CascadeLinkSummary) {
+  return link.display_name?.trim() || cascadeFallbackTitle(link)
+}
+
+function startCascadeRename(link: CascadeLinkSummary) {
+  renamingId.value = link.entry_server_id
+  renameDraft.value = link.display_name?.trim() || cascadeFallbackTitle(link)
+  renameReady.value = false
+  void nextTick(() => {
+    setTimeout(() => {
+      renameReady.value = true
+    }, 200)
+  })
+}
+
+function cancelCascadeRename() {
+  renameReady.value = false
+  renamingId.value = ''
+}
+
+async function saveCascadeName(link: CascadeLinkSummary) {
+  if (!renameReady.value || renamingId.value !== link.entry_server_id) return
+  renameReady.value = false
+  const name = renameDraft.value.trim()
+  renamingId.value = ''
+  const fallback = cascadeFallbackTitle(link)
+  const displayName = !name || name === fallback ? '' : name
+  if ((link.display_name || '') === displayName) return
+  try {
+    const { data } = await api.patch<CascadeLinkSummary>(
+      `/servers/cascade/links/${link.entry_server_id}`,
+      { display_name: displayName }
+    )
+    const idx = cascadeLinks.value.findIndex((item) => item.entry_server_id === link.entry_server_id)
+    if (idx !== -1) cascadeLinks.value[idx] = { ...cascadeLinks.value[idx], ...data }
+  } catch (err: any) {
+    message.error(err?.response?.data?.detail || 'Не удалось переименовать каскад.')
+  }
+}
+
 function cascadeRoleFor(serverId: string): CascadePeerRole | undefined {
   return cascadePeerMap.value.get(serverId)
 }
@@ -469,6 +542,40 @@ p {
 
 .cascade-group-title svg {
   color: var(--color-accent);
+}
+
+.cascade-rename {
+  display: inline-grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  margin-left: 2px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--color-dim);
+  cursor: pointer;
+}
+
+.cascade-rename:hover {
+  color: var(--color-accent);
+  background: var(--color-surface-2);
+}
+
+.cascade-rename-form {
+  display: inline-flex;
+  min-width: 0;
+}
+
+.cascade-rename-input {
+  width: min(240px, 46vw);
+  height: 26px;
+  padding: 0 8px;
+  border: 1px solid var(--color-border);
+  border-radius: 7px;
+  background: var(--color-surface);
+  color: var(--color-text);
+  font-size: 12px;
 }
 
 .cascade-group-body {

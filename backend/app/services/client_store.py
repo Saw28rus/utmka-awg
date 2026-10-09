@@ -233,6 +233,27 @@ class ClientStore:
         self._persist()
         return self.get_detail(client_id)
 
+    def set_folder(self, client_id: str, folder_id: Optional[str]) -> Optional[ClientDetail]:
+        """Только метка в списке. Конфиг и доступ клиента не меняются."""
+        record = self._clients.get(client_id)
+        if not record:
+            return None
+        if folder_id:
+            record["folder_id"] = folder_id
+        else:
+            record.pop("folder_id", None)
+        self._persist()
+        return self.get_detail(client_id)
+
+    def clear_folder(self, folder_id: str) -> None:
+        changed = False
+        for record in self._clients.values():
+            if record.get("folder_id") == folder_id:
+                record.pop("folder_id", None)
+                changed = True
+        if changed:
+            self._persist()
+
     def enforcement_view(self, server_id: str) -> list[dict]:
         """Данные для блокировки/разблокировки peer'ов на сервере."""
         view = []
@@ -270,6 +291,11 @@ class ClientStore:
         peers: list[ParsedPeer],
         names: dict[str, str],
     ) -> int:
+        kept_folders = {
+            client.get("public_key"): client.get("folder_id")
+            for client in self._clients.values()
+            if client["server_id"] == server_id and client.get("public_key") and client.get("folder_id")
+        }
         self._clients = {
             client_id: client
             for client_id, client in self._clients.items()
@@ -304,6 +330,9 @@ class ClientStore:
                 "peer_block_enc": None,
                 "created_at": datetime.now(timezone.utc).isoformat(),
             }
+            folder_id = kept_folders.get(peer.public_key)
+            if folder_id:
+                self._clients[client_id]["folder_id"] = folder_id
 
         self._persist()
         return self.count_for_server(server_id)
@@ -459,6 +488,7 @@ class ClientStore:
             "fallback_of_client_id": record.get("fallback_of_client_id"),
             "cascade_exit_name": exit_name,
             "cascade_active": cascade_active,
+            "folder_id": record.get("folder_id"),
         }
 
     def _to_list_item(self, record: dict, index=None) -> ClientListItem:

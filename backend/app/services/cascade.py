@@ -372,6 +372,7 @@ def list_cascade_links(*, live_probe: bool = False) -> list[CascadeLinkSummary]:
                 live_active=live_active,
                 egress_ip=link.get("egress_ip"),
                 transit_port=link.get("transit_port"),
+                display_name=(link.get("display_name") or None),
             )
         )
     out.sort(key=lambda x: (not x.is_active, x.entry_name))
@@ -411,6 +412,7 @@ def get_cascade_status(entry_server_id: str) -> CascadeLinkStatus:
         live_active=live_active,
         protocol=protocols[0] if protocols else "awg2",
         protocols=protocols,
+        display_name=(link.get("display_name") or None),
     )
 
 

@@ -622,7 +622,7 @@
         <div class="panel block cascade-hero" :class="{ 'cascade-hero--on': cascadeActive }">
           <div class="cascade-hero-top">
             <div>
-              <h3>Каскад VPN</h3>
+              <h3>{{ cascadeLink?.display_name || 'Каскад VPN' }}</h3>
               <p class="cascade-lead">
                 Один профиль на телефоне — трафик идёт через два сервера.
                 Сайты видят IP <strong>выходного</strong> сервера.
@@ -1438,6 +1438,7 @@ type CascadeLinkStatus = {
   entry_server_id: string
   exit_server_id: string | null
   exit_name: string | null
+  display_name?: string | null
   state: string
   client_subnet: string | null
   transit_subnet: string | null

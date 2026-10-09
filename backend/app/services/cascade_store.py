@@ -70,6 +70,19 @@ class CascadeStore:
         self._persist()
         return record
 
+    def set_display_name(self, entry_server_id: str, display_name: str) -> Optional[dict]:
+        """Подпись каскада в списке серверов. Маршрут entry→exit не меняется."""
+        record = self._links.get(entry_server_id)
+        if not record or not record.get("exit_server_id"):
+            return None
+        clean = " ".join((display_name or "").split())
+        if clean:
+            record["display_name"] = clean[:80]
+        else:
+            record.pop("display_name", None)
+        self._persist()
+        return record
+
     def delete_link(self, entry_server_id: str) -> bool:
         if entry_server_id in self._links:
             del self._links[entry_server_id]
