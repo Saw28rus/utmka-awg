@@ -378,6 +378,19 @@ input:focus, textarea:focus { border-color: var(--accent); }
 .att-title { margin-bottom: 4px; font-weight: 600; }
 .att-hint { font-size: 12.5px; color: var(--muted); margin-bottom: 10px; }
 .att-hint-block { margin: 0; font-size: 14px; line-height: 1.5; color: var(--muted); text-align: left; }
+.awg-guide { align-items: stretch; max-width: min(420px, 92vw); }
+.awg-guide strong { font-size: 18px; text-align: left; }
+.awg-steps {
+  margin: 0;
+  padding-left: 22px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  font-size: 16px;
+  line-height: 1.35;
+  font-weight: 600;
+}
+.awg-steps li::marker { color: var(--accent); font-weight: 700; }
 .att-launch { display: flex; flex-direction: column; gap: 8px; margin-bottom: 10px; }
 .att-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 

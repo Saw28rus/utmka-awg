@@ -735,15 +735,73 @@
     });
   }
 
-  function openAmneziaWg(data, att) {
+  var AWG_FILE = 'vpn.conf';
+
+  function showAwgGuide(kind) {
+    var overlay = document.createElement('div');
+    overlay.className = 'qr-overlay';
+    var card = document.createElement('div');
+    card.className = 'overlay-card awg-guide';
+    var h = document.createElement('strong');
+    h.textContent = 'Добавьте ключ в AmneziaWG';
+    var lead = document.createElement('p');
+    lead.className = 'att-hint-block';
+    lead.textContent = kind === 'ios'
+      ? 'Файл называется vpn.conf. AmneziaWG само по ссылке не открывается — выберите его в трёх шагах.'
+      : 'Файл vpn.conf уже скачан. AmneziaWG само по ссылке не открывается — осталось три шага.';
+    var list = document.createElement('ol');
+    list.className = 'awg-steps';
+    var steps = kind === 'ios'
+      ? [
+          'Откройте «Файлы» → «Загрузки» → vpn.conf',
+          'Нажмите «Поделиться»',
+          'Выберите приложение AmneziaWG'
+        ]
+      : [
+          'Откройте приложение AmneziaWG',
+          'Нажмите «+» → «Создать из файла или архива»',
+          'В «Загрузках» выберите файл vpn.conf'
+        ];
+    steps.forEach(function (text) {
+      var li = document.createElement('li');
+      li.textContent = text;
+      list.appendChild(li);
+    });
+    var note = document.createElement('p');
+    note.className = 'att-hint-block';
+    note.textContent = 'Если приложение пишет, что туннель vpn уже есть — это тот же ключ. Просто включите его.';
+    var row = document.createElement('div');
+    row.className = 'att-actions';
+    var ok = document.createElement('button');
+    ok.type = 'button';
+    ok.className = 'att-btn primary';
+    ok.textContent = 'Понятно';
+    ok.addEventListener('click', function () { overlay.remove(); });
+    row.appendChild(ok);
+    card.appendChild(h);
+    card.appendChild(lead);
+    card.appendChild(list);
+    card.appendChild(note);
+    card.appendChild(row);
+    overlay.addEventListener('click', function (e) { if (e.target === overlay) overlay.remove(); });
+    overlay.appendChild(card);
+    document.body.appendChild(overlay);
+  }
+
+  function openAmneziaWg(data) {
     var conf = data.config_text;
     if (!looksLikeWg(conf)) {
       alert('Этот ключ только для Amnezia VPN, не для AmneziaWG.');
       return Promise.resolve();
     }
-    return shareOrDownload(stemName(att.filename) + '.conf', conf).then(function (how) {
-      if (how === 'download') showOpenHint('awg');
-    });
+    if (isIos) {
+      return shareOrDownload(AWG_FILE, conf).then(function (how) {
+        if (how !== 'shared') showAwgGuide('ios');
+      });
+    }
+    downloadNamed(AWG_FILE, conf);
+    showAwgGuide(isAndroid ? 'android' : 'other');
+    return Promise.resolve();
   }
 
   function buildAttachment(att) {
@@ -776,19 +834,25 @@
     box.appendChild(row);
 
     loadAttachmentView(att).then(function (data) {
-      if (data.vpn_link) {
-        launch.appendChild(launchButton('Открыть в Amnezia VPN', true, function (btn) {
+      var hasWg = looksLikeWg(data.config_text) && !isAwg31(data.config_text);
+      var hasVpn = !!data.vpn_link;
+      if (hasWg) {
+        launch.appendChild(launchButton('Добавить в AmneziaWG', true, function (btn) {
+          btn.disabled = true;
+          Promise.resolve(openAmneziaWg(data)).finally(function () { btn.disabled = false; });
+        }));
+      }
+      if (hasVpn) {
+        launch.appendChild(launchButton('Открыть в Amnezia VPN', !hasWg, function (btn) {
           btn.disabled = true;
           Promise.resolve(openAmneziaVpn(data, att)).finally(function () { btn.disabled = false; });
         }));
       }
-      if (looksLikeWg(data.config_text) && !isAwg31(data.config_text)) {
-        launch.appendChild(launchButton('Открыть в AmneziaWG', false, function (btn) {
-          btn.disabled = true;
-          Promise.resolve(openAmneziaWg(data, att)).finally(function () { btn.disabled = false; });
-        }));
-      }
-      if (!launch.childNodes.length) {
+      if (hasWg && hasVpn) {
+        hint.textContent = 'AmneziaWG — первая кнопка: файл и три шага. Amnezia VPN открывается сам.';
+      } else if (hasWg) {
+        hint.textContent = 'Нажмите кнопку: файл скачается, на экране будут три шага.';
+      } else if (!launch.childNodes.length) {
         hint.textContent = 'Скачайте файл или отсканируйте QR-код';
       }
     }).catch(function () {
@@ -961,7 +1025,7 @@
       var job;
       if (current.id === 'vpn') job = openAmneziaVpn(data, att);
       else if (current.id === 'reality') job = openAmneziaVpn({ vpn_link: data.fallback_vpn_link }, att);
-      else if (current.id === 'awg') job = openAmneziaWg(data, att);
+      else if (current.id === 'awg') job = openAmneziaWg(data);
       else job = shareOrDownload(stemName(att.filename) + '.txt', current.text);
       Promise.resolve(job).finally(function () { openApp.disabled = false; });
     });
@@ -1255,7 +1319,7 @@
 
   function initServiceWorker() {
     if (!('serviceWorker' in navigator)) return;
-    navigator.serviceWorker.register('/sw.js?v=16').catch(function () {});
+    navigator.serviceWorker.register('/sw.js?v=17').catch(function () {});
     navigator.serviceWorker.addEventListener('message', function (e) {
       if (!e.data) return;
       if (e.data.type === 'open-chat') {
